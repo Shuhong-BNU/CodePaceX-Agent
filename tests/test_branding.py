@@ -28,9 +28,9 @@ def test_terminal_banner_uses_badge_and_dynamic_version(monkeypatch) -> None:
     lines = branding.build_terminal_banner("test-model", "/tmp/project").plain.splitlines()
 
     assert lines == [
-        "╭─>_─╮    CodePaceX v9.8.7",
-        "│ CPX│    test-model",
-        "╰─X──╯    /tmp/project",
+        "╭─────╮    CodePaceX v9.8.7",
+        "│ ▸_▸ │    test-model",
+        "╰─CPX─╯    /tmp/project",
     ]
 
 
@@ -68,7 +68,7 @@ async def test_terminal_banner_fits_supported_terminal_sizes(size) -> None:
 
         assert title_bar.size.width == size[0] - 2
         assert title_bar.size.height == 3
-        assert "╭─>_─╮" in title_bar.render().plain
+        assert "╭─────╮" in title_bar.render().plain
 
 
 # ---------------------------------------------------------------------------
@@ -84,5 +84,5 @@ def test_remote_html_uses_shared_brand(monkeypatch) -> None:
 
     html = unescape(reload(web_content).INDEX_HTML)
 
-    assert ">_ CPX · CodePaceX Remote · v0.2.0" in html
+    assert "▸_▸ CPX · CodePaceX Remote · v0.2.0" in html
     assert ("⚡ " + "CodePaceX Remote") not in html

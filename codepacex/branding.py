@@ -14,13 +14,13 @@ from rich.text import Text as RichText
 
 PRODUCT_NAME = "CodePaceX"
 DISTRIBUTION_NAME = "codepacex-agent"
-SHORT_MARK = ">_ CPX"
+SHORT_MARK = "▸_▸ CPX"
 REMOTE_NAME = f"{PRODUCT_NAME} Remote"
 
 TERMINAL_BADGE = (
-    "╭─>_─╮",
-    "│ CPX│",
-    "╰─X──╯",
+    "╭─────╮",
+    "│ ▸_▸ │",
+    "╰─CPX─╯",
 )
 
 
