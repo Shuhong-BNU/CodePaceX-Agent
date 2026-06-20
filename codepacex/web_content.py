@@ -3,15 +3,19 @@
 主要包含核心数据结构与执行流程。该模块由 CodePaceX 运行时调用，并维护状态一致性和异常传播。
 """
 
+from html import escape
+
+from codepacex.branding import REMOTE_NAME, SHORT_MARK, get_version
+
 # Remote 模式的 Web 前端 HTML。
 # 远程界面资源集中内嵌，部署时无需额外的前端构建产物。
 
-INDEX_HTML = r"""<!DOCTYPE html>
+_INDEX_HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CodePaceX Remote</title>
+<title>__CODEPACEX_REMOTE_TITLE__</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 :root {
@@ -200,7 +204,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 <body>
 <div id="app">
   <div id="status-bar">
-    <span class="brand">⚡ CodePaceX Remote</span>
+    <span class="brand">__CODEPACEX_REMOTE_BRAND__</span>
     <div class="info">
       <span id="conn-status"><span class="dot disconnected"></span>Connecting...</span>
       <span id="token-info"></span>
@@ -806,3 +810,16 @@ inputEl.focus();
 </script>
 </body>
 </html>"""
+
+
+INDEX_HTML = (
+    _INDEX_HTML_TEMPLATE
+    .replace(
+        "__CODEPACEX_REMOTE_TITLE__",
+        escape(f"{REMOTE_NAME} v{get_version()}"),
+    )
+    .replace(
+        "__CODEPACEX_REMOTE_BRAND__",
+        escape(f"{SHORT_MARK} · {REMOTE_NAME} · v{get_version()}"),
+    )
+)
