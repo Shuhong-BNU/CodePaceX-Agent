@@ -82,6 +82,15 @@ uv run python --version
 uv run codepacex --help
 ```
 
+如果希望在任意代码仓库中直接使用当前源码版本，可以安装为用户级工具：
+
+```bash
+uv tool install --editable .
+codepacex --help
+```
+
+editable 安装会跟随当前源码目录中的代码变化；依赖声明发生变化后，重新执行上述安装命令。
+
 ## 配置
 
 CodePaceX 按以下顺序加载并合并配置：
@@ -91,6 +100,7 @@ CodePaceX 按以下顺序加载并合并配置：
 3. `<project>/.codepacex/config.local.yaml`
 
 后加载的项目配置用于覆盖或补充用户配置。建议通过环境变量提供密钥，不要提交真实 API Key。
+首次使用时建议只保留一个 Provider；非交互模式默认使用列表中的第一个 Provider。
 
 ```yaml
 providers:
@@ -98,7 +108,7 @@ providers:
     protocol: anthropic
     base_url: https://api.anthropic.com
     model: claude-sonnet-4-6
-    api_key: ${ANTHROPIC_API_KEY}
+    api_key: ""
     thinking: true
     context_window: 200000
     max_output_tokens: 16000
@@ -107,7 +117,7 @@ providers:
     protocol: openai
     base_url: https://api.openai.com/v1
     model: gpt-5
-    api_key: ${OPENAI_API_KEY}
+    api_key: ""
 
 permission_mode: default
 enable_fork: true
@@ -134,6 +144,11 @@ mcp_servers:
     headers:
       Authorization: Bearer ${EXAMPLE_TOKEN}
 ```
+
+Provider 的 `api_key` 留空或省略时，CodePaceX 会按照协议读取
+`ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`。当前版本不会展开 `api_key` 字段中的
+`${...}` 占位符，因此不要把环境变量占位符直接写在该字段中。MCP 的 `env` 和
+`headers` 配置仍支持 `${...}` 环境变量展开。
 
 协议取值：
 
@@ -304,9 +319,9 @@ uv run pytest -q
 uv run python -m compileall -q codepacex tests
 ```
 
-当前本机环境：uv 0.11.23、CPython 3.12.13。
-
-本次整理前后的测试结果一致：共运行 554 个测试，553 个通过，1 个失败。失败用例为 `tests/test_permissions.py::test_e2e_rule_allows_git`：测试在新建的非 Git 临时目录中执行 `git status`，实际命令按预期返回“not a git repository”，但测试错误地要求工具结果成功。该问题已记录，未在本轮修改业务代码或测试断言。
+当前本机环境：uv 0.11.23、CPython 3.12.13。2026-06-20 在已经初始化为
+Git 仓库的项目目录中执行全量测试，共收集并运行 554 个测试，554 个全部通过，
+耗时 5.37 秒。
 
 ## 性能指标说明
 
