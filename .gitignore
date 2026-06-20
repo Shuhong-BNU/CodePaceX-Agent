@@ -1,0 +1,15 @@
+config.yaml
+.DS_Store
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+*.egg-info/
+dist/
+build/
+.idea/
+.vscode/
+.codepacex/
+.claude/
+CLAUDE.md
+example-com-snapshot.md
