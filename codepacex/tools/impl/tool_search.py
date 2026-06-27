@@ -42,6 +42,9 @@ class ToolSearchTool(Tool):
         self._registry = registry
         self._protocol = protocol
 
+    def set_protocol(self, protocol: str) -> None:
+        self._protocol = protocol
+
 
     def get_schema(self) -> dict[str, Any]:
         schema = self.params_model.model_json_schema()

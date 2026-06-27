@@ -371,6 +371,168 @@ class TestStatusHandler:
         assert "CodePaceX 状态" in ui.messages[0]
         assert "default" in ui.messages[0]
 
+
+class TestModelHandler:
+    @staticmethod
+    def _providers():
+        from codepacex.config import ProviderConfig
+
+        return [
+            ProviderConfig(
+                name="aliyun",
+                protocol="openai-compat",
+                base_url="https://dashscope.example/v1",
+                api_key="dashscope-placeholder",
+                default_model="qwen-plus",
+                models=["qwen-plus", "qwen-turbo"],
+            ),
+            ProviderConfig(
+                name="legacy",
+                protocol="anthropic",
+                base_url="https://anthropic.example",
+                model="claude-sonnet",
+                api_key="legacy-placeholder",
+            ),
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("args", ["", "current"])
+    async def test_model_current_output(self, args: str) -> None:
+        from codepacex.commands.handlers.model import handle_model
+
+        ui = MockUI()
+        providers = self._providers()
+        ctx = _make_context(args=args, ui=ui)
+        ctx.config = {
+            "providers": providers,
+            "get_current_provider": lambda: providers[0],
+        }
+
+        await handle_model(ctx)
+
+        assert "当前模型" in ui.messages[0]
+        assert "Provider: aliyun" in ui.messages[0]
+        assert "Protocol: openai-compat" in ui.messages[0]
+        assert "Model: qwen-plus" in ui.messages[0]
+        assert "Base URL: https://dashscope.example/v1" in ui.messages[0]
+        assert "dashscope-placeholder" not in ui.messages[0]
+
+    @pytest.mark.asyncio
+    async def test_model_list_outputs_providers_and_models(self) -> None:
+        from codepacex.commands.handlers.model import handle_model
+
+        ui = MockUI()
+        providers = self._providers()
+        ctx = _make_context(args="list", ui=ui)
+        ctx.config = {
+            "providers": providers,
+            "get_current_provider": lambda: providers[0],
+        }
+
+        await handle_model(ctx)
+
+        text = ui.messages[0]
+        assert "* aliyun" in text
+        assert "qwen-plus [current]" in text
+        assert "qwen-turbo" in text
+        assert "legacy" in text
+        assert "claude-sonnet" in text
+        assert "key: available" in text
+        providers[1].api_key = ""
+        providers[1].api_key_env = "MISSING_TEST_KEY"
+        ui.messages.clear()
+
+        await handle_model(ctx)
+
+        text = ui.messages[0]
+        assert "key: missing" in text
+        assert "dashscope-placeholder" not in text
+        assert "legacy-placeholder" not in text
+
+    @pytest.mark.asyncio
+    async def test_model_use_switches_valid_target(self) -> None:
+        from codepacex.commands.handlers.model import handle_model
+
+        ui = MockUI()
+        providers = self._providers()
+        switch = AsyncMock(return_value=(True, "switched"))
+        ctx = _make_context(args="use aliyun/qwen-turbo", ui=ui)
+        ctx.config = {
+            "providers": providers,
+            "get_current_provider": lambda: providers[0],
+            "switch_model": switch,
+        }
+
+        await handle_model(ctx)
+
+        switch.assert_awaited_once_with("aliyun", "qwen-turbo")
+        assert ui.messages == ["switched"]
+
+    @pytest.mark.asyncio
+    async def test_model_use_supports_model_names_with_slash(self) -> None:
+        from codepacex.commands.handlers.model import handle_model
+        from codepacex.config import ProviderConfig
+
+        ui = MockUI()
+        provider = ProviderConfig(
+            name="openrouter",
+            protocol="openai-compat",
+            base_url="https://openrouter.example/v1",
+            api_key="placeholder",
+            default_model="openai/gpt-4o-mini",
+            models=["openai/gpt-4o-mini"],
+        )
+        switch = AsyncMock(return_value=(True, "switched"))
+        ctx = _make_context(args="use openrouter/openai/gpt-4o-mini", ui=ui)
+        ctx.config = {
+            "providers": [provider],
+            "get_current_provider": lambda: provider,
+            "switch_model": switch,
+        }
+
+        await handle_model(ctx)
+
+        switch.assert_awaited_once_with("openrouter", "openai/gpt-4o-mini")
+
+    @pytest.mark.asyncio
+    async def test_model_use_unknown_provider(self) -> None:
+        from codepacex.commands.handlers.model import handle_model
+
+        ui = MockUI()
+        providers = self._providers()
+        ctx = _make_context(args="use missing/qwen-plus", ui=ui)
+        ctx.config = {"providers": providers}
+
+        await handle_model(ctx)
+
+        assert "未知 provider" in ui.messages[0]
+
+    @pytest.mark.asyncio
+    async def test_model_use_unknown_model(self) -> None:
+        from codepacex.commands.handlers.model import handle_model
+
+        ui = MockUI()
+        providers = self._providers()
+        ctx = _make_context(args="use aliyun/not-a-model", ui=ui)
+        ctx.config = {"providers": providers}
+
+        await handle_model(ctx)
+
+        assert "未知模型" in ui.messages[0]
+        assert "qwen-plus" in ui.messages[0]
+
+    @pytest.mark.asyncio
+    async def test_model_use_bad_args(self) -> None:
+        from codepacex.commands.handlers.model import handle_model
+
+        ui = MockUI()
+        ctx = _make_context(args="use aliyun", ui=ui)
+        ctx.config = {"providers": self._providers()}
+
+        await handle_model(ctx)
+
+        assert "用法" in ui.messages[0]
+
 class TestSessionHandler:
     @pytest.mark.asyncio
     async def test_session_no_manager(self) -> None:
@@ -453,7 +615,7 @@ class TestRegisterAllCommands:
         names = {c.name for c in cmds}
         expected = {
             "help", "compact", "clear", "plan",
-            "session", "mcp", "memory", "permission",
+            "session", "model", "mcp", "memory", "permission",
             "rewind", "status", "skill",
         }
         assert names == expected

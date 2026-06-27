@@ -96,6 +96,9 @@ class AgentTool(Tool):
         self._worktree_manager = worktree_manager
         self._team_manager = team_manager
 
+    def set_provider_config(self, provider_config: Any) -> None:
+        self._provider_config = provider_config
+
     async def execute(self, params: BaseModel) -> ToolResult:
         p: AgentToolParams = params  # type: ignore[assignment]
 

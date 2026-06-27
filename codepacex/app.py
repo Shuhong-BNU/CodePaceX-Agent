@@ -910,6 +910,98 @@ class CodePaceXApp(App):
             self._start_notification_polling()
         )
 
+    @staticmethod
+    def _models_for_provider(provider: ProviderConfig) -> list[str]:
+        models = list(provider.models or [])
+        if not models and provider.model:
+            models = [provider.model]
+        return models
+
+    @staticmethod
+    def _provider_for_model(provider: ProviderConfig, model: str) -> ProviderConfig:
+        return ProviderConfig(
+            name=provider.name,
+            protocol=provider.protocol,
+            base_url=provider.base_url,
+            model=model,
+            api_key=provider.api_key,
+            thinking=provider.thinking,
+            context_window=provider.context_window,
+            max_output_tokens=provider.max_output_tokens,
+            api_key_env=provider.api_key_env,
+            default_model=model,
+            models=CodePaceXApp._models_for_provider(provider),
+        )
+
+    def get_current_provider(self) -> ProviderConfig | None:
+        return self._selected_provider
+
+    def switch_model(self, provider_name: str, model: str) -> tuple[bool, str]:
+        if self._streaming:
+            return False, "当前正在生成回复，请等待响应结束后再切换模型。"
+        if self.agent is None:
+            return False, "Agent 尚未初始化，无法切换模型。"
+
+        provider = next((p for p in self.providers if p.name == provider_name), None)
+        if provider is None:
+            return False, f"未知 provider: {provider_name}"
+
+        models = self._models_for_provider(provider)
+        if model not in models:
+            return False, (
+                f"未知模型: {provider_name}/{model}\n"
+                f"可用模型: {', '.join(models) if models else '(none)'}"
+            )
+
+        next_provider = self._provider_for_model(provider, model)
+        try:
+            next_client = create_client(next_provider)
+        except AuthenticationError as e:
+            return False, str(e)
+        except Exception as e:
+            return False, f"切换模型失败: {e}"
+
+        self.client = next_client
+        self._selected_provider = next_provider
+        self.agent.client = next_client
+        self.agent.protocol = next_provider.protocol
+        self.agent.context_window = next_provider.get_context_window()
+
+        if self.skill_executor is not None:
+            self.skill_executor.client = next_client
+            self.skill_executor.protocol = next_provider.protocol
+
+        tool_search = self.registry.get("ToolSearch")
+        if isinstance(tool_search, ToolSearchTool):
+            tool_search.set_protocol(next_provider.protocol)
+
+        agent_tool = self.registry.get("Agent")
+        if isinstance(agent_tool, AgentTool):
+            agent_tool.set_provider_config(next_provider)
+
+        self._refresh_model_display(next_provider)
+        try:
+            self.run_worker(
+                self._resolve_context_window(next_provider), exclusive=False
+            )
+        except Exception:
+            pass
+
+        return True, f"已切换模型: {next_provider.name}/{next_provider.model}"
+
+    def _refresh_model_display(self, provider: ProviderConfig) -> None:
+        try:
+            self.query_one("#model-label", Static).update(provider.model)
+        except Exception:
+            pass
+        try:
+            work_dir = os.getcwd()
+            self.query_one("#title-bar", Static).update(
+                self._make_banner(provider.model, work_dir)
+            )
+        except Exception:
+            pass
+
     async def _resolve_context_window(self, provider: ProviderConfig) -> None:
         """Layer 2 后台 worker：异步拉取模型的 context window，
         拉到就原地升级 agent 的窗口值。
@@ -918,7 +1010,7 @@ class CodePaceXApp(App):
         agent 继续使用同步解析得到的窗口值。
         """
         await resolve_context_window(provider)
-        if self.agent is not None:
+        if self.agent is not None and self._selected_provider is provider:
             self.agent.context_window = provider.get_context_window()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
@@ -979,6 +1071,9 @@ class CodePaceXApp(App):
                 "render_restored": self._render_restored_messages,
                 "skill_loader": self.skill_loader,
                 "skill_executor": self.skill_executor,
+                "providers": self.providers,
+                "get_current_provider": self.get_current_provider,
+                "switch_model": self.switch_model,
             },
         )
 
