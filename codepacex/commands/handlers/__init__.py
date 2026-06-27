@@ -7,6 +7,7 @@ from codepacex.commands.handlers.compact import COMPACT_COMMAND
 from codepacex.commands.handlers.help import HELP_COMMAND
 from codepacex.commands.handlers.mcp import MCP_COMMAND
 from codepacex.commands.handlers.memory import MEMORY_COMMAND
+from codepacex.commands.handlers.model import MODEL_COMMAND
 from codepacex.commands.handlers.permission import PERMISSION_COMMAND
 from codepacex.commands.handlers.plan import PLAN_COMMAND
 from codepacex.commands.handlers.session import SESSION_COMMAND
@@ -22,6 +23,7 @@ ALL_COMMANDS = [
     CLEAR_COMMAND,
     PLAN_COMMAND,
     SESSION_COMMAND,
+    MODEL_COMMAND,
     MCP_COMMAND,
     MEMORY_COMMAND,
     PERMISSION_COMMAND,
@@ -35,4 +37,3 @@ ALL_COMMANDS = [
 def register_all_commands(registry: CommandRegistry) -> None:
     for cmd in ALL_COMMANDS:
         registry.register_sync(cmd)
-

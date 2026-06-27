@@ -344,6 +344,17 @@ uv run codepacex --mode plan
 uv run codepacex --mode acceptEdits
 ```
 
+## 常用斜杠命令
+
+TUI 会话中可以使用 `/model` 管理当前会话的模型选择：
+
+- `/model` 或 `/model current`：显示当前 provider、protocol、model 和 base URL。
+- `/model list`：列出配置中的 provider 和候选模型，并标记当前 active 模型。
+- `/model use <provider>/<model>`：切换当前会话后续请求使用的 provider/model。
+
+`/model` 只使用配置中的候选模型列表，不会联网发现模型。`/model test`、fallback
+和运行时自动路由尚未实现。
+
 ## Plan Mode
 
 Plan Mode 将 Agent 限制在读取、提问、委派探索和维护当前计划文件的范围内。它允许只读工具、`Agent`、`ToolSearch`、`AskUserQuestion`、`ExitPlanMode`，并允许 `WriteFile` 或 `EditFile` 写入 `.codepacex/plans/` 下的计划文件。调用 `ExitPlanMode` 后由交互层展示审批界面。Plan Mode 是应用级权限约束，不等同于操作系统沙箱。
