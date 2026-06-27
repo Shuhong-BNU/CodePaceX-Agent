@@ -97,10 +97,16 @@ def validate_providers(raw_providers: list) -> list[dict]:
                 "must be listed in models"
             )
 
-        effective_model = default_model or (models[0] if models else model)
+        effective_model = default_model or model or (models[0] if models else "")
         if not effective_model:
             raise ConfigError(
                 f"Provider #{i + 1}: must configure model, default_model, or models"
+            )
+        if models and effective_model not in models:
+            field_name = "default_model" if default_model else "model"
+            raise ConfigError(
+                f"Provider #{i + 1}: {field_name} '{effective_model}' "
+                "must be listed in models"
             )
         if not default_model:
             default_model = effective_model

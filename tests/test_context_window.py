@@ -251,6 +251,23 @@ class TestValidator:
         assert cleaned[0]["default_model"] == "qwen-plus"
         assert cleaned[0]["models"] == ["qwen-plus", "qwen-turbo", "qwen-max"]
 
+    def test_legacy_model_takes_priority_over_models_without_default_model(self):
+        cleaned = validate_providers(
+            [
+                {
+                    "name": "p",
+                    "protocol": "openai-compat",
+                    "base_url": "u",
+                    "model": "qwen-max",
+                    "models": ["qwen-plus", "qwen-turbo", "qwen-max"],
+                }
+            ]
+        )
+
+        assert cleaned[0]["model"] == "qwen-max"
+        assert cleaned[0]["default_model"] == "qwen-max"
+        assert cleaned[0]["models"] == ["qwen-plus", "qwen-turbo", "qwen-max"]
+
     def test_models_without_default_model_uses_first_model(self):
         cleaned = validate_providers(
             [
@@ -312,6 +329,20 @@ class TestValidator:
                         "base_url": "u",
                         "default_model": "qwen-plus",
                         "models": ["qwen-turbo"],
+                    }
+                ]
+            )
+
+    def test_legacy_model_must_be_listed_in_models(self):
+        with pytest.raises(ConfigError, match="model 'qwen-max'.*must be listed"):
+            validate_providers(
+                [
+                    {
+                        "name": "p",
+                        "protocol": "openai-compat",
+                        "base_url": "u",
+                        "model": "qwen-max",
+                        "models": ["qwen-plus", "qwen-turbo"],
                     }
                 ]
             )
@@ -482,6 +513,20 @@ class TestProviderModelSelection:
         assert p.models == ["qwen-plus", "qwen-turbo"]
         assert p.get_effective_model() == "qwen-plus"
 
+    def test_provider_config_preserves_legacy_model_with_models(self):
+        p = ProviderConfig(
+            name="p",
+            protocol="openai-compat",
+            base_url="https://example.test",
+            model="qwen-max",
+            models=["qwen-plus", "qwen-turbo", "qwen-max"],
+            api_key="k",
+        )
+
+        assert p.model == "qwen-max"
+        assert p.default_model == "qwen-max"
+        assert p.models == ["qwen-plus", "qwen-turbo", "qwen-max"]
+
     def test_provider_config_uses_first_model_without_default(self):
         p = ProviderConfig(
             name="p",
@@ -494,6 +539,17 @@ class TestProviderModelSelection:
         assert p.model == "qwen-turbo"
         assert p.default_model == "qwen-turbo"
         assert p.models == ["qwen-turbo", "qwen-max"]
+
+    def test_provider_config_requires_effective_model_in_models(self):
+        with pytest.raises(ConfigError, match="model 'qwen-max'.*must be listed"):
+            ProviderConfig(
+                name="p",
+                protocol="openai-compat",
+                base_url="https://example.test",
+                model="qwen-max",
+                models=["qwen-plus", "qwen-turbo"],
+                api_key="k",
+            )
 
     def test_client_uses_effective_model(self):
         p = ProviderConfig(
