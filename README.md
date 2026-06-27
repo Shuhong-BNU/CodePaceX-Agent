@@ -165,6 +165,7 @@ providers:
     base_url: https://api.anthropic.com
     model: claude-sonnet-4-6
     api_key: ""
+    api_key_env: ANTHROPIC_API_KEY
     thinking: true
     context_window: 200000
     max_output_tokens: 16000
@@ -174,6 +175,13 @@ providers:
     base_url: https://api.openai.com/v1
     model: gpt-5
     api_key: ""
+    api_key_env: OPENAI_API_KEY
+
+  - name: aliyun-main
+    protocol: openai-compat
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    model: qwen-plus
+    api_key_env: DASHSCOPE_API_KEY
 
 permission_mode: default
 enable_fork: true
@@ -201,10 +209,12 @@ mcp_servers:
       Authorization: Bearer ${EXAMPLE_TOKEN}
 ```
 
-Provider 的 `api_key` 留空或省略时，CodePaceX 会按照协议读取
-`ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`。当前版本不会展开 `api_key` 字段中的
-`${...}` 占位符，因此不要把环境变量占位符直接写在该字段中。MCP 的 `env` 和
-`headers` 配置仍支持 `${...}` 环境变量展开。
+Provider 的 API key 解析优先级为：`api_key` 明文值、`api_key_env` 指定的
+环境变量、协议默认环境变量。协议默认环境变量为 `ANTHROPIC_API_KEY` 或
+`OPENAI_API_KEY`；OpenAI-compatible provider 建议显式设置 `api_key_env`，例如
+`DASHSCOPE_API_KEY`、`DEEPSEEK_API_KEY` 或 `OPENROUTER_API_KEY`。当前版本不会展开
+`api_key` 字段中的 `${...}` 占位符，因此不要把环境变量占位符直接写在该字段中。
+MCP 的 `env` 和 `headers` 配置仍支持 `${...}` 环境变量展开。
 
 协议取值：
 
