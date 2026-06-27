@@ -60,9 +60,52 @@ def validate_providers(raw_providers: list) -> list[dict]:
         if not isinstance(entry, dict):
             raise ConfigError(f"Provider #{i + 1}: must be a mapping")
 
-        missing = [f for f in ("name", "protocol", "base_url", "model") if f not in entry]
+        missing = [f for f in ("name", "protocol", "base_url") if f not in entry]
         if missing:
             raise ConfigError(f"Provider #{i + 1}: missing fields: {', '.join(missing)}")
+
+        model = entry.get("model", "")
+        if not isinstance(model, str):
+            raise ConfigError(f"Provider #{i + 1}: model must be a string")
+        if "model" in entry and not model:
+            raise ConfigError(f"Provider #{i + 1}: model must not be empty")
+
+        default_model = entry.get("default_model", "")
+        if not isinstance(default_model, str):
+            raise ConfigError(f"Provider #{i + 1}: default_model must be a string")
+        if "default_model" in entry and not default_model:
+            raise ConfigError(f"Provider #{i + 1}: default_model must not be empty")
+
+        raw_models = entry.get("models", [])
+        if not isinstance(raw_models, list):
+            raise ConfigError(f"Provider #{i + 1}: models must be a list of strings")
+        models: list[str] = []
+        for j, item in enumerate(raw_models):
+            if not isinstance(item, str):
+                raise ConfigError(
+                    f"Provider #{i + 1}: models[{j}] must be a string"
+                )
+            if not item:
+                raise ConfigError(
+                    f"Provider #{i + 1}: models[{j}] must not be empty"
+                )
+            models.append(item)
+
+        if default_model and models and default_model not in models:
+            raise ConfigError(
+                f"Provider #{i + 1}: default_model '{default_model}' "
+                "must be listed in models"
+            )
+
+        effective_model = default_model or (models[0] if models else model)
+        if not effective_model:
+            raise ConfigError(
+                f"Provider #{i + 1}: must configure model, default_model, or models"
+            )
+        if not default_model:
+            default_model = effective_model
+        if not models:
+            models = [effective_model]
 
         protocol = entry["protocol"]
         if protocol not in VALID_PROTOCOLS:
@@ -100,7 +143,9 @@ def validate_providers(raw_providers: list) -> list[dict]:
                 "name": entry["name"],
                 "protocol": protocol,
                 "base_url": entry["base_url"],
-                "model": entry["model"],
+                "model": effective_model,
+                "default_model": default_model,
+                "models": models,
                 "api_key": entry.get("api_key", ""),
                 "api_key_env": api_key_env,
                 "thinking": thinking,
