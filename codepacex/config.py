@@ -38,7 +38,7 @@ class ProviderConfig:
     name: str
     protocol: str
     base_url: str
-    model: str
+    model: str = ""
     api_key: str = ""
     thinking: bool = False
     # 0 表示"未设置" — get_context_window() 通过四层 fallback 解析真实窗口大小。
@@ -46,10 +46,26 @@ class ProviderConfig:
     context_window: int = 0
     max_output_tokens: int = 0
     api_key_env: str = ""
+    default_model: str = ""
+    models: list[str] = field(default_factory=list)
     # 运行时 cache，存放从 provider 的 /v1/models 端点自动拉取的 context window
     # （get_context_window 的第 2 层）。通过 set_fetched_context_window() 写入一次；
     # 0 表示"尚未拉取"。不会持久化。
     _fetched_context_window: int = field(default=0, repr=False)
+
+    def __post_init__(self) -> None:
+        self.models = list(self.models)
+        if self.default_model:
+            self.model = self.default_model
+        elif not self.model and self.models:
+            self.model = self.models[0]
+        if not self.default_model:
+            self.default_model = self.model
+        if self.model and not self.models:
+            self.models = [self.model]
+
+    def get_effective_model(self) -> str:
+        return self.model
 
     def resolve_api_key(self) -> str:
         if self.api_key:
@@ -162,6 +178,8 @@ def _load_single_file(path: Path) -> AppConfig:
             model=p["model"],
             api_key=p["api_key"],
             api_key_env=p["api_key_env"],
+            default_model=p["default_model"],
+            models=p["models"],
             thinking=p["thinking"],
             context_window=p["context_window"],
             max_output_tokens=p["max_output_tokens"],

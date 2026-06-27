@@ -160,28 +160,107 @@ CodePaceX 按以下顺序加载并合并配置：
 
 ```yaml
 providers:
-  - name: anthropic-main
+  - name: anthropic
     protocol: anthropic
     base_url: https://api.anthropic.com
-    model: claude-sonnet-4-6
-    api_key: ""
     api_key_env: ANTHROPIC_API_KEY
+    default_model: claude-sonnet-4-6
+    models:
+      - claude-sonnet-4-6
+      - claude-haiku-4-5
     thinking: true
     context_window: 200000
     max_output_tokens: 16000
 
-  - name: openai-main
+  - name: openai
     protocol: openai
     base_url: https://api.openai.com/v1
-    model: gpt-5
-    api_key: ""
     api_key_env: OPENAI_API_KEY
+    default_model: gpt-5.5
+    models:
+      - gpt-5.5
+      - gpt-5.4-mini
 
-  - name: aliyun-main
+  - name: aliyun
     protocol: openai-compat
     base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-    model: qwen-plus
     api_key_env: DASHSCOPE_API_KEY
+    default_model: qwen-plus
+    models:
+      - qwen-plus
+      - qwen-turbo
+      - qwen-max
+
+  - name: deepseek
+    protocol: openai-compat
+    base_url: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY
+    default_model: deepseek-chat
+    models:
+      - deepseek-chat
+      - deepseek-reasoner
+
+  - name: openrouter
+    protocol: openai-compat
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    default_model: openai/gpt-4o-mini
+    models:
+      - openai/gpt-4o-mini
+      - anthropic/claude-sonnet-4
+      - deepseek/deepseek-chat
+
+  - name: moonshot
+    protocol: openai-compat
+    base_url: https://api.moonshot.ai/v1
+    api_key_env: MOONSHOT_API_KEY
+    default_model: kimi-k2.6
+    models:
+      - kimi-k2.6
+
+  - name: zhipu
+    protocol: openai-compat
+    base_url: https://open.bigmodel.cn/api/paas/v4/
+    api_key_env: ZAI_API_KEY
+    default_model: glm-5.2
+    models:
+      - glm-5.2
+
+  - name: xiaomi-mimo
+    protocol: openai-compat
+    base_url: https://api.xiaomimimo.com/v1
+    api_key_env: MIMO_API_KEY
+    default_model: mimo-v2.5-pro
+    models:
+      - mimo-v2.5-pro
+      - mimo-v2.5-pro-ultraspeed
+      - mimo-v2.5
+
+  - name: ollama-local
+    protocol: openai-compat
+    base_url: http://localhost:11434/v1
+    api_key: ollama
+    default_model: qwen3:8b
+    models:
+      - qwen3:8b
+      - llama3.1:8b
+      - gemma3:4b
+
+  - name: lmstudio-local
+    protocol: openai-compat
+    base_url: http://localhost:1234/v1
+    api_key: lm-studio
+    default_model: local-model
+    models:
+      - local-model
+
+  - name: vllm-local
+    protocol: openai-compat
+    base_url: http://localhost:8000/v1
+    api_key: token-abc123
+    default_model: local-vllm-model
+    models:
+      - local-vllm-model
 
 permission_mode: default
 enable_fork: true
@@ -215,6 +294,12 @@ Provider 的 API key 解析优先级为：`api_key` 明文值、`api_key_env` �
 `DASHSCOPE_API_KEY`、`DEEPSEEK_API_KEY` 或 `OPENROUTER_API_KEY`。当前版本不会展开
 `api_key` 字段中的 `${...}` 占位符，因此不要把环境变量占位符直接写在该字段中。
 MCP 的 `env` 和 `headers` 配置仍支持 `${...}` 环境变量展开。
+
+旧的 `model` 字段仍然可用；推荐的新写法是 `default_model` + `models`。
+`models` 是候选模型列表，不保证账号一定有权限调用，实际可用模型以各平台控制台
+或模型列表 API 为准。本地 provider 需要先启动 Ollama、LM Studio 或 vLLM 等服务；
+本地 OpenAI-compatible 服务通常不校验 key，但 OpenAI SDK 仍要求 key 非空，因此可
+使用 `api_key: ollama`、`api_key: lm-studio` 这类占位值。
 
 协议取值：
 
