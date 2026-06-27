@@ -59,6 +59,12 @@ class ProviderConfig:
             self.model = self.default_model
         elif not self.model and self.models:
             self.model = self.models[0]
+        if self.models and self.model and self.model not in self.models:
+            field_name = "default_model" if self.default_model else "model"
+            raise ConfigError(
+                f"Provider '{self.name}': {field_name} '{self.model}' "
+                "must be listed in models"
+            )
         if not self.default_model:
             self.default_model = self.model
         if self.model and not self.models:
