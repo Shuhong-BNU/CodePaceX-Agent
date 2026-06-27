@@ -45,6 +45,7 @@ class ProviderConfig:
     # 正数表示配置文件里显式指定的覆盖值。
     context_window: int = 0
     max_output_tokens: int = 0
+    api_key_env: str = ""
     # 运行时 cache，存放从 provider 的 /v1/models 端点自动拉取的 context window
     # （get_context_window 的第 2 层）。通过 set_fetched_context_window() 写入一次；
     # 0 表示"尚未拉取"。不会持久化。
@@ -53,6 +54,8 @@ class ProviderConfig:
     def resolve_api_key(self) -> str:
         if self.api_key:
             return self.api_key
+        if self.api_key_env:
+            return os.environ.get(self.api_key_env, "")
         env_var = _ENV_KEY_MAP.get(self.protocol, "")
         return os.environ.get(env_var, "")
 
@@ -158,6 +161,7 @@ def _load_single_file(path: Path) -> AppConfig:
             base_url=p["base_url"],
             model=p["model"],
             api_key=p["api_key"],
+            api_key_env=p["api_key_env"],
             thinking=p["thinking"],
             context_window=p["context_window"],
             max_output_tokens=p["max_output_tokens"],

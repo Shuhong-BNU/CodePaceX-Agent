@@ -10,6 +10,7 @@ import pytest
 
 from codepacex.client import resolve_context_window
 from codepacex.config import ProviderConfig
+from codepacex.tools.agent_tool import AgentTool
 from codepacex.validator import (
     ConfigError,
     lookup_model_context_window,
@@ -217,6 +218,48 @@ class TestValidator:
         )
         assert cleaned[0]["context_window"] == 50_000
 
+    def test_api_key_env_defaults_to_empty_string(self):
+        cleaned = validate_providers(
+            [
+                {
+                    "name": "p",
+                    "protocol": "openai-compat",
+                    "base_url": "u",
+                    "model": "qwen-plus",
+                }
+            ]
+        )
+        assert cleaned[0]["api_key_env"] == ""
+
+    def test_api_key_env_is_preserved(self):
+        cleaned = validate_providers(
+            [
+                {
+                    "name": "p",
+                    "protocol": "openai-compat",
+                    "base_url": "u",
+                    "model": "qwen-plus",
+                    "api_key_env": "DASHSCOPE_API_KEY",
+                }
+            ]
+        )
+        assert cleaned[0]["api_key_env"] == "DASHSCOPE_API_KEY"
+
+    @pytest.mark.parametrize("bad", [123, True, ["OPENAI_API_KEY"]])
+    def test_invalid_api_key_env_rejected(self, bad):
+        with pytest.raises(ConfigError):
+            validate_providers(
+                [
+                    {
+                        "name": "p",
+                        "protocol": "openai",
+                        "base_url": "u",
+                        "model": "gpt-5",
+                        "api_key_env": bad,
+                    }
+                ]
+            )
+
     @pytest.mark.parametrize("bad", [-1, "200000", True, 3.5])
     def test_invalid_context_window_rejected(self, bad):
         with pytest.raises(ConfigError):
@@ -231,3 +274,50 @@ class TestValidator:
                     }
                 ]
             )
+
+
+class TestApiKeyResolution:
+    def test_explicit_api_key_wins_over_api_key_env(self, monkeypatch):
+        monkeypatch.setenv("CUSTOM_KEY", "from-env")
+        p = _provider(api_key="explicit", api_key_env="CUSTOM_KEY")
+
+        assert p.resolve_api_key() == "explicit"
+
+    def test_api_key_env_wins_over_protocol_default(self, monkeypatch):
+        monkeypatch.setenv("CUSTOM_KEY", "custom")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "default")
+        p = _provider(api_key="", api_key_env="CUSTOM_KEY")
+
+        assert p.resolve_api_key() == "custom"
+
+    def test_protocol_default_env_still_works_without_api_key_env(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "default")
+        p = _provider(api_key="", api_key_env="")
+
+        assert p.resolve_api_key() == "default"
+
+    def test_missing_configured_api_key_env_does_not_fall_back_to_default(self, monkeypatch):
+        monkeypatch.delenv("CUSTOM_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "default")
+        p = _provider(api_key="", api_key_env="CUSTOM_KEY")
+
+        assert p.resolve_api_key() == ""
+
+
+class TestSubAgentProviderConfig:
+    def test_model_override_preserves_api_key_env(self):
+        provider = _provider(api_key="", api_key_env="CUSTOM_PROVIDER_KEY")
+        tool = AgentTool(
+            agent_loader=None,
+            task_manager=None,
+            trace_manager=None,
+            parent_agent=None,
+            provider_config=provider,
+        )
+        sentinel = object()
+
+        with patch("codepacex.client.create_client", return_value=sentinel) as mk:
+            assert tool._create_client_for_model("sonnet") is sentinel
+
+        created_config = mk.call_args.args[0]
+        assert created_config.api_key_env == "CUSTOM_PROVIDER_KEY"

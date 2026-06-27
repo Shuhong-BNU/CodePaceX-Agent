@@ -659,6 +659,7 @@ class AgentTool(Tool):
             base_url=self._provider_config.base_url,
             model=model_id,
             api_key=self._provider_config.api_key,
+            api_key_env=getattr(self._provider_config, "api_key_env", ""),
             context_window=self._provider_config.context_window,
         )
         try:

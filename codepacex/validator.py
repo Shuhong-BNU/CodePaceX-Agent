@@ -91,6 +91,10 @@ def validate_providers(raw_providers: list) -> list[dict]:
                 f"Provider #{i + 1}: max_output_tokens must be a non-negative integer"
             )
 
+        api_key_env = entry.get("api_key_env", "")
+        if not isinstance(api_key_env, str):
+            raise ConfigError(f"Provider #{i + 1}: api_key_env must be a string")
+
         providers.append(
             {
                 "name": entry["name"],
@@ -98,6 +102,7 @@ def validate_providers(raw_providers: list) -> list[dict]:
                 "base_url": entry["base_url"],
                 "model": entry["model"],
                 "api_key": entry.get("api_key", ""),
+                "api_key_env": api_key_env,
                 "thinking": thinking,
                 "context_window": context_window,
                 "max_output_tokens": max_output_tokens,

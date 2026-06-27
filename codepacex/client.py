@@ -119,6 +119,14 @@ class LLMClient(ABC):
         pass
 
 
+def _missing_api_key_message(provider_label: str, default_env: str) -> str:
+    return (
+        f"{provider_label} API key not found. "
+        "Set 'api_key' in .codepacex/config.yaml, set 'api_key_env' "
+        f"to an environment variable containing the key, or set {default_env}."
+    )
+
+
 def _supports_adaptive_thinking(model: str) -> bool:
     for family in ("claude-opus-4-", "claude-sonnet-4-"):
         if model.startswith(family):
@@ -136,8 +144,7 @@ class AnthropicClient(LLMClient):
         api_key = config.resolve_api_key()
         if not api_key:
             raise AuthenticationError(
-                "Anthropic API key not found. "
-                "Set it in .codepacex/config.yaml or via ANTHROPIC_API_KEY env var."
+                _missing_api_key_message("Anthropic", "ANTHROPIC_API_KEY")
             )
         self._client = AsyncAnthropic(api_key=api_key, base_url=config.base_url)
 
@@ -331,8 +338,7 @@ class OpenAIClient(LLMClient):
         api_key = config.resolve_api_key()
         if not api_key:
             raise AuthenticationError(
-                "OpenAI API key not found. "
-                "Set it in .codepacex/config.yaml or via OPENAI_API_KEY env var."
+                _missing_api_key_message("OpenAI", "OPENAI_API_KEY")
             )
         self._client = AsyncOpenAI(api_key=api_key, base_url=config.base_url)
 
@@ -464,8 +470,7 @@ class OpenAICompatClient(LLMClient):
         api_key = config.resolve_api_key()
         if not api_key:
             raise AuthenticationError(
-                "OpenAI-compatible API key not found. "
-                "Set it in .codepacex/config.yaml or via OPENAI_API_KEY env var."
+                _missing_api_key_message("OpenAI-compatible", "OPENAI_API_KEY")
             )
         self._client = AsyncOpenAI(api_key=api_key, base_url=config.base_url)
 
