@@ -65,6 +65,7 @@ from codepacex.memory import (
     make_compact_boundary,
     render_reminder,
 )
+from codepacex.model_test import ModelTestResult, test_provider_model
 from codepacex.permissions import (
     DangerousCommandDetector,
     PathSandbox,
@@ -936,6 +937,35 @@ class CodePaceXApp(App):
     def get_current_provider(self) -> ProviderConfig | None:
         return self._selected_provider
 
+    async def test_model(
+        self,
+        provider_name: str | None = None,
+        model: str | None = None,
+    ) -> ModelTestResult | tuple[bool, str]:
+        provider: ProviderConfig | None
+        if provider_name is None and model is None:
+            provider = self._selected_provider
+            if provider is None:
+                return False, "当前没有已选择的模型。"
+        else:
+            if provider_name is None or model is None:
+                return False, "用法: /model test <provider>/<model>"
+            provider = next((p for p in self.providers if p.name == provider_name), None)
+            if provider is None:
+                return False, f"未知 provider: {provider_name}"
+            models = self._models_for_provider(provider)
+            if model not in models:
+                return False, (
+                    f"未知模型: {provider_name}/{model}\n"
+                    f"可用模型: {', '.join(models) if models else '(none)'}"
+                )
+            provider = self._provider_for_model(provider, model)
+
+        test_provider = self._provider_for_model(provider, provider.model)
+        test_provider.max_output_tokens = 8
+        test_provider.thinking = False
+        return await test_provider_model(test_provider)
+
     def switch_model(self, provider_name: str, model: str) -> tuple[bool, str]:
         if self._streaming:
             return False, "当前正在生成回复，请等待响应结束后再切换模型。"
@@ -1087,6 +1117,7 @@ class CodePaceXApp(App):
                 "providers": self.providers,
                 "get_current_provider": self.get_current_provider,
                 "switch_model": self.switch_model,
+                "test_model": self.test_model,
             },
         )
 

@@ -533,6 +533,153 @@ class TestModelHandler:
 
         assert "用法" in ui.messages[0]
 
+    @pytest.mark.asyncio
+    async def test_model_test_defaults_to_current_model(self) -> None:
+        from codepacex.commands.handlers.model import handle_model
+        from codepacex.model_test import ModelTestResult, ModelTestStatus
+
+        ui = MockUI()
+        providers = self._providers()
+        result = ModelTestResult(
+            provider="aliyun",
+            protocol="openai-compat",
+            model="qwen-plus",
+            base_url="https://dashscope.example/v1",
+            key_status="available",
+            status=ModelTestStatus.OK,
+            reason="completed",
+            latency_ms=12,
+        )
+        test_model = AsyncMock(return_value=result)
+        ctx = _make_context(args="test", ui=ui)
+        ctx.config = {
+            "providers": providers,
+            "get_current_provider": lambda: providers[0],
+            "test_model": test_model,
+        }
+
+        await handle_model(ctx)
+
+        test_model.assert_awaited_once_with(None, None)
+        text = ui.messages[0]
+        assert "模型测试" in text
+        assert "Provider: aliyun" in text
+        assert "Protocol: openai-compat" in text
+        assert "Model: qwen-plus" in text
+        assert "Key: available" in text
+        assert "Result: ok" in text
+        assert "Latency: 12 ms" in text
+        assert "dashscope-placeholder" not in text
+
+    @pytest.mark.asyncio
+    async def test_model_test_uses_specified_target(self) -> None:
+        from codepacex.commands.handlers.model import handle_model
+        from codepacex.model_test import ModelTestResult, ModelTestStatus
+
+        ui = MockUI()
+        providers = self._providers()
+        result = ModelTestResult(
+            provider="aliyun",
+            protocol="openai-compat",
+            model="qwen-turbo",
+            base_url="https://dashscope.example/v1",
+            key_status="available",
+            status=ModelTestStatus.OK,
+            reason="completed",
+        )
+        test_model = AsyncMock(return_value=result)
+        ctx = _make_context(args="test aliyun/qwen-turbo", ui=ui)
+        ctx.config = {"providers": providers, "test_model": test_model}
+
+        await handle_model(ctx)
+
+        test_model.assert_awaited_once_with("aliyun", "qwen-turbo")
+        assert "Model: qwen-turbo" in ui.messages[0]
+
+    @pytest.mark.asyncio
+    async def test_model_test_supports_model_names_with_slash(self) -> None:
+        from codepacex.commands.handlers.model import handle_model
+        from codepacex.config import ProviderConfig
+        from codepacex.model_test import ModelTestResult, ModelTestStatus
+
+        ui = MockUI()
+        provider = ProviderConfig(
+            name="openrouter",
+            protocol="openai-compat",
+            base_url="https://openrouter.example/v1",
+            api_key="placeholder",
+            default_model="openai/gpt-4o-mini",
+            models=["openai/gpt-4o-mini"],
+        )
+        result = ModelTestResult(
+            provider="openrouter",
+            protocol="openai-compat",
+            model="openai/gpt-4o-mini",
+            base_url="https://openrouter.example/v1",
+            key_status="available",
+            status=ModelTestStatus.OK,
+            reason="completed",
+        )
+        test_model = AsyncMock(return_value=result)
+        ctx = _make_context(args="test openrouter/openai/gpt-4o-mini", ui=ui)
+        ctx.config = {"providers": [provider], "test_model": test_model}
+
+        await handle_model(ctx)
+
+        test_model.assert_awaited_once_with("openrouter", "openai/gpt-4o-mini")
+
+    @pytest.mark.asyncio
+    async def test_model_test_unknown_provider_or_model(self) -> None:
+        from codepacex.commands.handlers.model import handle_model
+
+        ui = MockUI()
+        providers = self._providers()
+        ctx = _make_context(args="test missing/qwen-plus", ui=ui)
+        ctx.config = {"providers": providers, "test_model": AsyncMock()}
+
+        await handle_model(ctx)
+
+        assert "未知 provider" in ui.messages[0]
+
+        ui.messages.clear()
+        ctx.args = "test aliyun/not-a-model"
+        await handle_model(ctx)
+
+        assert "未知模型" in ui.messages[0]
+        assert "qwen-plus" in ui.messages[0]
+
+    @pytest.mark.asyncio
+    async def test_model_test_outputs_failure_without_leaking_key(self) -> None:
+        from codepacex.commands.handlers.model import handle_model
+        from codepacex.model_test import ModelTestResult, ModelTestStatus
+
+        ui = MockUI()
+        providers = self._providers()
+        result = ModelTestResult(
+            provider="aliyun",
+            protocol="openai-compat",
+            model="qwen-plus",
+            base_url="https://dashscope.example/v1",
+            key_status="missing",
+            status=ModelTestStatus.MISSING_KEY,
+            reason="API key is missing.",
+            suggestion="请检查 DASHSCOPE_API_KEY 是否已设置。",
+        )
+        ctx = _make_context(args="test", ui=ui)
+        ctx.config = {
+            "providers": providers,
+            "get_current_provider": lambda: providers[0],
+            "test_model": AsyncMock(return_value=result),
+        }
+
+        await handle_model(ctx)
+
+        text = ui.messages[0]
+        assert "Result: failed" in text
+        assert "Reason: API key is missing." in text
+        assert "Suggestion:" in text
+        assert "dashscope-placeholder" not in text
+
 class TestSessionHandler:
     @pytest.mark.asyncio
     async def test_session_no_manager(self) -> None:

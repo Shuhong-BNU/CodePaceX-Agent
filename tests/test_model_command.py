@@ -8,6 +8,7 @@ import pytest
 
 from codepacex.app import CodePaceXApp
 from codepacex.config import ProviderConfig
+from codepacex.model_test import ModelTestResult, ModelTestStatus
 from codepacex.tools.agent_tool import AgentTool
 from codepacex.tools.impl.tool_search import ToolSearchTool
 
@@ -205,6 +206,100 @@ def test_switch_model_failure_keeps_existing_runtime_state() -> None:
     assert app.skill_executor.protocol == "anthropic"
     assert tool_search._protocol == "anthropic"
     assert agent_tool._provider_config is old_provider
+
+
+@pytest.mark.asyncio
+async def test_model_test_current_model_does_not_change_runtime_state() -> None:
+    app, agent, tool_search, agent_tool = _app_with_runtime()
+    old_client = app.client
+    old_provider = app._selected_provider
+    app.conversation.add_user_message("existing")
+    history_before = list(app.conversation.history)
+    app.session = MagicMock()
+    app.memory_manager = MagicMock()
+    result = ModelTestResult(
+        provider="anthropic",
+        protocol="anthropic",
+        model="claude-sonnet",
+        base_url="https://anthropic.example",
+        key_status="available",
+        status=ModelTestStatus.OK,
+        reason="completed",
+    )
+
+    with patch("codepacex.app.test_provider_model", AsyncMock(return_value=result)) as mk:
+        actual = await app.test_model()
+
+    assert actual is result
+    mk.assert_awaited_once()
+    tested_provider = mk.call_args.args[0]
+    assert tested_provider.name == "anthropic"
+    assert tested_provider.model == "claude-sonnet"
+    assert tested_provider.max_output_tokens == 8
+    assert tested_provider.thinking is False
+    assert app.client is old_client
+    assert app._selected_provider is old_provider
+    assert agent.client is old_client
+    assert agent.protocol == "anthropic"
+    assert agent.context_window == 200_000
+    assert app.skill_executor.client is old_client
+    assert app.skill_executor.protocol == "anthropic"
+    assert tool_search._protocol == "anthropic"
+    assert agent_tool._provider_config is old_provider
+    assert app.conversation.history == history_before
+    app.session.assert_not_called()
+    app.memory_manager.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_model_test_specified_model_does_not_switch_active_model() -> None:
+    app, agent, _tool_search, _agent_tool = _app_with_runtime()
+    old_client = app.client
+    old_provider = app._selected_provider
+    app.conversation.add_user_message("existing")
+    history_before = list(app.conversation.history)
+    result = ModelTestResult(
+        provider="openai",
+        protocol="openai",
+        model="gpt-4o-mini",
+        base_url="https://openai.example/v1",
+        key_status="available",
+        status=ModelTestStatus.OK,
+        reason="completed",
+    )
+
+    with patch("codepacex.app.test_provider_model", AsyncMock(return_value=result)) as mk:
+        actual = await app.test_model("openai", "gpt-4o-mini")
+
+    assert actual is result
+    tested_provider = mk.call_args.args[0]
+    assert tested_provider.name == "openai"
+    assert tested_provider.model == "gpt-4o-mini"
+    assert tested_provider.max_output_tokens == 8
+    assert tested_provider.thinking is False
+    assert app.client is old_client
+    assert app._selected_provider is old_provider
+    assert agent.client is old_client
+    assert agent.protocol == "anthropic"
+    assert agent.context_window == 200_000
+    assert app.conversation.history == history_before
+
+
+@pytest.mark.asyncio
+async def test_model_test_rejects_unknown_provider_or_model() -> None:
+    app, _agent, _tool_search, _agent_tool = _app_with_runtime()
+
+    with patch("codepacex.app.test_provider_model") as mk:
+        ok, message = await app.test_model("missing", "gpt-4o")
+    assert ok is False
+    assert "未知 provider" in message
+    mk.assert_not_called()
+
+    with patch("codepacex.app.test_provider_model") as mk:
+        ok, message = await app.test_model("openai", "not-a-model")
+    assert ok is False
+    assert "未知模型" in message
+    mk.assert_not_called()
 
 
 @pytest.mark.asyncio
