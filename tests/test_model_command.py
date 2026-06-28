@@ -119,6 +119,73 @@ def test_switch_model_rejects_unknown_provider_or_model() -> None:
     assert "未知模型" in message
 
 
+def test_switch_model_allows_same_protocol_with_existing_history() -> None:
+    app, agent, _tool_search, _agent_tool = _app_with_runtime()
+    same_protocol = ProviderConfig(
+        name="anthropic-alt",
+        protocol="anthropic",
+        base_url="https://anthropic-alt.example",
+        api_key="anthropic-alt-placeholder",
+        default_model="claude-haiku",
+        models=["claude-haiku"],
+        context_window=200_000,
+    )
+    app.providers.append(same_protocol)
+    app.conversation.add_user_message("hello")
+    new_client = object()
+
+    with patch("codepacex.app.create_client", return_value=new_client) as mk:
+        ok, message = app.switch_model("anthropic-alt", "claude-haiku")
+
+    assert ok is True
+    assert "anthropic-alt/claude-haiku" in message
+    mk.assert_called_once()
+    assert app.client is new_client
+    assert agent.client is new_client
+    assert agent.protocol == "anthropic"
+
+
+def test_switch_model_allows_cross_protocol_with_empty_history() -> None:
+    app, agent, _tool_search, _agent_tool = _app_with_runtime()
+    new_client = object()
+
+    with patch("codepacex.app.create_client", return_value=new_client) as mk:
+        ok, message = app.switch_model("openai", "gpt-4o-mini")
+
+    assert ok is True
+    assert "openai/gpt-4o-mini" in message
+    mk.assert_called_once()
+    assert app.client is new_client
+    assert agent.client is new_client
+    assert agent.protocol == "openai"
+
+
+def test_switch_model_rejects_cross_protocol_with_existing_history() -> None:
+    app, agent, tool_search, agent_tool = _app_with_runtime()
+    old_client = app.client
+    old_provider = app._selected_provider
+    app.conversation.add_user_message("hello")
+
+    with patch("codepacex.app.create_client") as mk:
+        ok, message = app.switch_model("openai", "gpt-4o-mini")
+
+    assert ok is False
+    assert "anthropic -> openai" in message
+    assert "thinking/reasoning/tool" in message
+    assert "/clear" in message
+    assert "新会话" in message
+    mk.assert_not_called()
+    assert app.client is old_client
+    assert app._selected_provider is old_provider
+    assert agent.client is old_client
+    assert agent.protocol == "anthropic"
+    assert agent.context_window == 200_000
+    assert app.skill_executor.client is old_client
+    assert app.skill_executor.protocol == "anthropic"
+    assert tool_search._protocol == "anthropic"
+    assert agent_tool._provider_config is old_provider
+
+
 def test_switch_model_failure_keeps_existing_runtime_state() -> None:
     app, agent, tool_search, agent_tool = _app_with_runtime()
     old_client = app.client
