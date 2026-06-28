@@ -350,10 +350,10 @@ TUI 会话中可以使用 `/model` 管理当前会话的模型选择：
 
 - `/model` 或 `/model current`：显示当前 provider、protocol、model 和 base URL。
 - `/model list`：列出配置中的 provider 和候选模型，并标记当前 active 模型。
+- `/model test` 或 `/model test <provider>/<model>`：对当前或指定 provider/model 发起一次最小连通性测试。
 - `/model use <provider>/<model>`：切换当前会话后续请求使用的 provider/model。
 
-`/model` 只使用配置中的候选模型列表，不会联网发现模型。`/model test`、fallback
-和运行时自动路由尚未实现。
+`/model` 只使用配置中的候选模型列表，不会联网发现模型。fallback 和运行时自动路由尚未实现。
 
 ## Plan Mode
 

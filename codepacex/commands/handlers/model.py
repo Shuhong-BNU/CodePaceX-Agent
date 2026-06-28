@@ -6,6 +6,7 @@ import inspect
 from typing import Any
 
 from codepacex.commands.registry import Command, CommandContext, CommandType
+from codepacex.model_test import ModelTestResult
 
 
 def _providers(ctx: CommandContext) -> list[Any]:
@@ -44,6 +45,39 @@ async def _call_switch(ctx: CommandContext, provider_name: str, model: str) -> t
     if isinstance(result, tuple) and len(result) == 2:
         return bool(result[0]), str(result[1])
     return True, str(result)
+
+
+async def _call_test(
+    ctx: CommandContext,
+    provider_name: str | None,
+    model: str | None,
+) -> ModelTestResult | tuple[bool, str]:
+    test_model = ctx.config.get("test_model") if ctx.config else None
+    if not callable(test_model):
+        return False, "当前界面不支持模型连通性测试。"
+    result = test_model(provider_name, model)
+    if inspect.isawaitable(result):
+        result = await result
+    return result
+
+
+def _format_test_result(result: ModelTestResult) -> str:
+    lines = [
+        "模型测试",
+        "────────",
+        f"Provider: {result.provider}",
+        f"Protocol: {result.protocol}",
+        f"Model: {result.model}",
+        f"Base URL: {result.base_url}",
+        f"Key: {result.key_status}",
+        f"Result: {'ok' if result.ok else 'failed'}",
+        f"Reason: {result.reason}",
+    ]
+    if result.latency_ms is not None:
+        lines.append(f"Latency: {result.latency_ms} ms")
+    if result.suggestion:
+        lines.append(f"Suggestion: {result.suggestion}")
+    return "\n".join(lines)
 
 
 async def handle_model(ctx: CommandContext) -> None:
@@ -90,6 +124,42 @@ async def handle_model(ctx: CommandContext) -> None:
         ctx.ui.add_system_message("\n".join(lines))
         return
 
+    if subcmd == "test":
+        target = rest.strip()
+        provider_name: str | None = None
+        model: str | None = None
+        if target:
+            if "/" not in target:
+                ctx.ui.add_system_message("用法: /model test <provider>/<model>")
+                return
+            provider_name, model = target.split("/", 1)
+            provider_name = provider_name.strip()
+            model = model.strip()
+            if not provider_name or not model:
+                ctx.ui.add_system_message("用法: /model test <provider>/<model>")
+                return
+
+            provider = next((p for p in _providers(ctx) if p.name == provider_name), None)
+            if provider is None:
+                ctx.ui.add_system_message(f"未知 provider: {provider_name}")
+                return
+            models = _provider_models(provider)
+            if model not in models:
+                ctx.ui.add_system_message(
+                    f"未知模型: {provider_name}/{model}\n"
+                    f"可用模型: {', '.join(models) if models else '(none)'}"
+                )
+                return
+
+        result = await _call_test(ctx, provider_name, model)
+        if isinstance(result, ModelTestResult):
+            ctx.ui.add_system_message(_format_test_result(result))
+        elif isinstance(result, tuple) and len(result) == 2:
+            ctx.ui.add_system_message(str(result[1]))
+        else:
+            ctx.ui.add_system_message(str(result))
+        return
+
     if subcmd == "use":
         target = rest.strip()
         if "/" not in target:
@@ -121,8 +191,8 @@ async def handle_model(ctx: CommandContext) -> None:
         return
 
     ctx.ui.add_system_message(
-        "用法: /model [current|list|use <provider>/<model>]\n"
-        "尚未实现: /model test、fallback。"
+        "用法: /model [current|list|test [<provider>/<model>]|use <provider>/<model>]\n"
+        "尚未实现: fallback。"
     )
 
 
@@ -130,7 +200,7 @@ MODEL_COMMAND = Command(
     name="model",
     aliases=[],
     description="查看或切换当前会话模型",
-    usage="/model [current|list|use <provider>/<model>]",
+    usage="/model [current|list|test [<provider>/<model>]|use <provider>/<model>]",
     type=CommandType.LOCAL,
     handler=handle_model,
 )
