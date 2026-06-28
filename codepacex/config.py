@@ -158,6 +158,7 @@ class WorktreeConfig:
 @dataclass
 class AppConfig:
     providers: list[ProviderConfig]
+    fallback: list[str] = field(default_factory=list)
     permission_mode: str = "default"
     mcp_servers: list[MCPServerConfig] = field(default_factory=list)
     raw_hooks: list[dict] = field(default_factory=list)
@@ -214,6 +215,7 @@ def _load_single_file(path: Path) -> AppConfig:
 
     return AppConfig(
         providers=providers,
+        fallback=validated["fallback"],
         permission_mode=validated["permission_mode"],
         mcp_servers=mcp_servers,
         raw_hooks=validated["hooks"],
@@ -228,6 +230,8 @@ def _load_single_file(path: Path) -> AppConfig:
 def _merge_config(base: AppConfig, override: AppConfig) -> AppConfig:
     if override.providers:
         base.providers = override.providers
+    if override.fallback:
+        base.fallback = override.fallback
     if override.permission_mode != "default":
         base.permission_mode = override.permission_mode
 

@@ -16,7 +16,8 @@ from typing import Any, AsyncIterator, Callable
 
 from pydantic import ValidationError
 
-from codepacex.client import LLMClient
+from codepacex.client import LLMClient, create_client
+from codepacex.config import ProviderConfig
 from codepacex.context import (
     CompactBoundary,
     CompactCircuitBreaker,
@@ -35,6 +36,11 @@ from codepacex.context import (
 from codepacex.conversation import ConversationManager, ToolResultBlock, ToolUseBlock
 from codepacex.conversation import ThinkingBlock as ConvThinkingBlock
 from codepacex.memory.auto_memory import MemoryManager
+from codepacex.model_fallback import (
+    classify_fallback_error,
+    iter_fallback_candidates,
+    model_ref_for_provider,
+)
 from codepacex.permissions import (
     Decision,
     PermissionChecker,
@@ -264,6 +270,15 @@ class _ToolExecResult:
     is_unknown: bool
 
 
+@dataclass
+class _ModelRuntime:
+    client: LLMClient
+    protocol: str
+    context_window: int
+    provider: ProviderConfig | None = None
+    used_fallback: bool = False
+
+
 class StreamingExecutor:
     def __init__(self) -> None:
         self._tasks: list[tuple[int, asyncio.Task[_ToolExecResult]]] = []
@@ -314,10 +329,16 @@ class Agent:
         instructions_content: str = "",
         memory_manager: MemoryManager | None = None,
         hook_engine: HookEngine | None = None,
+        active_provider: ProviderConfig | None = None,
+        providers: list[ProviderConfig] | None = None,
+        fallback: list[str] | None = None,
     ) -> None:
         self.client = client
         self.registry = registry
         self.protocol = protocol
+        self.active_provider = active_provider
+        self.providers = providers or []
+        self.fallback = fallback or []
         self.work_dir = work_dir
         self.max_iterations = max_iterations
         self.permission_checker = permission_checker
@@ -439,6 +460,7 @@ class Agent:
 
     async def run(self, conversation: ConversationManager) -> AsyncIterator[AgentEvent]:
         self._current_conversation = conversation
+        fallback_history_exists = bool(conversation.history)
         env_context = build_environment_context(
             self.work_dir, self.active_skills, self._skill_catalog, self._agent_catalog
         )
@@ -457,6 +479,14 @@ class Agent:
         consecutive_unknown = 0
         max_tokens_escalated = False
         output_recoveries = 0
+        turn_runtime = _ModelRuntime(
+            client=self.client,
+            protocol=self.protocol,
+            context_window=self.context_window,
+            provider=self.active_provider,
+        )
+        fallback_success_announced = False
+        tried_fallback_refs: set[str] = set()
 
         while True:
             iteration += 1
@@ -481,13 +511,13 @@ class Agent:
             # Layer 2: 接近 context window 上限时自动 compact（操作原始对话）
             compact_result = await auto_compact(
                 conversation,
-                self.client,
-                self.context_window,
+                turn_runtime.client,
+                turn_runtime.context_window,
                 self.session_dir,
-                protocol=self.protocol,
+                protocol=turn_runtime.protocol,
                 breaker=self.compact_breaker,
                 recovery=self.recovery_state,
-                tool_schemas=self.registry.get_all_schemas(self.protocol),
+                tool_schemas=self.registry.get_all_schemas(turn_runtime.protocol),
                 transcript_path=self._transcript_path,
             )
             if isinstance(compact_result, CompactEvent):
@@ -544,7 +574,7 @@ class Agent:
                     + "\n".join(deferred_names)
                 )
 
-            tools = self.registry.get_all_schemas(self.protocol)
+            tools = self.registry.get_all_schemas(turn_runtime.protocol)
 
             # Layer 1: 在 LLM 调用前应用 tool-result budget，确保 api_conv 反映
             # 本轮迭代中所有已发生的写入（system reminders、hook 通知等）。
@@ -555,12 +585,102 @@ class Agent:
             if _new_records:
                 append_replacement_records(self.session_dir, _new_records)
 
-            collector = StreamCollector()
-            llm_stream = self.client.stream(api_conv, system=system, tools=tools)
-            async for event in collector.consume(llm_stream):
-                yield event
+            while True:
+                collector = StreamCollector()
+                stream_started = False
+                try:
+                    llm_stream = turn_runtime.client.stream(
+                        api_conv, system=system, tools=tools
+                    )
+                    async for event in collector.consume(llm_stream):
+                        stream_started = True
+                        yield event
+                    break
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    if stream_started:
+                        raise
+
+                    failed_ref = (
+                        model_ref_for_provider(turn_runtime.provider).label
+                        if turn_runtime.provider is not None
+                        else "current model"
+                    )
+                    if turn_runtime.provider is not None:
+                        tried_fallback_refs.add(failed_ref)
+
+                    fallback_error = classify_fallback_error(
+                        e, turn_runtime.provider
+                    )
+                    if not fallback_error.recoverable or not self.fallback:
+                        raise
+
+                    next_runtime: _ModelRuntime | None = None
+                    candidates = iter_fallback_candidates(
+                        self.fallback,
+                        self.providers,
+                        turn_runtime.provider,
+                        has_history=fallback_history_exists,
+                        tried=tried_fallback_refs,
+                    )
+                    for candidate in candidates:
+                        if not candidate.provider.resolve_api_key():
+                            tried_fallback_refs.add(candidate.ref.label)
+                            yield RetryEvent(
+                                reason=(
+                                    f"跳过备用模型 {candidate.ref.label}: missing_key。"
+                                    "请检查 API Key 配置。"
+                                )
+                            )
+                            continue
+                        yield RetryEvent(
+                            reason=(
+                                f"当前模型 {failed_ref} 请求失败: "
+                                f"{fallback_error.status.value}。"
+                                f"正在尝试备用模型 {candidate.ref.label}。"
+                            )
+                        )
+                        try:
+                            fallback_client = create_client(candidate.provider)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as candidate_error:
+                            tried_fallback_refs.add(candidate.ref.label)
+                            classified = classify_fallback_error(
+                                candidate_error, candidate.provider
+                            )
+                            yield RetryEvent(
+                                reason=(
+                                    f"备用模型 {candidate.ref.label} 不可用: "
+                                    f"{classified.status.value}。"
+                                )
+                            )
+                            continue
+                        next_runtime = _ModelRuntime(
+                            client=fallback_client,
+                            protocol=candidate.provider.protocol,
+                            context_window=candidate.provider.get_context_window(),
+                            provider=candidate.provider,
+                            used_fallback=True,
+                        )
+                        break
+
+                    if next_runtime is None:
+                        raise
+
+                    turn_runtime = next_runtime
+                    tools = self.registry.get_all_schemas(turn_runtime.protocol)
 
             response = collector.response
+            if turn_runtime.used_fallback and not fallback_success_announced:
+                ref = (
+                    model_ref_for_provider(turn_runtime.provider).label
+                    if turn_runtime.provider is not None
+                    else "fallback model"
+                )
+                yield RetryEvent(reason=f"本轮已使用备用模型 {ref} 完成。")
+                fallback_success_announced = True
 
             if self.hook_engine:
                 ctx = self._build_hook_context("post_receive", message=response.text)
@@ -582,7 +702,7 @@ class Agent:
 
             if response.stop_reason == "max_tokens":
                 if not max_tokens_escalated:
-                    self.client.set_max_output_tokens(MAX_TOKENS_CEILING)
+                    turn_runtime.client.set_max_output_tokens(MAX_TOKENS_CEILING)
                     max_tokens_escalated = True
                     if response.text:
                         conversation.add_assistant_message(

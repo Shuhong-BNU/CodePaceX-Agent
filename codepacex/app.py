@@ -575,6 +575,7 @@ class CodePaceXApp(App):
     def __init__(
         self,
         providers: list[ProviderConfig],
+        fallback: list[str] | None = None,
         permission_mode: PermissionMode = PermissionMode.DEFAULT,
         mcp_servers: list[MCPServerConfig] | None = None,
         hook_engine: HookEngine | None = None,
@@ -587,6 +588,7 @@ class CodePaceXApp(App):
     ) -> None:
         super().__init__(driver_class=driver_class)
         self.providers = providers
+        self.fallback = fallback or []
         self._initial_permission_mode = permission_mode
         self._mcp_server_configs = mcp_servers or []
         self.hook_engine = hook_engine
@@ -730,6 +732,9 @@ class CodePaceXApp(App):
             instructions_content=self._instructions_content,
             memory_manager=self.memory_manager,
             hook_engine=self.hook_engine,
+            active_provider=provider,
+            providers=self.providers,
+            fallback=self.fallback,
         )
         self.agent.file_history = self.file_history
         self.agent.session_id = self.session.session_id
@@ -1009,6 +1014,9 @@ class CodePaceXApp(App):
         self.agent.client = next_client
         self.agent.protocol = next_provider.protocol
         self.agent.context_window = next_provider.get_context_window()
+        self.agent.active_provider = next_provider
+        self.agent.providers = self.providers
+        self.agent.fallback = self.fallback
 
         if self.skill_executor is not None:
             self.skill_executor.client = next_client

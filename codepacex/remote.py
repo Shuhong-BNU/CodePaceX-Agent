@@ -66,12 +66,14 @@ class RemoteServer:
     def __init__(
         self,
         providers: list[ProviderConfig],
+        fallback: list[str] | None = None,
         mcp_servers: list[MCPServerConfig] | None = None,
         hook_engine: HookEngine | None = None,
         addr: str = "0.0.0.0",
         port: int = 18888,
     ) -> None:
         self.providers = providers
+        self.fallback = fallback or []
         self._mcp_server_configs = mcp_servers or []
         self.hook_engine = hook_engine
         self.addr = addr
@@ -262,6 +264,9 @@ class RemoteServer:
             instructions_content=instructions,
             memory_manager=self.memory_manager,
             hook_engine=self.hook_engine,
+            active_provider=provider,
+            providers=self.providers,
+            fallback=self.fallback,
         )
         self.agent.session_id = self.session_id
 

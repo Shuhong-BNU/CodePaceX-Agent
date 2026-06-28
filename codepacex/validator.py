@@ -163,6 +163,43 @@ def validate_providers(raw_providers: list) -> list[dict]:
     return providers
 
 
+def validate_fallback(raw_fallback: object, providers: list[dict]) -> list[str]:
+    """校验 top-level fallback 链，返回按原顺序清洗后的 provider/model 引用。"""
+    if raw_fallback is None:
+        return []
+    if not isinstance(raw_fallback, list):
+        raise ConfigError("'fallback' must be a list of provider/model strings")
+
+    provider_models = {p["name"]: set(p["models"]) for p in providers}
+    fallback: list[str] = []
+    for i, item in enumerate(raw_fallback):
+        if not isinstance(item, str):
+            raise ConfigError(f"fallback[{i}] must be a string")
+        if not item:
+            raise ConfigError(f"fallback[{i}] must not be empty")
+        if "/" not in item:
+            raise ConfigError(
+                f"fallback[{i}] must use provider/model format"
+            )
+        provider_name, model = item.split("/", 1)
+        if not provider_name or not model:
+            raise ConfigError(
+                f"fallback[{i}] must use provider/model format"
+            )
+        if provider_name not in provider_models:
+            raise ConfigError(
+                f"fallback[{i}]: unknown provider '{provider_name}'"
+            )
+        if model not in provider_models[provider_name]:
+            available = ", ".join(sorted(provider_models[provider_name])) or "(none)"
+            raise ConfigError(
+                f"fallback[{i}]: unknown model '{provider_name}/{model}'. "
+                f"Available models: {available}"
+            )
+        fallback.append(item)
+    return fallback
+
+
 def validate_permission_mode(mode: str) -> str:
     """校验 permission_mode 取值。"""
     if mode not in VALID_PERMISSION_MODES:
@@ -282,8 +319,11 @@ def validate_config_structure(raw: object) -> dict:
     if not isinstance(raw, dict) or "providers" not in raw:
         raise ConfigError("Config must contain a 'providers' list")
 
+    providers = validate_providers(raw["providers"])
+
     return {
-        "providers": validate_providers(raw["providers"]),
+        "providers": providers,
+        "fallback": validate_fallback(raw.get("fallback", []), providers),
         "permission_mode": validate_permission_mode(raw.get("permission_mode", "default")),
         "mcp_servers": validate_mcp_servers(raw.get("mcp_servers")),
         "hooks": validate_hooks(raw.get("hooks")),

@@ -14,6 +14,7 @@ from codepacex.tools.agent_tool import AgentTool
 from codepacex.validator import (
     ConfigError,
     lookup_model_context_window,
+    validate_config_structure,
     validate_providers,
 )
 
@@ -446,6 +447,78 @@ class TestValidator:
                         "context_window": bad,
                     }
                 ]
+            )
+
+    def test_fallback_defaults_to_empty_list(self):
+        cleaned = validate_config_structure(
+            {
+                "providers": [
+                    {
+                        "name": "p",
+                        "protocol": "openai-compat",
+                        "base_url": "u",
+                        "model": "qwen-plus",
+                    }
+                ]
+            }
+        )
+
+        assert cleaned["fallback"] == []
+
+    def test_fallback_chain_is_validated(self):
+        cleaned = validate_config_structure(
+            {
+                "providers": [
+                    {
+                        "name": "aliyun",
+                        "protocol": "openai-compat",
+                        "base_url": "u",
+                        "models": ["qwen-plus", "qwen-max"],
+                    },
+                    {
+                        "name": "openrouter",
+                        "protocol": "openai-compat",
+                        "base_url": "u",
+                        "models": ["openai/gpt-4o-mini"],
+                    },
+                ],
+                "fallback": [
+                    "aliyun/qwen-max",
+                    "openrouter/openai/gpt-4o-mini",
+                ],
+            }
+        )
+
+        assert cleaned["fallback"] == [
+            "aliyun/qwen-max",
+            "openrouter/openai/gpt-4o-mini",
+        ]
+
+    @pytest.mark.parametrize(
+        ("fallback", "message"),
+        [
+            ("aliyun/qwen-plus", "fallback.*list"),
+            ([123], "fallback\\[0\\].*string"),
+            ([""], "fallback\\[0\\].*empty"),
+            (["aliyun"], "provider/model"),
+            (["missing/qwen-plus"], "unknown provider"),
+            (["aliyun/qwen-missing"], "unknown model"),
+        ],
+    )
+    def test_invalid_fallback_chain_rejected(self, fallback, message):
+        with pytest.raises(ConfigError, match=message):
+            validate_config_structure(
+                {
+                    "providers": [
+                        {
+                            "name": "aliyun",
+                            "protocol": "openai-compat",
+                            "base_url": "u",
+                            "models": ["qwen-plus"],
+                        }
+                    ],
+                    "fallback": fallback,
+                }
             )
 
 
