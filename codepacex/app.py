@@ -953,6 +953,19 @@ class CodePaceXApp(App):
                 f"可用模型: {', '.join(models) if models else '(none)'}"
             )
 
+        current_provider = self._selected_provider
+        if (
+            current_provider is not None
+            and current_provider.protocol != provider.protocol
+            and self.conversation.history
+        ):
+            return False, (
+                "不能在已有对话历史时跨协议切换模型: "
+                f"{current_provider.protocol} -> {provider.protocol}。\n"
+                "不同协议的 thinking/reasoning/tool 历史格式可能不兼容。\n"
+                "请先使用 /clear 清空会话，或开启新会话后再切换。"
+            )
+
         next_provider = self._provider_for_model(provider, model)
         try:
             next_client = create_client(next_provider)
