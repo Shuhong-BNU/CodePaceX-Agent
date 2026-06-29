@@ -69,6 +69,12 @@ from codepacex.model_discovery import (
     ModelDiscoveryResult,
     discover_provider_models,
 )
+from codepacex.model_health import (
+    ModelHealthError,
+    ModelHealthResult,
+    ModelHealthScope,
+    run_model_health_check,
+)
 from codepacex.model_test import ModelTestResult, test_provider_model
 from codepacex.permissions import (
     DangerousCommandDetector,
@@ -963,6 +969,24 @@ class CodePaceXApp(App):
         discover_provider = self._provider_for_model(provider, provider.model)
         return await discover_provider_models(discover_provider)
 
+    async def test_models(
+        self,
+        scope: str,
+        provider_name: str | None = None,
+    ) -> ModelHealthResult | tuple[bool, str]:
+        try:
+            health_scope = ModelHealthScope(scope)
+            return await run_model_health_check(
+                health_scope,
+                self.providers,
+                self.fallback,
+                provider_name=provider_name,
+            )
+        except ValueError:
+            return False, f"未知批量测试范围: {scope}"
+        except ModelHealthError as e:
+            return False, str(e)
+
     async def test_model(
         self,
         provider_name: str | None = None,
@@ -1148,6 +1172,7 @@ class CodePaceXApp(App):
                 "get_current_provider": self.get_current_provider,
                 "switch_model": self.switch_model,
                 "test_model": self.test_model,
+                "test_models": self.test_models,
                 "discover_models": self.discover_models,
             },
         )

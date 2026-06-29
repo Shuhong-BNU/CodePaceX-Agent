@@ -9,6 +9,7 @@ import pytest
 from codepacex.app import CodePaceXApp
 from codepacex.config import ProviderConfig
 from codepacex.model_discovery import ModelDiscoveryResult, ModelDiscoveryStatus
+from codepacex.model_health import ModelHealthResult, ModelHealthScope
 from codepacex.model_test import ModelTestResult, ModelTestStatus
 from codepacex.tools.agent_tool import AgentTool
 from codepacex.tools.impl.tool_search import ToolSearchTool
@@ -101,6 +102,7 @@ def test_command_context_includes_fallback_config() -> None:
 
     assert ctx.config["fallback"] == ["openai/gpt-4o-mini"]
     assert callable(ctx.config["discover_models"])
+    assert callable(ctx.config["test_models"])
 
 
 def test_switch_model_rejects_while_streaming() -> None:
@@ -300,6 +302,58 @@ async def test_model_discover_current_provider_does_not_change_runtime_state() -
     assert app.conversation.history == history_before
     app.session.assert_not_called()
     app.memory_manager.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_model_health_does_not_change_runtime_state() -> None:
+    app, agent, tool_search, agent_tool = _app_with_runtime()
+    old_client = app.client
+    old_provider = app._selected_provider
+    models_before = [list(provider.models) for provider in app.providers]
+    app.conversation.add_user_message("existing")
+    history_before = list(app.conversation.history)
+    app.session = MagicMock()
+    app.memory_manager = MagicMock()
+    result = ModelHealthResult(
+        scope=ModelHealthScope.ALL,
+        scope_label="all configured models",
+    )
+
+    with patch("codepacex.app.run_model_health_check", AsyncMock(return_value=result)) as mk:
+        actual = await app.test_models("all")
+
+    assert actual is result
+    mk.assert_awaited_once_with(
+        ModelHealthScope.ALL,
+        app.providers,
+        app.fallback,
+        provider_name=None,
+    )
+    assert app.client is old_client
+    assert app._selected_provider is old_provider
+    assert agent.client is old_client
+    assert agent.protocol == "anthropic"
+    assert agent.context_window == 200_000
+    assert app.skill_executor.client is old_client
+    assert app.skill_executor.protocol == "anthropic"
+    assert tool_search._protocol == "anthropic"
+    assert agent_tool._provider_config is old_provider
+    assert [provider.models for provider in app.providers] == models_before
+    assert app.conversation.history == history_before
+    app.session.assert_not_called()
+    app.memory_manager.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_model_health_rejects_unknown_scope() -> None:
+    app, _agent, _tool_search, _agent_tool = _app_with_runtime()
+
+    with patch("codepacex.app.run_model_health_check") as mk:
+        ok, message = await app.test_models("unknown")
+
+    assert ok is False
+    assert "未知批量测试范围" in message
+    mk.assert_not_called()
 
 
 @pytest.mark.asyncio

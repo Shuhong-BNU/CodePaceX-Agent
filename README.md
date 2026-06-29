@@ -386,6 +386,9 @@ TUI 会话中可以使用 `/model` 管理当前会话的模型选择：
 - `/model list`：列出配置中的 provider 和候选模型，并标记当前 active 模型。
 - `/model discover` 或 `/model discover <provider>`：只读列出 openai-compatible provider 的 `/models` 返回结果。
 - `/model test` 或 `/model test <provider>/<model>`：对当前或指定 provider/model 发起一次最小连通性测试。
+- `/model test --all`：串行测试配置中的所有 provider/models。
+- `/model test --provider <provider>`：只测试指定 provider 配置中的 models。
+- `/model test --fallback`：按 fallback 链顺序测试备用模型。
 - `/model use <provider>/<model>`：切换当前会话后续请求使用的 provider/model。
 
 `/model current` 会显示 fallback 链摘要；`/model list` 会标注 fallback 链中的模型。
@@ -397,7 +400,15 @@ TUI 会话中可以使用 `/model` 管理当前会话的模型选择：
 DashScope compatible mode、DeepSeek、OpenRouter、Ollama、LM Studio 和 vLLM 等
 兼容端点。发现结果表示 provider 的模型列表接口当前可见，不等于 health check，
 也不代表账号一定有权限或该模型一定能 chat 调用。要验证真实可调用性，请使用
-`/model test <provider>/<model>`；后续可配合 `/model test --all` 类能力做批量检查。
+`/model test <provider>/<model>` 或批量健康检查命令。
+
+`/model test --all`、`/model test --provider <provider>` 和 `/model test --fallback`
+会复用单模型测试逻辑，对配置中已有的模型发起最小真实请求。批量检查默认串行执行，
+以降低触发 rate limit 的概率；missing key 会被归为 skipped 且不会发请求，其它失败
+会按认证、权限、模型不存在、rate limit、网络、timeout、服务端、overloaded 或 unknown
+分类。批量检查不会测试 `/model discover` 临时发现但未写入配置的模型，不会修改 YAML，
+不会覆盖 `models`，不会写入 fallback 链，也不会改变当前 active provider/model。输出
+只展示 key 的 available/missing 状态，不显示真实 API Key。
 
 ## Plan Mode
 

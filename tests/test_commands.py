@@ -788,6 +788,143 @@ class TestModelHandler:
         assert "dashscope-placeholder" not in text
 
     @pytest.mark.asyncio
+    async def test_model_test_all_outputs_health_groups(self) -> None:
+        from codepacex.commands.handlers.model import handle_model
+        from codepacex.model_health import (
+            ModelHealthItem,
+            ModelHealthResult,
+            ModelHealthScope,
+        )
+        from codepacex.model_test import ModelTestResult, ModelTestStatus
+
+        ui = MockUI()
+        providers = self._providers()
+        result = ModelHealthResult(
+            scope=ModelHealthScope.ALL,
+            scope_label="all configured models",
+            items=[
+                ModelHealthItem(
+                    ref="aliyun/qwen-plus",
+                    result=ModelTestResult(
+                        provider="aliyun",
+                        protocol="openai-compat",
+                        model="qwen-plus",
+                        base_url="https://dashscope.example/v1",
+                        key_status="available",
+                        status=ModelTestStatus.OK,
+                        reason="completed",
+                        latency_ms=12,
+                    ),
+                ),
+                ModelHealthItem(
+                    ref="aliyun/qwen-turbo",
+                    result=ModelTestResult(
+                        provider="aliyun",
+                        protocol="openai-compat",
+                        model="qwen-turbo",
+                        base_url="https://dashscope.example/v1",
+                        key_status="available",
+                        status=ModelTestStatus.RATE_LIMITED,
+                        reason="limited",
+                        suggestion="稍后重试。",
+                    ),
+                ),
+                ModelHealthItem(
+                    ref="legacy/claude-sonnet",
+                    result=ModelTestResult(
+                        provider="legacy",
+                        protocol="anthropic",
+                        model="claude-sonnet",
+                        base_url="https://anthropic.example",
+                        key_status="missing",
+                        status=ModelTestStatus.MISSING_KEY,
+                        reason="API key is missing.",
+                        suggestion="请检查 ANTHROPIC_API_KEY 是否已设置。",
+                    ),
+                ),
+            ],
+        )
+        test_models = AsyncMock(return_value=result)
+        ctx = _make_context(args="test --all", ui=ui)
+        ctx.config = {"providers": providers, "test_models": test_models}
+
+        await handle_model(ctx)
+
+        test_models.assert_awaited_once_with("all", None)
+        text = ui.messages[0]
+        assert "模型健康检查" in text
+        assert "Scope: all configured models" in text
+        assert "Total: 3" in text
+        assert "OK" in text
+        assert "aliyun/qwen-plus" in text
+        assert "12 ms" in text
+        assert "FAILED" in text
+        assert "aliyun/qwen-turbo" in text
+        assert "rate_limited" in text
+        assert "SKIPPED" in text
+        assert "legacy/claude-sonnet" in text
+        assert "missing_key" in text
+        assert "No API keys were displayed." in text
+        assert "Config was not modified." in text
+        assert "dashscope-placeholder" not in text
+        assert "legacy-placeholder" not in text
+
+    @pytest.mark.asyncio
+    async def test_model_test_provider_and_fallback_call_batch_entry(self) -> None:
+        from codepacex.commands.handlers.model import handle_model
+        from codepacex.model_health import ModelHealthResult, ModelHealthScope
+
+        ui = MockUI()
+        providers = self._providers()
+        provider_result = ModelHealthResult(
+            scope=ModelHealthScope.PROVIDER,
+            scope_label="provider aliyun",
+        )
+        fallback_result = ModelHealthResult(
+            scope=ModelHealthScope.FALLBACK,
+            scope_label="fallback chain",
+            note="Fallback: not configured",
+        )
+        test_models = AsyncMock(side_effect=[provider_result, fallback_result])
+        ctx = _make_context(args="test --provider aliyun", ui=ui)
+        ctx.config = {"providers": providers, "test_models": test_models}
+
+        await handle_model(ctx)
+        test_models.assert_awaited_with("provider", "aliyun")
+        assert "Scope: provider aliyun" in ui.messages[0]
+
+        ui.messages.clear()
+        ctx.args = "test --fallback"
+        await handle_model(ctx)
+        test_models.assert_awaited_with("fallback", None)
+        assert "Fallback: not configured" in ui.messages[0]
+        assert "Config was not modified." in ui.messages[0]
+
+    @pytest.mark.asyncio
+    async def test_model_test_batch_bad_args(self) -> None:
+        from codepacex.commands.handlers.model import handle_model
+
+        ui = MockUI()
+        providers = self._providers()
+        test_models = AsyncMock()
+        ctx = _make_context(args="test --provider", ui=ui)
+        ctx.config = {"providers": providers, "test_models": test_models}
+
+        await handle_model(ctx)
+        assert "用法" in ui.messages[0]
+
+        ui.messages.clear()
+        ctx.args = "test --provider aliyun/qwen-plus"
+        await handle_model(ctx)
+        assert "用法: /model test --provider <provider>" in ui.messages[0]
+
+        ui.messages.clear()
+        ctx.args = "test --unknown"
+        await handle_model(ctx)
+        assert "用法" in ui.messages[0]
+        test_models.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_model_test_uses_specified_target(self) -> None:
         from codepacex.commands.handlers.model import handle_model
         from codepacex.model_test import ModelTestResult, ModelTestStatus

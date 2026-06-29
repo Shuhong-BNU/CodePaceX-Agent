@@ -8,6 +8,7 @@ from typing import Any
 from codepacex.commands.registry import Command, CommandContext, CommandType
 from codepacex.model_fallback import parse_model_ref
 from codepacex.model_discovery import ModelDiscoveryResult
+from codepacex.model_health import ModelHealthResult
 from codepacex.model_test import ModelTestResult
 
 
@@ -78,6 +79,20 @@ async def _call_test(
     return result
 
 
+async def _call_health(
+    ctx: CommandContext,
+    scope: str,
+    provider_name: str | None = None,
+) -> ModelHealthResult | tuple[bool, str]:
+    test_models = ctx.config.get("test_models") if ctx.config else None
+    if not callable(test_models):
+        return False, "当前界面不支持批量模型健康检查。"
+    result = test_models(scope, provider_name)
+    if inspect.isawaitable(result):
+        result = await result
+    return result
+
+
 async def _call_discover(
     ctx: CommandContext,
     provider_name: str | None,
@@ -108,6 +123,47 @@ def _format_test_result(result: ModelTestResult) -> str:
     if result.suggestion:
         lines.append(f"Suggestion: {result.suggestion}")
     return "\n".join(lines)
+
+
+def _format_health_result(result: ModelHealthResult) -> str:
+    lines = [
+        "模型健康检查",
+        "────────────",
+        f"Scope: {result.scope_label}",
+        f"Total: {result.total}",
+    ]
+    if result.note:
+        lines.append(result.note)
+
+    _append_health_group(lines, "OK", result.ok_items)
+    _append_health_group(lines, "FAILED", result.failed_items)
+    _append_health_group(lines, "SKIPPED", result.skipped_items)
+
+    lines.extend(
+        [
+            "",
+            "Notes:",
+            "- No API keys were displayed.",
+            "- Config was not modified.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _append_health_group(lines: list[str], title: str, items: list[Any]) -> None:
+    if not items:
+        return
+    lines.extend(["", title])
+    for item in items:
+        result = item.result
+        detail = (
+            f"{result.latency_ms} ms"
+            if result.ok and result.latency_ms is not None
+            else result.status.value
+        )
+        lines.append(f"  {item.ref:<36} {detail}")
+        if not result.ok and result.suggestion:
+            lines.append(f"    {result.suggestion}")
 
 
 def _format_discovery_result(result: ModelDiscoveryResult) -> str:
@@ -213,6 +269,32 @@ async def handle_model(ctx: CommandContext) -> None:
 
     if subcmd == "test":
         target = rest.strip()
+        if target.startswith("--"):
+            parts = target.split()
+            result: ModelHealthResult | tuple[bool, str]
+            if parts == ["--all"]:
+                result = await _call_health(ctx, "all")
+            elif parts == ["--fallback"]:
+                result = await _call_health(ctx, "fallback")
+            elif len(parts) == 2 and parts[0] == "--provider":
+                if "/" in parts[1]:
+                    ctx.ui.add_system_message("用法: /model test --provider <provider>")
+                    return
+                result = await _call_health(ctx, "provider", parts[1])
+            else:
+                ctx.ui.add_system_message(
+                    "用法: /model test [<provider>/<model>|--all|--provider <provider>|--fallback]"
+                )
+                return
+
+            if isinstance(result, ModelHealthResult):
+                ctx.ui.add_system_message(_format_health_result(result))
+            elif isinstance(result, tuple) and len(result) == 2:
+                ctx.ui.add_system_message(str(result[1]))
+            else:
+                ctx.ui.add_system_message(str(result))
+            return
+
         provider_name: str | None = None
         model: str | None = None
         if target:
@@ -278,7 +360,7 @@ async def handle_model(ctx: CommandContext) -> None:
         return
 
     ctx.ui.add_system_message(
-        "用法: /model [current|list|discover [provider]|test [<provider>/<model>]|use <provider>/<model>]\n"
+        "用法: /model [current|list|discover [provider]|test [<provider>/<model>|--all|--provider <provider>|--fallback]|use <provider>/<model>]\n"
         "fallback 会在请求失败时按配置临时尝试备用模型。"
     )
 
@@ -287,7 +369,7 @@ MODEL_COMMAND = Command(
     name="model",
     aliases=[],
     description="查看或切换当前会话模型",
-    usage="/model [current|list|discover [provider]|test [<provider>/<model>]|use <provider>/<model>]",
+    usage="/model [current|list|discover [provider]|test [<provider>/<model>|--all|--provider <provider>|--fallback]|use <provider>/<model>]",
     type=CommandType.LOCAL,
     handler=handle_model,
 )
