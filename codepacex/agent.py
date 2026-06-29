@@ -458,6 +458,51 @@ class Agent:
             for n in self.hook_engine.drain_notifications()
         ]
 
+    async def _prepare_runtime_request(
+        self,
+        conversation: ConversationManager,
+        runtime: _ModelRuntime,
+        env_context: str,
+        *,
+        apply_budget: bool = True,
+    ) -> tuple[ConversationManager | None, list[dict[str, Any]], list[AgentEvent], str]:
+        events: list[AgentEvent] = []
+        compact_result = await auto_compact(
+            conversation,
+            runtime.client,
+            runtime.context_window,
+            self.session_dir,
+            protocol=runtime.protocol,
+            breaker=self.compact_breaker,
+            recovery=self.recovery_state,
+            tool_schemas=self.registry.get_all_schemas(runtime.protocol),
+            transcript_path=self._transcript_path,
+        )
+        if isinstance(compact_result, CompactEvent):
+            events.append(
+                CompactNotification(
+                    before_tokens=compact_result.before_tokens,
+                    message=f"上下文已压缩（压缩前 {compact_result.before_tokens:,} tokens）",
+                    boundary=compact_result.boundary,
+                )
+            )
+            conversation.inject_environment(env_context)
+            mem = self.memory_manager.load() if self.memory_manager else ""
+            conversation.inject_long_term_memory(self.instructions_content, mem)
+        elif isinstance(compact_result, str):
+            return None, [], events, compact_result
+
+        tools = self.registry.get_all_schemas(runtime.protocol)
+        if not apply_budget:
+            return None, tools, events, ""
+
+        api_conv, new_records = apply_tool_result_budget(
+            conversation, self.session_dir, self.replacement_state
+        )
+        if new_records:
+            append_replacement_records(self.session_dir, new_records)
+        return api_conv, tools, events, ""
+
     async def run(self, conversation: ConversationManager) -> AsyncIterator[AgentEvent]:
         self._current_conversation = conversation
         fallback_history_exists = bool(conversation.history)
@@ -509,30 +554,13 @@ class Agent:
                     conversation.add_system_reminder(note)
 
             # Layer 2: 接近 context window 上限时自动 compact（操作原始对话）
-            compact_result = await auto_compact(
-                conversation,
-                turn_runtime.client,
-                turn_runtime.context_window,
-                self.session_dir,
-                protocol=turn_runtime.protocol,
-                breaker=self.compact_breaker,
-                recovery=self.recovery_state,
-                tool_schemas=self.registry.get_all_schemas(turn_runtime.protocol),
-                transcript_path=self._transcript_path,
+            _api_conv, tools, prep_events, prep_error = await self._prepare_runtime_request(
+                conversation, turn_runtime, env_context, apply_budget=False
             )
-            if isinstance(compact_result, CompactEvent):
-                yield CompactNotification(
-                    before_tokens=compact_result.before_tokens,
-                    message=f"上下文已压缩（压缩前 {compact_result.before_tokens:,} tokens）",
-                    boundary=compact_result.boundary,
-                )
-                conversation.inject_environment(env_context)
-                mem = self.memory_manager.load() if self.memory_manager else ""
-                conversation.inject_long_term_memory(
-                    self.instructions_content, mem
-                )
-            elif isinstance(compact_result, str):
-                yield ErrorEvent(message=compact_result)
+            for event in prep_events:
+                yield event
+            if prep_error:
+                yield ErrorEvent(message=prep_error)
 
             if self.hook_engine:
                 ctx = self._build_hook_context("pre_send")
@@ -574,11 +602,10 @@ class Agent:
                     + "\n".join(deferred_names)
                 )
 
+            # pre_send、plan reminders、hook 通知和 deferred tool reminders 可能刚刚
+            # 写入对话，因此主请求在发送前再重建一次 api_conv。fallback runtime
+            # 也会在切换后走同一重建路径，避免复用 primary runtime 的 prompt。
             tools = self.registry.get_all_schemas(turn_runtime.protocol)
-
-            # Layer 1: 在 LLM 调用前应用 tool-result budget，确保 api_conv 反映
-            # 本轮迭代中所有已发生的写入（system reminders、hook 通知等）。
-            # 原始 conversation 不会被修改；替换决策保存在 self.replacement_state 中。
             api_conv, _new_records = apply_tool_result_budget(
                 conversation, self.session_dir, self.replacement_state
             )
@@ -657,20 +684,42 @@ class Agent:
                                 )
                             )
                             continue
-                        next_runtime = _ModelRuntime(
+                        candidate_runtime = _ModelRuntime(
                             client=fallback_client,
                             protocol=candidate.provider.protocol,
                             context_window=candidate.provider.get_context_window(),
                             provider=candidate.provider,
                             used_fallback=True,
                         )
+                        (
+                            fallback_api_conv,
+                            fallback_tools,
+                            fallback_prep_events,
+                            fallback_prep_error,
+                        ) = await self._prepare_runtime_request(
+                            conversation, candidate_runtime, env_context
+                        )
+                        for event in fallback_prep_events:
+                            yield event
+                        if fallback_prep_error or fallback_api_conv is None:
+                            tried_fallback_refs.add(candidate.ref.label)
+                            yield RetryEvent(
+                                reason=(
+                                    f"跳过备用模型 {candidate.ref.label}: "
+                                    "context_window 不足或上下文重建失败。"
+                                    f"{fallback_prep_error}"
+                                )
+                            )
+                            continue
+                        api_conv = fallback_api_conv
+                        tools = fallback_tools
+                        next_runtime = candidate_runtime
                         break
 
                     if next_runtime is None:
                         raise
 
                     turn_runtime = next_runtime
-                    tools = self.registry.get_all_schemas(turn_runtime.protocol)
 
             response = collector.response
             if turn_runtime.used_fallback and not fallback_success_announced:

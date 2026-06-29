@@ -19,6 +19,7 @@ class RaisingClient(LLMClient):
     def __init__(self, exc: Exception, *, after_text: bool = False) -> None:
         self.exc = exc
         self.after_text = after_text
+        self.histories: list[list[str]] = []
 
     async def stream(
         self,
@@ -26,6 +27,7 @@ class RaisingClient(LLMClient):
         system: str = "",
         tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[StreamEvent]:
+        self.histories.append([m.content for m in conversation.history])
         if self.after_text:
             yield TextDelta("partial")
         raise self.exc
@@ -35,6 +37,7 @@ class SimpleClient(LLMClient):
     def __init__(self, text: str) -> None:
         self.text = text
         self.calls = 0
+        self.histories: list[list[str]] = []
 
     async def stream(
         self,
@@ -43,6 +46,7 @@ class SimpleClient(LLMClient):
         tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         self.calls += 1
+        self.histories.append([m.content for m in conversation.history])
         yield TextDelta(self.text)
         yield StreamEnd("end_turn", input_tokens=3, output_tokens=4)
 
@@ -113,6 +117,78 @@ async def test_recoverable_error_falls_back_before_stream(monkeypatch) -> None:
     assistant_messages = [m for m in conv.history if m.role == "assistant"]
     assert len(assistant_messages) == 1
     assert assistant_messages[0].content == "from fallback"
+
+
+@pytest.mark.asyncio
+async def test_fallback_rebuilds_prompt_with_candidate_runtime(monkeypatch) -> None:
+    primary = _provider(
+        "aliyun",
+        "openai-compat",
+        "qwen-max",
+        context_window=200_000,
+    )
+    backup = _provider(
+        "aliyun",
+        "openai-compat",
+        "qwen-plus",
+        context_window=4_000,
+    )
+    primary_client = RaisingClient(RateLimitError("rate limited"))
+    fallback_client = SimpleClient("from rebuilt fallback")
+    compact_calls: list[tuple[int, str]] = []
+    budget_calls = 0
+
+    async def fake_auto_compact(
+        conversation,
+        client,
+        context_window,
+        session_dir,
+        protocol="anthropic",
+        **kwargs,
+    ):
+        compact_calls.append((context_window, protocol))
+        return None
+
+    def fake_apply_tool_result_budget(conversation, session_dir, state):
+        nonlocal budget_calls
+        budget_calls += 1
+        prepared = ConversationManager()
+        prepared.add_user_message(f"prepared-{budget_calls}")
+        return prepared, []
+
+    monkeypatch.setattr("codepacex.agent.auto_compact", fake_auto_compact)
+    monkeypatch.setattr(
+        "codepacex.agent.apply_tool_result_budget",
+        fake_apply_tool_result_budget,
+    )
+    monkeypatch.setattr(
+        "codepacex.agent.create_client",
+        lambda provider: fallback_client,
+    )
+    agent = Agent(
+        primary_client,
+        create_default_registry(),
+        primary.protocol,
+        active_provider=primary,
+        providers=[primary, backup],
+        fallback=["aliyun/qwen-plus"],
+    )
+    conv = ConversationManager()
+    conv.add_user_message("hello")
+
+    events = await _collect(agent, conv)
+
+    assert [e.text for e in events if isinstance(e, StreamText)] == [
+        "from rebuilt fallback"
+    ]
+    assert compact_calls == [
+        (200_000, "openai-compat"),
+        (4_000, "openai-compat"),
+    ]
+    assert primary_client.histories == [["prepared-1"]]
+    assert fallback_client.histories == [["prepared-2"]]
+    assert agent.client is primary_client
+    assert agent.active_provider is primary
 
 
 @pytest.mark.asyncio
@@ -276,3 +352,49 @@ async def test_missing_key_fallback_candidate_is_skipped(monkeypatch) -> None:
     assert [e.text for e in events if isinstance(e, StreamText)] == [
         "from second fallback"
     ]
+
+
+@pytest.mark.asyncio
+async def test_fallback_candidate_skipped_when_prompt_rebuild_fails(monkeypatch) -> None:
+    primary = _provider("aliyun", "openai-compat", "qwen-max", context_window=200_000)
+    backup = _provider("aliyun", "openai-compat", "qwen-plus", context_window=4_000)
+    primary_client = RaisingClient(RateLimitError("rate limited"))
+    fallback_client = SimpleClient("should not stream")
+    compact_calls = 0
+
+    async def fake_auto_compact(*args, **kwargs):
+        nonlocal compact_calls
+        compact_calls += 1
+        if compact_calls == 2:
+            return "摘要生成失败: prompt too long"
+        return None
+
+    monkeypatch.setattr("codepacex.agent.auto_compact", fake_auto_compact)
+    monkeypatch.setattr(
+        "codepacex.agent.create_client",
+        lambda provider: fallback_client,
+    )
+    agent = Agent(
+        primary_client,
+        create_default_registry(),
+        primary.protocol,
+        active_provider=primary,
+        providers=[primary, backup],
+        fallback=["aliyun/qwen-plus"],
+    )
+    conv = ConversationManager()
+    conv.add_user_message("hello")
+    events: list = []
+
+    with pytest.raises(RateLimitError):
+        async for event in agent.run(conv):
+            events.append(event)
+
+    retries = [e.reason for e in events if isinstance(e, RetryEvent)]
+    assert any(
+        "跳过备用模型 aliyun/qwen-plus" in r and "context_window" in r
+        for r in retries
+    )
+    assert fallback_client.calls == 0
+    assert agent.client is primary_client
+    assert agent.active_provider is primary
