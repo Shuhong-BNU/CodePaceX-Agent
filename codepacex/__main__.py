@@ -85,6 +85,7 @@ def main() -> None:
 
         server = RemoteServer(
             providers=config.providers,
+            fallback=config.fallback,
             mcp_servers=config.mcp_servers,
             hook_engine=hook_engine,
         )
@@ -96,6 +97,7 @@ def main() -> None:
 
     app = CodePaceXApp(
         providers=config.providers,
+        fallback=config.fallback,
         permission_mode=permission_mode,
         mcp_servers=config.mcp_servers,
         hook_engine=hook_engine,
@@ -185,6 +187,9 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
         context_window=provider.get_context_window(),
         instructions_content=instructions,
         hook_engine=hook_engine,
+        active_provider=provider,
+        providers=config.providers,
+        fallback=config.fallback,
     )
 
     wt_cfg = config.worktree or WorktreeConfig()
@@ -360,4 +365,3 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
 
 if __name__ == "__main__":
     main()
-

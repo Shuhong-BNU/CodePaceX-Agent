@@ -262,6 +262,12 @@ providers:
     models:
       - local-vllm-model
 
+fallback:
+  - aliyun/qwen-max
+  - aliyun/qwen-plus
+  - deepseek/deepseek-chat
+  - openrouter/openai/gpt-4o-mini
+
 permission_mode: default
 enable_fork: true
 enable_verification_agent: true
@@ -300,6 +306,13 @@ MCP 的 `env` 和 `headers` 配置仍支持 `${...}` 环境变量展开。
 或模型列表 API 为准。本地 provider 需要先启动 Ollama、LM Studio 或 vLLM 等服务；
 本地 OpenAI-compatible 服务通常不校验 key，但 OpenAI SDK 仍要求 key 非空，因此可
 使用 `api_key: ollama`、`api_key: lm-studio` 这类占位值。
+
+`fallback` 是全局备用模型链，条目格式为 `provider/model`，按第一个 `/` 分割，
+因此兼容 `openrouter/openai/gpt-4o-mini` 这类模型名。当前主模型遇到限流、网络
+错误、超时、服务端错误或 overloaded 时，会在尚未产生可见输出前尝试备用模型。
+fallback 成功只影响本轮请求，不会自动切换当前 active model，也不会修改配置文件。
+为了避免不同协议的 thinking/reasoning/tool 历史不兼容，已有对话历史时默认只会
+尝试相同协议的备用模型。
 
 协议取值：
 
@@ -353,7 +366,8 @@ TUI 会话中可以使用 `/model` 管理当前会话的模型选择：
 - `/model test` 或 `/model test <provider>/<model>`：对当前或指定 provider/model 发起一次最小连通性测试。
 - `/model use <provider>/<model>`：切换当前会话后续请求使用的 provider/model。
 
-`/model` 只使用配置中的候选模型列表，不会联网发现模型。fallback 和运行时自动路由尚未实现。
+`/model` 只使用配置中的候选模型列表，不会联网发现模型。fallback 链只在请求失败时
+按配置尝试备用模型，不提供自动测速、在线模型发现或 ModelRouter。
 
 ## Plan Mode
 
