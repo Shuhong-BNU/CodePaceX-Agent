@@ -45,6 +45,19 @@ class FallbackCandidate:
     ref: ModelRef
 
 
+@dataclass(frozen=True)
+class FallbackDecision:
+    ref: ModelRef
+    candidate: FallbackCandidate | None = None
+    skip_reason: str = ""
+    current_protocol: str = ""
+    target_protocol: str = ""
+
+    @property
+    def skipped(self) -> bool:
+        return self.candidate is None
+
+
 def parse_model_ref(value: str) -> ModelRef:
     provider, model = value.split("/", 1)
     return ModelRef(provider=provider, model=model)
@@ -78,15 +91,15 @@ def classify_fallback_error(
     return FallbackError(status=status, reason=reason, suggestion=suggestion)
 
 
-def iter_fallback_candidates(
+def iter_fallback_decisions(
     refs: Sequence[str],
     providers: Sequence[ProviderConfig],
     current_provider: ProviderConfig | None,
     *,
     has_history: bool,
     tried: set[str] | None = None,
-) -> list[FallbackCandidate]:
-    """Return configured fallback candidates safe for the current history.
+) -> list[FallbackDecision]:
+    """Return configured fallback decisions for the current history.
 
     Cross-protocol candidates are skipped once history exists because existing
     thinking/tool blocks may not serialize safely under another protocol.
@@ -98,7 +111,7 @@ def iter_fallback_candidates(
     )
     current_protocol = current_provider.protocol if current_provider else ""
 
-    candidates: list[FallbackCandidate] = []
+    decisions: list[FallbackDecision] = []
     for raw in refs:
         ref = parse_model_ref(raw)
         if ref.label == current_ref or ref.label in tried:
@@ -109,11 +122,45 @@ def iter_fallback_candidates(
         if ref.model not in (provider.models or [provider.model]):
             continue
         if current_protocol and provider.protocol != current_protocol and has_history:
+            decisions.append(
+                FallbackDecision(
+                    ref=ref,
+                    skip_reason="cross_protocol_history",
+                    current_protocol=current_protocol,
+                    target_protocol=provider.protocol,
+                )
+            )
             continue
-        candidates.append(
-            FallbackCandidate(
-                provider=provider_for_model(provider, ref.model),
+        candidate = FallbackCandidate(
+            provider=provider_for_model(provider, ref.model),
+            ref=ref,
+        )
+        decisions.append(
+            FallbackDecision(
                 ref=ref,
+                candidate=candidate,
             )
         )
-    return candidates
+    return decisions
+
+
+def iter_fallback_candidates(
+    refs: Sequence[str],
+    providers: Sequence[ProviderConfig],
+    current_provider: ProviderConfig | None,
+    *,
+    has_history: bool,
+    tried: set[str] | None = None,
+) -> list[FallbackCandidate]:
+    """Return fallback candidates that are safe to try."""
+    return [
+        decision.candidate
+        for decision in iter_fallback_decisions(
+            refs,
+            providers,
+            current_provider,
+            has_history=has_history,
+            tried=tried,
+        )
+        if decision.candidate is not None
+    ]

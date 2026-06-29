@@ -415,7 +415,31 @@ class TestModelHandler:
         assert "Protocol: openai-compat" in ui.messages[0]
         assert "Model: qwen-plus" in ui.messages[0]
         assert "Base URL: https://dashscope.example/v1" in ui.messages[0]
+        assert "Fallback: not configured" in ui.messages[0]
         assert "dashscope-placeholder" not in ui.messages[0]
+
+    @pytest.mark.asyncio
+    async def test_model_current_outputs_fallback_chain(self) -> None:
+        from codepacex.commands.handlers.model import handle_model
+
+        ui = MockUI()
+        providers = self._providers()
+        ctx = _make_context(args="current", ui=ui)
+        ctx.config = {
+            "providers": providers,
+            "fallback": ["aliyun/qwen-turbo", "legacy/claude-sonnet"],
+            "get_current_provider": lambda: providers[0],
+        }
+
+        await handle_model(ctx)
+
+        text = ui.messages[0]
+        assert "Fallback: configured, 2 candidate(s)" in text
+        assert "Fallback chain:" in text
+        assert "1. aliyun/qwen-turbo" in text
+        assert "2. legacy/claude-sonnet" in text
+        assert "dashscope-placeholder" not in text
+        assert "legacy-placeholder" not in text
 
     @pytest.mark.asyncio
     async def test_model_list_outputs_providers_and_models(self) -> None:
@@ -448,6 +472,50 @@ class TestModelHandler:
         assert "key: missing" in text
         assert "dashscope-placeholder" not in text
         assert "legacy-placeholder" not in text
+
+    @pytest.mark.asyncio
+    async def test_model_list_marks_fallback_candidates(self) -> None:
+        from codepacex.commands.handlers.model import handle_model
+
+        ui = MockUI()
+        providers = self._providers()
+        ctx = _make_context(args="list", ui=ui)
+        ctx.config = {
+            "providers": providers,
+            "fallback": ["aliyun/qwen-plus", "aliyun/qwen-turbo"],
+            "get_current_provider": lambda: providers[0],
+        }
+
+        await handle_model(ctx)
+
+        text = ui.messages[0]
+        assert "qwen-plus [current] [fallback #1]" in text
+        assert "qwen-turbo [fallback #2]" in text
+
+    @pytest.mark.asyncio
+    async def test_model_list_marks_fallback_model_names_with_slash(self) -> None:
+        from codepacex.commands.handlers.model import handle_model
+        from codepacex.config import ProviderConfig
+
+        ui = MockUI()
+        provider = ProviderConfig(
+            name="openrouter",
+            protocol="openai-compat",
+            base_url="https://openrouter.example/v1",
+            api_key="placeholder",
+            default_model="openai/gpt-4o-mini",
+            models=["openai/gpt-4o-mini"],
+        )
+        ctx = _make_context(args="list", ui=ui)
+        ctx.config = {
+            "providers": [provider],
+            "fallback": ["openrouter/openai/gpt-4o-mini"],
+            "get_current_provider": lambda: provider,
+        }
+
+        await handle_model(ctx)
+
+        assert "openai/gpt-4o-mini [current] [fallback #1]" in ui.messages[0]
 
     @pytest.mark.asyncio
     async def test_model_use_switches_valid_target(self) -> None:

@@ -38,7 +38,7 @@ from codepacex.conversation import ThinkingBlock as ConvThinkingBlock
 from codepacex.memory.auto_memory import MemoryManager
 from codepacex.model_fallback import (
     classify_fallback_error,
-    iter_fallback_candidates,
+    iter_fallback_decisions,
     model_ref_for_provider,
 )
 from codepacex.permissions import (
@@ -644,14 +644,31 @@ class Agent:
                         raise
 
                     next_runtime: _ModelRuntime | None = None
-                    candidates = iter_fallback_candidates(
+                    decisions = iter_fallback_decisions(
                         self.fallback,
                         self.providers,
                         turn_runtime.provider,
                         has_history=fallback_history_exists,
                         tried=tried_fallback_refs,
                     )
-                    for candidate in candidates:
+                    for decision in decisions:
+                        if decision.skipped:
+                            tried_fallback_refs.add(decision.ref.label)
+                            if decision.skip_reason == "cross_protocol_history":
+                                yield RetryEvent(
+                                    reason=(
+                                        f"跳过备用模型 {decision.ref.label}: "
+                                        "当前会话已有历史，不能从 "
+                                        f"{decision.current_protocol} 安全 fallback 到 "
+                                        f"{decision.target_protocol}。"
+                                        "请使用同协议备用模型，或开启新会话。"
+                                    )
+                                )
+                            continue
+
+                        candidate = decision.candidate
+                        if candidate is None:
+                            continue
                         if not candidate.provider.resolve_api_key():
                             tried_fallback_refs.add(candidate.ref.label)
                             yield RetryEvent(
@@ -703,11 +720,17 @@ class Agent:
                             yield event
                         if fallback_prep_error or fallback_api_conv is None:
                             tried_fallback_refs.add(candidate.ref.label)
+                            detail = (
+                                f" 原因: {fallback_prep_error}"
+                                if fallback_prep_error
+                                else ""
+                            )
                             yield RetryEvent(
                                 reason=(
                                     f"跳过备用模型 {candidate.ref.label}: "
                                     "context_window 不足或上下文重建失败。"
-                                    f"{fallback_prep_error}"
+                                    "请减少上下文、清空会话，或选择更大 context_window 的备用模型。"
+                                    f"{detail}"
                                 )
                             )
                             continue
@@ -717,6 +740,12 @@ class Agent:
                         break
 
                     if next_runtime is None:
+                        yield RetryEvent(
+                            reason=(
+                                "备用模型链已尝试完，但没有可用模型完成本轮请求。"
+                                f"将返回当前错误: {fallback_error.status.value}。"
+                            )
+                        )
                         raise
 
                     turn_runtime = next_runtime

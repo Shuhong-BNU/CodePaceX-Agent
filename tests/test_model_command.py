@@ -92,6 +92,15 @@ def test_switch_model_updates_runtime_references() -> None:
     assert agent_tool._provider_config is created_provider
 
 
+def test_command_context_includes_fallback_config() -> None:
+    app, _agent, _tool_search, _agent_tool = _app_with_runtime()
+    app.fallback = ["openai/gpt-4o-mini"]
+
+    ctx = app._build_command_context("current")
+
+    assert ctx.config["fallback"] == ["openai/gpt-4o-mini"]
+
+
 def test_switch_model_rejects_while_streaming() -> None:
     app, agent, _tool_search, _agent_tool = _app_with_runtime()
     old_client = app.client

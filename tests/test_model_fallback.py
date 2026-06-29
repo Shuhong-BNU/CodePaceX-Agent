@@ -7,7 +7,12 @@ from typing import Any, AsyncIterator
 import pytest
 
 from codepacex.agent import Agent, RetryEvent, StreamText
-from codepacex.client import AuthenticationError, LLMClient, RateLimitError
+from codepacex.client import (
+    AuthenticationError,
+    LLMClient,
+    NetworkError,
+    RateLimitError,
+)
 from codepacex.config import ProviderConfig
 from codepacex.conversation import ConversationManager
 from codepacex.model_fallback import parse_model_ref
@@ -273,11 +278,18 @@ async def test_cross_protocol_fallback_skipped_when_history_exists(monkeypatch) 
         return SimpleClient("unused")
 
     monkeypatch.setattr("codepacex.agent.create_client", fake_create_client)
+    events: list = []
 
     with pytest.raises(RateLimitError):
-        await _collect(agent, conv)
+        async for event in agent.run(conv):
+            events.append(event)
 
     assert calls == 0
+    retries = [e.reason for e in events if isinstance(e, RetryEvent)]
+    assert any("跳过备用模型 openai/gpt-5" in r for r in retries)
+    assert any("anthropic 安全 fallback 到 openai" in r for r in retries)
+    assert any("请使用同协议备用模型，或开启新会话" in r for r in retries)
+    assert any("备用模型链已尝试完" in r for r in retries)
 
 
 @pytest.mark.asyncio
@@ -355,6 +367,83 @@ async def test_missing_key_fallback_candidate_is_skipped(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_all_missing_key_fallback_candidates_emit_exhausted(monkeypatch) -> None:
+    monkeypatch.delenv("CODEPACEX_TEST_MISSING_KEY", raising=False)
+    primary = _provider("aliyun", "openai-compat", "qwen-max")
+    missing = _provider(
+        "aliyun",
+        "openai-compat",
+        "qwen-plus",
+        api_key="",
+        api_key_env="CODEPACEX_TEST_MISSING_KEY",
+    )
+    agent = Agent(
+        RaisingClient(RateLimitError("rate limited")),
+        create_default_registry(),
+        primary.protocol,
+        active_provider=primary,
+        providers=[primary, missing],
+        fallback=["aliyun/qwen-plus"],
+    )
+    conv = ConversationManager()
+    conv.add_user_message("hello")
+    events: list = []
+    calls = 0
+
+    def fake_create_client(provider: ProviderConfig) -> LLMClient:
+        nonlocal calls
+        calls += 1
+        return SimpleClient("unused")
+
+    monkeypatch.setattr("codepacex.agent.create_client", fake_create_client)
+
+    with pytest.raises(RateLimitError):
+        async for event in agent.run(conv):
+            events.append(event)
+
+    retries = [e.reason for e in events if isinstance(e, RetryEvent)]
+    assert calls == 0
+    assert any("跳过备用模型 aliyun/qwen-plus: missing_key" in r for r in retries)
+    assert any("备用模型链已尝试完" in r and "rate_limited" in r for r in retries)
+
+
+@pytest.mark.asyncio
+async def test_failing_fallback_candidate_emits_exhausted(monkeypatch) -> None:
+    primary = _provider("aliyun", "openai-compat", "qwen-max")
+    backup = _provider("aliyun", "openai-compat", "qwen-plus")
+    fallback_client = RaisingClient(NetworkError("fallback network down"))
+    created: list[str] = []
+    agent = Agent(
+        RaisingClient(RateLimitError("rate limited")),
+        create_default_registry(),
+        primary.protocol,
+        active_provider=primary,
+        providers=[primary, backup],
+        fallback=["aliyun/qwen-plus"],
+    )
+    conv = ConversationManager()
+    conv.add_user_message("hello")
+    events: list = []
+
+    def fake_create_client(provider: ProviderConfig) -> LLMClient:
+        created.append(f"{provider.name}/{provider.model}")
+        return fallback_client
+
+    monkeypatch.setattr("codepacex.agent.create_client", fake_create_client)
+
+    with pytest.raises(NetworkError):
+        async for event in agent.run(conv):
+            events.append(event)
+
+    retries = [e.reason for e in events if isinstance(e, RetryEvent)]
+    assert created == ["aliyun/qwen-plus"]
+    assert any("正在尝试备用模型 aliyun/qwen-plus" in r for r in retries)
+    assert any("备用模型链已尝试完" in r and "network_error" in r for r in retries)
+    assert agent.client is not fallback_client
+    assert agent.active_provider is primary
+
+
+@pytest.mark.asyncio
 async def test_fallback_candidate_skipped_when_prompt_rebuild_fails(monkeypatch) -> None:
     primary = _provider("aliyun", "openai-compat", "qwen-max", context_window=200_000)
     backup = _provider("aliyun", "openai-compat", "qwen-plus", context_window=4_000)
@@ -392,9 +481,13 @@ async def test_fallback_candidate_skipped_when_prompt_rebuild_fails(monkeypatch)
 
     retries = [e.reason for e in events if isinstance(e, RetryEvent)]
     assert any(
-        "跳过备用模型 aliyun/qwen-plus" in r and "context_window" in r
+        "跳过备用模型 aliyun/qwen-plus" in r
+        and "context_window" in r
+        and "请减少上下文" in r
+        and "摘要生成失败" in r
         for r in retries
     )
+    assert any("备用模型链已尝试完" in r for r in retries)
     assert fallback_client.calls == 0
     assert agent.client is primary_client
     assert agent.active_provider is primary
