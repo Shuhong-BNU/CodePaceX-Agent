@@ -8,6 +8,7 @@ import pytest
 
 from codepacex.app import CodePaceXApp
 from codepacex.config import ProviderConfig
+from codepacex.model_discovery import ModelDiscoveryResult, ModelDiscoveryStatus
 from codepacex.model_test import ModelTestResult, ModelTestStatus
 from codepacex.tools.agent_tool import AgentTool
 from codepacex.tools.impl.tool_search import ToolSearchTool
@@ -99,6 +100,7 @@ def test_command_context_includes_fallback_config() -> None:
     ctx = app._build_command_context("current")
 
     assert ctx.config["fallback"] == ["openai/gpt-4o-mini"]
+    assert callable(ctx.config["discover_models"])
 
 
 def test_switch_model_rejects_while_streaming() -> None:
@@ -258,6 +260,89 @@ async def test_model_test_current_model_does_not_change_runtime_state() -> None:
     assert app.conversation.history == history_before
     app.session.assert_not_called()
     app.memory_manager.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_model_discover_current_provider_does_not_change_runtime_state() -> None:
+    app, agent, tool_search, agent_tool = _app_with_runtime()
+    old_client = app.client
+    old_provider = app._selected_provider
+    app.conversation.add_user_message("existing")
+    history_before = list(app.conversation.history)
+    app.session = MagicMock()
+    app.memory_manager = MagicMock()
+    result = ModelDiscoveryResult(
+        provider="anthropic",
+        protocol="anthropic",
+        base_url="https://anthropic.example",
+        key_status="available",
+        status=ModelDiscoveryStatus.UNSUPPORTED_PROVIDER,
+        reason="unsupported_provider",
+    )
+
+    with patch("codepacex.app.discover_provider_models", AsyncMock(return_value=result)) as mk:
+        actual = await app.discover_models()
+
+    assert actual is result
+    mk.assert_awaited_once()
+    discovered_provider = mk.call_args.args[0]
+    assert discovered_provider.name == "anthropic"
+    assert discovered_provider.model == "claude-sonnet"
+    assert app.client is old_client
+    assert app._selected_provider is old_provider
+    assert agent.client is old_client
+    assert agent.protocol == "anthropic"
+    assert agent.context_window == 200_000
+    assert app.skill_executor.client is old_client
+    assert app.skill_executor.protocol == "anthropic"
+    assert tool_search._protocol == "anthropic"
+    assert agent_tool._provider_config is old_provider
+    assert app.conversation.history == history_before
+    app.session.assert_not_called()
+    app.memory_manager.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_model_discover_specified_provider_does_not_switch_active_model() -> None:
+    app, agent, _tool_search, _agent_tool = _app_with_runtime()
+    old_client = app.client
+    old_provider = app._selected_provider
+    app.conversation.add_user_message("existing")
+    history_before = list(app.conversation.history)
+    result = ModelDiscoveryResult(
+        provider="openai",
+        protocol="openai",
+        base_url="https://openai.example/v1",
+        key_status="available",
+        status=ModelDiscoveryStatus.UNSUPPORTED_PROVIDER,
+        reason="unsupported_provider",
+    )
+
+    with patch("codepacex.app.discover_provider_models", AsyncMock(return_value=result)) as mk:
+        actual = await app.discover_models("openai")
+
+    assert actual is result
+    discovered_provider = mk.call_args.args[0]
+    assert discovered_provider.name == "openai"
+    assert discovered_provider.model == "gpt-4o"
+    assert app.client is old_client
+    assert app._selected_provider is old_provider
+    assert agent.client is old_client
+    assert agent.protocol == "anthropic"
+    assert agent.context_window == 200_000
+    assert app.conversation.history == history_before
+
+
+@pytest.mark.asyncio
+async def test_model_discover_rejects_unknown_provider() -> None:
+    app, _agent, _tool_search, _agent_tool = _app_with_runtime()
+
+    with patch("codepacex.app.discover_provider_models") as mk:
+        ok, message = await app.discover_models("missing")
+
+    assert ok is False
+    assert "未知 provider" in message
+    mk.assert_not_called()
 
 
 @pytest.mark.asyncio

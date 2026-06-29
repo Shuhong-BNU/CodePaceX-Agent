@@ -7,6 +7,7 @@ from typing import Any
 
 from codepacex.commands.registry import Command, CommandContext, CommandType
 from codepacex.model_fallback import parse_model_ref
+from codepacex.model_discovery import ModelDiscoveryResult
 from codepacex.model_test import ModelTestResult
 
 
@@ -77,6 +78,19 @@ async def _call_test(
     return result
 
 
+async def _call_discover(
+    ctx: CommandContext,
+    provider_name: str | None,
+) -> ModelDiscoveryResult | tuple[bool, str]:
+    discover_models = ctx.config.get("discover_models") if ctx.config else None
+    if not callable(discover_models):
+        return False, "当前界面不支持模型发现。"
+    result = discover_models(provider_name)
+    if inspect.isawaitable(result):
+        result = await result
+    return result
+
+
 def _format_test_result(result: ModelTestResult) -> str:
     lines = [
         "模型测试",
@@ -93,6 +107,31 @@ def _format_test_result(result: ModelTestResult) -> str:
         lines.append(f"Latency: {result.latency_ms} ms")
     if result.suggestion:
         lines.append(f"Suggestion: {result.suggestion}")
+    return "\n".join(lines)
+
+
+def _format_discovery_result(result: ModelDiscoveryResult) -> str:
+    lines = [
+        "模型发现",
+        "────────",
+        f"Provider: {result.provider}",
+        f"Protocol: {result.protocol}",
+        f"Base URL: {result.base_url}",
+        f"Key: {result.key_status}",
+        f"Result: {'ok' if result.ok else 'failed'}",
+        f"Reason: {result.reason}",
+    ]
+    if result.latency_ms is not None:
+        lines.append(f"Latency: {result.latency_ms} ms")
+    if result.ok:
+        lines.append("Models:")
+        if result.models:
+            lines.extend(f"  - {model}" for model in result.models)
+        else:
+            lines.append("  (none)")
+    if result.suggestion:
+        lines.append(f"Suggestion: {result.suggestion}")
+    lines.append("Config was not modified.")
     return "\n".join(lines)
 
 
@@ -149,6 +188,27 @@ async def handle_model(ctx: CommandContext) -> None:
                 suffix = " [" + "] [".join(markers) + "]" if markers else ""
                 lines.append(f"    - {model}{suffix}")
         ctx.ui.add_system_message("\n".join(lines))
+        return
+
+    if subcmd == "discover":
+        target = rest.strip()
+        if target and " " in target:
+            ctx.ui.add_system_message("用法: /model discover [provider]")
+            return
+        provider_name = target or None
+        if provider_name is not None:
+            provider = next((p for p in _providers(ctx) if p.name == provider_name), None)
+            if provider is None:
+                ctx.ui.add_system_message(f"未知 provider: {provider_name}")
+                return
+
+        result = await _call_discover(ctx, provider_name)
+        if isinstance(result, ModelDiscoveryResult):
+            ctx.ui.add_system_message(_format_discovery_result(result))
+        elif isinstance(result, tuple) and len(result) == 2:
+            ctx.ui.add_system_message(str(result[1]))
+        else:
+            ctx.ui.add_system_message(str(result))
         return
 
     if subcmd == "test":
@@ -218,7 +278,7 @@ async def handle_model(ctx: CommandContext) -> None:
         return
 
     ctx.ui.add_system_message(
-        "用法: /model [current|list|test [<provider>/<model>]|use <provider>/<model>]\n"
+        "用法: /model [current|list|discover [provider]|test [<provider>/<model>]|use <provider>/<model>]\n"
         "fallback 会在请求失败时按配置临时尝试备用模型。"
     )
 
@@ -227,7 +287,7 @@ MODEL_COMMAND = Command(
     name="model",
     aliases=[],
     description="查看或切换当前会话模型",
-    usage="/model [current|list|test [<provider>/<model>]|use <provider>/<model>]",
+    usage="/model [current|list|discover [provider]|test [<provider>/<model>]|use <provider>/<model>]",
     type=CommandType.LOCAL,
     handler=handle_model,
 )

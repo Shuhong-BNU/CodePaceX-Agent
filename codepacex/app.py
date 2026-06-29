@@ -65,6 +65,10 @@ from codepacex.memory import (
     make_compact_boundary,
     render_reminder,
 )
+from codepacex.model_discovery import (
+    ModelDiscoveryResult,
+    discover_provider_models,
+)
 from codepacex.model_test import ModelTestResult, test_provider_model
 from codepacex.permissions import (
     DangerousCommandDetector,
@@ -942,6 +946,23 @@ class CodePaceXApp(App):
     def get_current_provider(self) -> ProviderConfig | None:
         return self._selected_provider
 
+    async def discover_models(
+        self,
+        provider_name: str | None = None,
+    ) -> ModelDiscoveryResult | tuple[bool, str]:
+        provider: ProviderConfig | None
+        if provider_name is None:
+            provider = self._selected_provider
+            if provider is None:
+                return False, "当前没有已选择的 provider。请使用 /model discover <provider>。"
+        else:
+            provider = next((p for p in self.providers if p.name == provider_name), None)
+            if provider is None:
+                return False, f"未知 provider: {provider_name}"
+
+        discover_provider = self._provider_for_model(provider, provider.model)
+        return await discover_provider_models(discover_provider)
+
     async def test_model(
         self,
         provider_name: str | None = None,
@@ -1127,6 +1148,7 @@ class CodePaceXApp(App):
                 "get_current_provider": self.get_current_provider,
                 "switch_model": self.switch_model,
                 "test_model": self.test_model,
+                "discover_models": self.discover_models,
             },
         )
 
