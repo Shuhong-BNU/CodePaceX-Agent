@@ -1123,6 +1123,7 @@ class CodePaceXApp(App):
                 "skill_loader": self.skill_loader,
                 "skill_executor": self.skill_executor,
                 "providers": self.providers,
+                "fallback": self.fallback,
                 "get_current_provider": self.get_current_provider,
                 "switch_model": self.switch_model,
                 "test_model": self.test_model,

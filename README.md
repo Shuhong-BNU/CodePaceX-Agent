@@ -308,11 +308,32 @@ MCP 的 `env` 和 `headers` 配置仍支持 `${...}` 环境变量展开。
 使用 `api_key: ollama`、`api_key: lm-studio` 这类占位值。
 
 `fallback` 是全局备用模型链，条目格式为 `provider/model`，按第一个 `/` 分割，
-因此兼容 `openrouter/openai/gpt-4o-mini` 这类模型名。当前主模型遇到限流、网络
-错误、超时、服务端错误或 overloaded 时，会在尚未产生可见输出前尝试备用模型。
-fallback 成功只影响本轮请求，不会自动切换当前 active model，也不会修改配置文件。
-为了避免不同协议的 thinking/reasoning/tool 历史不兼容，已有对话历史时默认只会
-尝试相同协议的备用模型。
+因此兼容 `openrouter/openai/gpt-4o-mini` 这类模型名。建议优先配置与主模型相同
+protocol 的备用模型：
+
+```yaml
+fallback:
+  - aliyun/qwen-plus
+  - aliyun/qwen-turbo
+  - deepseek/deepseek-chat
+```
+
+fallback 只是一轮请求内的临时恢复机制，不等同于 `/model use`。fallback 成功后
+不会修改当前 active provider/model，不会更新 title/status 中显示的 active model，
+也不会自动修改配置文件。下一轮请求仍会先使用当前 active model，再按 fallback 链
+处理可恢复错误。
+
+fallback 只会在尚未产生可见 streaming 输出前尝试备用模型；如果模型已经输出了部分
+内容，本轮不会继续切换，以避免同一条 assistant 回复混用多个模型。切到备用模型前，
+CodePaceX 会按备用模型的 protocol 和 context_window 重新 compact / rebuild prompt，
+不会复用主模型 runtime 下预先构造的 prompt。为了避免不同协议的
+thinking/reasoning/tool 历史不兼容，已有 conversation history 时默认跳过危险的
+cross-protocol fallback。
+
+会触发 fallback 的错误包括 rate limit、网络错误、timeout、服务端错误和 overloaded。
+不会触发 fallback 的错误包括 missing key、认证失败、权限不足、模型不存在、配置错误、
+无效 provider/model、用户取消和工具执行错误。fallback 不提供健康缓存、自动模型发现、
+测速排行或 ModelRouter。
 
 协议取值：
 
@@ -366,8 +387,9 @@ TUI 会话中可以使用 `/model` 管理当前会话的模型选择：
 - `/model test` 或 `/model test <provider>/<model>`：对当前或指定 provider/model 发起一次最小连通性测试。
 - `/model use <provider>/<model>`：切换当前会话后续请求使用的 provider/model。
 
-`/model` 只使用配置中的候选模型列表，不会联网发现模型。fallback 链只在请求失败时
-按配置尝试备用模型，不提供自动测速、在线模型发现或 ModelRouter。
+`/model current` 会显示 fallback 链摘要；`/model list` 会标注 fallback 链中的模型。
+这些展示不会联网探测健康状态，也不会显示 API Key。fallback 链只在请求失败时按配置
+临时尝试备用模型，不提供自动测速、在线模型发现或 ModelRouter。
 
 ## Plan Mode
 
