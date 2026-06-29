@@ -384,12 +384,20 @@ TUI 会话中可以使用 `/model` 管理当前会话的模型选择：
 
 - `/model` 或 `/model current`：显示当前 provider、protocol、model 和 base URL。
 - `/model list`：列出配置中的 provider 和候选模型，并标记当前 active 模型。
+- `/model discover` 或 `/model discover <provider>`：只读列出 openai-compatible provider 的 `/models` 返回结果。
 - `/model test` 或 `/model test <provider>/<model>`：对当前或指定 provider/model 发起一次最小连通性测试。
 - `/model use <provider>/<model>`：切换当前会话后续请求使用的 provider/model。
 
 `/model current` 会显示 fallback 链摘要；`/model list` 会标注 fallback 链中的模型。
 这些展示不会联网探测健康状态，也不会显示 API Key。fallback 链只在请求失败时按配置
 临时尝试备用模型，不提供自动测速、在线模型发现或 ModelRouter。
+
+`/model discover` 是只读模型发现命令，不会修改配置文件，也不会自动覆盖 `models`。
+当前最小实现只支持 `openai-compat` provider 的 `/models` 风格发现，适用于
+DashScope compatible mode、DeepSeek、OpenRouter、Ollama、LM Studio 和 vLLM 等
+兼容端点。发现结果表示 provider 的模型列表接口当前可见，不等于 health check，
+也不代表账号一定有权限或该模型一定能 chat 调用。要验证真实可调用性，请使用
+`/model test <provider>/<model>`；后续可配合 `/model test --all` 类能力做批量检查。
 
 ## Plan Mode
 

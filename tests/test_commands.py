@@ -518,6 +518,154 @@ class TestModelHandler:
         assert "openai/gpt-4o-mini [current] [fallback #1]" in ui.messages[0]
 
     @pytest.mark.asyncio
+    async def test_model_discover_defaults_to_current_provider(self) -> None:
+        from codepacex.commands.handlers.model import handle_model
+        from codepacex.model_discovery import (
+            ModelDiscoveryResult,
+            ModelDiscoveryStatus,
+        )
+
+        ui = MockUI()
+        providers = self._providers()
+        result = ModelDiscoveryResult(
+            provider="aliyun",
+            protocol="openai-compat",
+            base_url="https://dashscope.example/v1",
+            key_status="available",
+            status=ModelDiscoveryStatus.OK,
+            reason="completed",
+            models=["qwen-plus", "qwen-turbo"],
+            latency_ms=15,
+            suggestion="发现结果仅表示 provider 列表接口可见。",
+        )
+        discover = AsyncMock(return_value=result)
+        ctx = _make_context(args="discover", ui=ui)
+        ctx.config = {
+            "providers": providers,
+            "get_current_provider": lambda: providers[0],
+            "discover_models": discover,
+        }
+
+        await handle_model(ctx)
+
+        discover.assert_awaited_once_with(None)
+        text = ui.messages[0]
+        assert "模型发现" in text
+        assert "Provider: aliyun" in text
+        assert "Protocol: openai-compat" in text
+        assert "Key: available" in text
+        assert "Result: ok" in text
+        assert "Latency: 15 ms" in text
+        assert "  - qwen-plus" in text
+        assert "  - qwen-turbo" in text
+        assert "Config was not modified." in text
+        assert "dashscope-placeholder" not in text
+
+    @pytest.mark.asyncio
+    async def test_model_discover_uses_specified_provider(self) -> None:
+        from codepacex.commands.handlers.model import handle_model
+        from codepacex.model_discovery import (
+            ModelDiscoveryResult,
+            ModelDiscoveryStatus,
+        )
+
+        ui = MockUI()
+        providers = self._providers()
+        result = ModelDiscoveryResult(
+            provider="legacy",
+            protocol="anthropic",
+            base_url="https://anthropic.example",
+            key_status="available",
+            status=ModelDiscoveryStatus.UNSUPPORTED_PROVIDER,
+            reason="unsupported_provider",
+            suggestion="当前 /model discover 仅支持 openai-compat provider 的 /models 发现。",
+        )
+        discover = AsyncMock(return_value=result)
+        ctx = _make_context(args="discover legacy", ui=ui)
+        ctx.config = {
+            "providers": providers,
+            "discover_models": discover,
+        }
+
+        await handle_model(ctx)
+
+        discover.assert_awaited_once_with("legacy")
+        text = ui.messages[0]
+        assert "Provider: legacy" in text
+        assert "Result: failed" in text
+        assert "Reason: unsupported_provider" in text
+        assert "Suggestion:" in text
+        assert "Config was not modified." in text
+        assert "legacy-placeholder" not in text
+
+    @pytest.mark.asyncio
+    async def test_model_discover_unknown_provider_or_bad_args(self) -> None:
+        from codepacex.commands.handlers.model import handle_model
+
+        ui = MockUI()
+        providers = self._providers()
+        discover = AsyncMock()
+        ctx = _make_context(args="discover missing", ui=ui)
+        ctx.config = {"providers": providers, "discover_models": discover}
+
+        await handle_model(ctx)
+
+        assert "未知 provider" in ui.messages[0]
+        discover.assert_not_called()
+
+        ui.messages.clear()
+        ctx.args = "discover aliyun extra"
+        await handle_model(ctx)
+
+        assert "用法: /model discover [provider]" in ui.messages[0]
+        discover.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_model_discover_empty_and_failure_output(self) -> None:
+        from codepacex.commands.handlers.model import handle_model
+        from codepacex.model_discovery import (
+            ModelDiscoveryResult,
+            ModelDiscoveryStatus,
+        )
+
+        ui = MockUI()
+        providers = self._providers()
+        empty_result = ModelDiscoveryResult(
+            provider="aliyun",
+            protocol="openai-compat",
+            base_url="https://dashscope.example/v1",
+            key_status="available",
+            status=ModelDiscoveryStatus.OK,
+            reason="completed",
+            models=[],
+            suggestion="模型列表接口未返回模型。",
+        )
+        missing_key = ModelDiscoveryResult(
+            provider="aliyun",
+            protocol="openai-compat",
+            base_url="https://dashscope.example/v1",
+            key_status="missing",
+            status=ModelDiscoveryStatus.MISSING_KEY,
+            reason="API key is missing.",
+            suggestion="请检查 DASHSCOPE_API_KEY 是否已设置。",
+        )
+        discover = AsyncMock(side_effect=[empty_result, missing_key])
+        ctx = _make_context(args="discover aliyun", ui=ui)
+        ctx.config = {"providers": providers, "discover_models": discover}
+
+        await handle_model(ctx)
+        assert "Models:\n  (none)" in ui.messages[0]
+        assert "Config was not modified." in ui.messages[0]
+
+        ui.messages.clear()
+        await handle_model(ctx)
+        text = ui.messages[0]
+        assert "Result: failed" in text
+        assert "Reason: API key is missing." in text
+        assert "Suggestion:" in text
+        assert "dashscope-placeholder" not in text
+
+    @pytest.mark.asyncio
     async def test_model_use_switches_valid_target(self) -> None:
         from codepacex.commands.handlers.model import handle_model
 
