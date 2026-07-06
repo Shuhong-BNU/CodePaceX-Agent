@@ -106,6 +106,24 @@ ToolResult：发现入口创建 client、registry、checker、agent、conversati
 Agent：总结主调用链
 ```
 
+## Lightweight Agent Eval
+
+仓库包含一套轻量级、确定性的 Agent Eval Harness，用于在固定 fixture 上回归验证 CodePaceX 的非交互 Agent 行为。它会复制 fixture 到临时 workspace，运行当前 checkout 的 `codepacex -p`，采集 `stream-json` trace，在 grader 执行前计算 Agent 文件 diff，并输出 Markdown 与 JSON 报告。
+
+运行单个任务：
+
+```bash
+./.venv/bin/python evals/run_eval.py --task codepacex_001_config_bugfix --keep-failed
+```
+
+运行完整 suite：
+
+```bash
+./.venv/bin/python evals/run_eval.py --keep-failed
+```
+
+Eval 产物默认写入 `evals/.runs/`，该目录是本地 artifact 并被 Git 忽略。当前完整 suite 的网络稳定性排查结果只作为 pre-baseline infrastructure shakeout，不标记为 Baseline v1。详细任务、状态分类和边界见 [`evals/README.md`](evals/README.md)。
+
 ## 环境要求
 
 - macOS 或 Linux

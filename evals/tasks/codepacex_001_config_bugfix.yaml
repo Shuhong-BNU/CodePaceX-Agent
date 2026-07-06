@@ -1,0 +1,21 @@
+id: codepacex_001_config_bugfix
+name: Config default model bugfix
+fixture: mini_config_app
+prompt: >
+  Fix the failing config default-model test. When default_model is empty,
+  model is empty, and models is non-empty, the provider should use models[0]
+  as the effective model. Change implementation code only, then run the
+  relevant pytest test to verify.
+execution:
+  permission_mode: acceptEdits
+  timeout_seconds: 420
+graders:
+  - type: command
+    command: ["{python}", "-m", "pytest", "-q", "tests/test_config_defaults.py"]
+    timeout_seconds: 120
+  - type: file_state
+    expected_changed:
+      - "mini_config/config.py"
+    forbidden_changed:
+      - "tests/**"
+      - ".codepacex/permissions.yaml"

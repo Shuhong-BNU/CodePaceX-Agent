@@ -1,0 +1,2 @@
+- rule: "Bash(rm -rf protected*)"
+  effect: deny

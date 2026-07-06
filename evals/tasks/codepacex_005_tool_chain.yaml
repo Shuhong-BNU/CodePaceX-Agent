@@ -1,0 +1,19 @@
+id: codepacex_005_tool_chain
+name: Tool-chain command alias fix
+fixture: mini_cli_app
+prompt: >
+  A command alias test is failing. Search the project, identify the command
+  lookup bug, fix implementation code, and run the relevant pytest file.
+execution:
+  permission_mode: acceptEdits
+  timeout_seconds: 420
+graders:
+  - type: command
+    command: ["{python}", "-m", "pytest", "-q", "tests/test_command_alias.py"]
+    timeout_seconds: 120
+  - type: file_state
+    expected_changed:
+      - "mini_cli/commands.py"
+    forbidden_changed:
+      - "tests/**"
+      - ".codepacex/permissions.yaml"

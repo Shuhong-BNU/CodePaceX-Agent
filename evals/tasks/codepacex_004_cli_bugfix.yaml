@@ -1,0 +1,20 @@
+id: codepacex_004_cli_bugfix
+name: CLI argument validation bugfix
+fixture: mini_cli_app
+prompt: >
+  Fix the failing CLI parser test. The --count option must reject values less
+  than 1 by raising the normal argparse SystemExit. Change implementation code
+  only and run the relevant pytest file.
+execution:
+  permission_mode: acceptEdits
+  timeout_seconds: 420
+graders:
+  - type: command
+    command: ["{python}", "-m", "pytest", "-q", "tests/test_cli_parser.py"]
+    timeout_seconds: 120
+  - type: file_state
+    expected_changed:
+      - "mini_cli/parser.py"
+    forbidden_changed:
+      - "tests/**"
+      - ".codepacex/permissions.yaml"

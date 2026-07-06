@@ -9,7 +9,8 @@ dist/
 build/
 .idea/
 .vscode/
-.codepacex/
+/.codepacex/
+/evals/.runs/
 .claude/
 CLAUDE.md
 example-com-snapshot.md
