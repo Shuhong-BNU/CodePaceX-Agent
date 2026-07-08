@@ -1,3 +1,8 @@
+<p align="center">
+  <a href="./README.md"><img alt="简体中文" src="https://img.shields.io/badge/README-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-blue"></a>
+  <a href="./README.en.md"><img alt="English" src="https://img.shields.io/badge/README-English-green"></a>
+</p>
+
 # CodePaceX Agent
 
 CodePaceX Agent 是一个使用 Python 构建的终端 AI 编程助手。它通过可控、渐进的执行节奏完成代码阅读、计划、修改和验证：理解任务后检索项目上下文，按需调用工具，在错误反馈中继续迭代，并在长会话中压缩上下文和恢复关键工作状态。
@@ -122,7 +127,7 @@ Agent：总结主调用链
 ./.venv/bin/python evals/run_eval.py --keep-failed
 ```
 
-Eval 产物默认写入 `evals/.runs/`，该目录是本地 artifact 并被 Git 忽略。当前完整 suite 的网络稳定性排查结果只作为 pre-baseline infrastructure shakeout，不标记为 Baseline v1。详细任务、状态分类和边界见 [`evals/README.md`](evals/README.md)。
+Eval 产物默认写入 `evals/.runs/`，该目录是本地 artifact 并被 Git 忽略。Baseline v1 已在正常 Mac Terminal 中完成完整 suite：6/6 PASS，0 FAIL，0 ERROR，0 WARNING，Task Success Rate 100%。详细任务、状态分类和边界见 [`evals/README.md`](evals/README.md)。
 
 ## 环境要求
 

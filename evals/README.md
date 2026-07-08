@@ -21,8 +21,8 @@ Run the suite:
 
 Artifacts are written under `evals/.runs/` and are intentionally ignored by
 Git. Baselines can be copied manually into `evals/baselines/` when useful.
-The current full-suite run is a pre-baseline infrastructure shakeout, not
-Baseline v1.
+Baseline v1 was completed from a normal Mac Terminal run with 6/6 PASS,
+0 FAIL, 0 ERROR, 0 WARNING, and 100% task success rate.
 
 ## Layout
 
