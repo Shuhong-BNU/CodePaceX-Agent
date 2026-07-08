@@ -159,7 +159,7 @@ Run the full suite:
 ./.venv/bin/python evals/run_eval.py --keep-failed
 ```
 
-Artifacts are written to `evals/.runs/`, which is a local artifact directory ignored by Git. Baseline v1 has been completed from a normal Mac Terminal run: 6/6 PASS, 0 FAIL, 0 ERROR, 0 WARNING, and 100% task success rate. See [`evals/README.md`](evals/README.md) for task details, status semantics, and boundaries.
+Artifacts are written to `evals/.runs/`, which is a local artifact directory ignored by Git. Baseline v1 has been completed from a normal Mac Terminal run: 6/6 PASS, 0 FAIL, 0 ERROR, 0 WARNING, and 100% task success rate. See [`evals/README.md`](evals/README.md) / [`evals/README.en.md`](evals/README.en.md) for task details, status semantics, and boundaries.
 
 ## 🧰 Requirements
 

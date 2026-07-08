@@ -170,7 +170,7 @@ Agent：总结主调用链
 ./.venv/bin/python evals/run_eval.py --keep-failed
 ```
 
-Eval 产物默认写入 `evals/.runs/`，该目录是本地 artifact 并被 Git 忽略。Baseline v1 已在正常 Mac Terminal 中完成完整 suite：6/6 PASS，0 FAIL，0 ERROR，0 WARNING，Task Success Rate 100%。详细任务、状态分类和边界见 [`evals/README.md`](evals/README.md)。
+Eval 产物默认写入 `evals/.runs/`，该目录是本地 artifact 并被 Git 忽略。Baseline v1 已在正常 Mac Terminal 中完成完整 suite：6/6 PASS，0 FAIL，0 ERROR，0 WARNING，Task Success Rate 100%。详细任务、状态分类和边界见 [`evals/README.md`](evals/README.md) / [`evals/README.en.md`](evals/README.en.md)。
 
 ## 🧰 环境要求
 
