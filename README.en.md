@@ -1,32 +1,40 @@
-<p align="center">
-  <a href="./README.md"><img alt="Simplified Chinese" src="https://img.shields.io/badge/README-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-blue"></a>
-  <a href="./README.en.md"><img alt="English" src="https://img.shields.io/badge/README-English-green"></a>
-</p>
-
 # CodePaceX Agent
 
-CodePaceX Agent is a terminal AI coding assistant built in Python. It reads code, plans changes, edits files, runs tools, reacts to errors, and keeps long sessions manageable through durable history and context compaction.
+<p align="center">
+  <a href="./README.md"><strong>中文文档</strong></a>
+  ·
+  <a href="./README.en.md"><strong>English README</strong></a>
+</p>
+
+<p align="center"><strong>A terminal AI coding agent for real codebases</strong></p>
+
+<p align="center">
+  <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-blue">
+  <img alt="Textual TUI" src="https://img.shields.io/badge/Textual-TUI-purple">
+  <img alt="MCP" src="https://img.shields.io/badge/MCP-enabled-green">
+  <img alt="Multi-Agent" src="https://img.shields.io/badge/Multi--Agent-worktree-orange">
+  <img alt="Agent Eval" src="https://img.shields.io/badge/Agent%20Eval-baseline%20v1-success">
+</p>
+
+CodePaceX Agent is a Python-based terminal AI coding assistant for real repositories. It brings code reading, planning, editing, verification, permission control, context compaction, multi-agent collaboration, and lightweight Agent Eval into one runnable and regression-testable developer workflow.
 
 **Pace** means steady progress, verification, and iterative repair. **X** means extensibility across model protocols, tools, skills, memory, and multi-agent collaboration.
 
 > CodePaceX is a terminal coding agent built around iterative tool use, plan-first workflows, extensible model protocols, durable sessions, and multi-agent collaboration.
 
-## Feature Overview
+## ✨ Core Highlights
 
-- ReAct-style model, tool, and result loop with streamed text, thinking, and tool-call events.
-- Plan Mode for read-only exploration, user questions, delegated investigation, and approval-gated implementation.
-- Anthropic Messages, OpenAI Responses, and OpenAI-compatible Chat Completions protocols.
-- Built-in tools such as `ReadFile`, `WriteFile`, `EditFile`, `Bash`, `Glob`, and `Grep`.
-- MCP stdio and Streamable HTTP support with lazy tool schema exposure.
-- Markdown skills, directory skills, inline/fork execution, and custom Python tools.
-- JSONL session persistence, resume support, compaction boundaries, and project instruction inheritance.
-- Large tool-result spillover plus prefix summaries for context management.
-- Sub-agents, background agents, agent teams, mailboxes, shared tasks, and invocation tracing.
-- Git worktree isolation plus in-process, tmux, and iTerm2 teammate backends.
-- Dangerous command detection, path boundaries, permission rules, permission modes, and human confirmation.
-- Textual TUI, non-interactive CLI, NDJSON event stream, and remote browser UI.
+- **Progressive Agent Loop**: reads, locates, edits, and verifies code through a model-tool-result loop with streamed text, thinking, and tool-call events.
+- **Plan Mode and approval flow**: explores and writes plan files before implementation, then hands control back for approval.
+- **Multi-model protocols and fallback**: supports Anthropic Messages, OpenAI Responses, OpenAI-compatible Chat Completions, model tests, discovery, and fallback chains.
+- **Lazy MCP tool loading**: connects to stdio / Streamable HTTP MCP servers and exposes external tool schemas only when needed.
+- **Skills and custom agents**: supports Markdown skills, directory skills, inline/fork execution, custom Python tools, and user/project agents.
+- **Session resume, compaction, and memory**: persists JSONL sessions, spills large tool results to disk, summarizes context, and supports user/project memory.
+- **Permission modes and safety boundaries**: combines dangerous command detection, path sandboxing, permission rules, session allow records, and human confirmation.
+- **Git worktree and multi-agent collaboration**: supports sub-agents, background agents, teams, mailboxes, shared tasks, invocation tracing, and worktree isolation.
+- **Lightweight Agent Eval Harness**: includes a 6-task deterministic eval suite; Baseline v1 reached 6/6 PASS, 0 FAIL, 0 ERROR, and 0 WARNING.
 
-## Execution Flow
+## 🧭 Execution Flow
 
 ```mermaid
 flowchart TD
@@ -43,7 +51,7 @@ flowchart TD
     S --> L
 ```
 
-## Architecture
+## 🏗️ Architecture
 
 | Layer | Main modules | Responsibility |
 | --- | --- | --- |
@@ -55,9 +63,38 @@ flowchart TD
 
 These are logical layers, not separate processes or strict dependency boundaries.
 
-## Project Layout
+## ⚡ Quick Start
+
+```bash
+# 1. Install uv and Python 3.12
+brew install uv
+uv python install 3.12
+
+# 2. Install development dependencies
+uv sync --group dev
+
+# 3. Configure at least one provider API key
+export DASHSCOPE_API_KEY="..."
+
+# 4. Start the terminal UI
+uv run codepacex
+
+# 5. Run one non-interactive code analysis
+uv run codepacex -p "Analyze this project's entrypoint and core call chain"
+
+# 6. Run the lightweight Agent Eval suite
+./.venv/bin/python evals/run_eval.py --keep-failed
+```
+
+See the configuration section below for providers, fallback, permissions, and MCP. Real API keys should live in your shell environment or local machine configuration, not in Git.
+
+## 📁 Project Layout
 
 ```text
+README.md             # Simplified Chinese README
+README.en.md          # English README
+CODEPACEX.md          # Project-level agent instructions
+CODE_CHANGE_PROPOSALS.md
 codepacex/
   __main__.py          # CLI entrypoint and mode dispatch
   app.py               # Textual TUI entrypoint
@@ -77,9 +114,15 @@ codepacex/
   teams/               # Agent teams, mailboxes, shared tasks, teammate backends
   worktree/            # Git worktree isolation, cleanup, session integration
   filehistory/         # File history snapshots
+evals/
+  run_eval.py          # Lightweight Agent Eval runner
+  graders.py           # Deterministic graders and metrics helpers
+  tasks/               # YAML definitions for the 6 eval tasks
+  fixtures/            # Minimal project fixtures used by evals
+tests/                 # pytest unit tests and Eval Harness tests
 ```
 
-## Non-Interactive Call Chain
+## 🧭 Non-Interactive Call Chain
 
 This is the main file-level path for `uv run codepacex -p ...`. TUI and remote modes branch into `app.py` or `remote.py`, so they do not fully share this initialization path.
 
@@ -100,7 +143,7 @@ pyproject.toml
 -> ConversationManager.add_tool_results_message(...)
 ```
 
-## Lightweight Agent Eval
+## 🧪 Lightweight Agent Eval
 
 The repository includes a small deterministic Agent Eval Harness for regression-testing CodePaceX non-interactive agent behavior on fixed fixtures. It copies a fixture into a temporary workspace, runs the current checkout with `codepacex -p`, captures the `stream-json` trace, computes the agent file diff before graders run, and emits Markdown plus JSON reports.
 
@@ -118,7 +161,7 @@ Run the full suite:
 
 Artifacts are written to `evals/.runs/`, which is a local artifact directory ignored by Git. Baseline v1 has been completed from a normal Mac Terminal run: 6/6 PASS, 0 FAIL, 0 ERROR, 0 WARNING, and 100% task success rate. See [`evals/README.md`](evals/README.md) for task details, status semantics, and boundaries.
 
-## Requirements
+## 🧰 Requirements
 
 - macOS or Linux
 - Python 3.11 or newer; the development environment uses Python 3.12
@@ -126,7 +169,7 @@ Artifacts are written to `evals/.runs/`, which is a local artifact directory ign
 - Git, and optionally tmux/iTerm2 for worktree or multi-pane teammate workflows
 - At least one usable Anthropic, OpenAI, or compatible-service API
 
-## Installation
+## ⚙️ Installation
 
 macOS:
 
@@ -159,7 +202,7 @@ codepacex --help
 
 The editable install follows changes in this source directory. Re-run the install command after dependency declarations change.
 
-## Configuration
+## ⚙️ Configuration
 
 CodePaceX loads and merges configuration in this order:
 
@@ -224,7 +267,7 @@ Protocols:
 - `openai`: OpenAI Responses API.
 - `openai-compat`: services compatible with OpenAI Chat Completions.
 
-## Running
+## 🚀 Running
 
 Start the terminal UI:
 
@@ -259,7 +302,7 @@ uv run codepacex --mode plan
 uv run codepacex --mode acceptEdits
 ```
 
-## Common Slash Commands
+## 💬 Common Slash Commands
 
 TUI sessions can use `/model` to inspect and manage model selection:
 
@@ -274,11 +317,11 @@ TUI sessions can use `/model` to inspect and manage model selection:
 
 The model commands do not print real API keys. Discovery does not modify YAML and does not prove account-level chat permission; use `/model test` for a real minimal call.
 
-## Plan Mode
+## 📝 Plan Mode
 
 Plan Mode restricts the agent to reading, asking, delegated exploration, and maintaining plan files. It allows read-only tools, `Agent`, `ToolSearch`, `AskUserQuestion`, `ExitPlanMode`, and plan-file writes under `.codepacex/plans/`. After `ExitPlanMode`, the interaction layer shows the approval UI. Plan Mode is an application-level permission policy, not an OS sandbox.
 
-## MCP And Lazy Tool Loading
+## 🧩 MCP And Lazy Tool Loading
 
 CodePaceX connects to MCP servers and obtains tool lists at startup, but unused MCP tools do not immediately contribute full schemas to model requests. The agent first sees available tool names, then activates needed schemas through `ToolSearch`, reducing context pressure from large external tool sets.
 
@@ -290,7 +333,7 @@ Supported capabilities include:
 - client reconnect after disconnection
 - text, image, and embedded resource result summaries
 
-## Skills
+## 🛠️ Skills
 
 User-level skills live under `~/.codepacex/skills/`; project-level skills live under `.codepacex/skills/`.
 
@@ -317,7 +360,7 @@ $ARGUMENTS
 
 Directory skills can contain `SKILL.md`, `tool.json`, and `references/<tool>.py`. Python tools are loaded into the current process and should only come from trusted skills.
 
-## Custom Agents
+## 🤖 Custom Agents
 
 User-level agents live under `~/.codepacex/agents/`; project-level agents live under `.codepacex/agents/`.
 
@@ -341,7 +384,7 @@ Review public API changes, compatibility risks, and missing tests.
 
 `isolation: worktree` is available only inside a Git repository. Isolated agent changes stay in a separate worktree and branch and are not merged automatically.
 
-## Sessions, Context, And Memory
+## 🧠 Sessions, Context, And Memory
 
 - Sessions are stored as JSONL under `.codepacex/sessions/`, with resume support and incomplete tool-chain truncation.
 - Large tool results are stored under `.codepacex/session/tool-results/`; the model receives a path and preview.
@@ -351,7 +394,7 @@ Review public API changes, compatibility risks, and missing tests.
 
 Context summaries are lossy; full session logs remain available for later inspection. Reliable structured persistence for automatic memory extraction is still in progress; see `CODE_CHANGE_PROPOSALS.md`.
 
-## Permissions And Safety Boundaries
+## 🔐 Permissions And Safety Boundaries
 
 Permission checks combine dangerous command detection, path boundaries, permission rules, session-level allow records, and permission modes.
 
@@ -371,7 +414,7 @@ Safety boundaries:
 - MCP, hooks, and directory skills may run external code or access external services.
 - `bypassPermissions` should only be used in isolated, trusted, recoverable environments.
 
-## Tests
+## ✅ Tests
 
 ```bash
 uv run pytest --collect-only -q
@@ -381,7 +424,7 @@ uv run python -m compileall -q codepacex tests
 
 The current local environment uses uv 0.11.23 and CPython 3.12.13. On 2026-06-21, the full test suite collected and ran 560 tests in an initialized Git repository; all 560 passed in 5.68 seconds.
 
-## Performance Notes
+## 📊 Performance Notes
 
 - Lazy tool tests use 50 simulated heavy schemas and verify at least a 90% reduction in initial schema character volume; this is not a token benchmark for real hundreds-scale MCP tools.
 - Context compaction has thresholds, summaries, recent verbatim messages, and resume attachments, but it does not yet have a standardized multi-hour session durability benchmark.
@@ -389,7 +432,7 @@ The current local environment uses uv 0.11.23 and CPython 3.12.13. On 2026-06-21
 
 Do not treat synthetic measurements as production performance claims until reproducible benchmarks exist.
 
-## Known Limits And Roadmap
+## 🗺️ Known Limits And Roadmap
 
 Known limits:
 
