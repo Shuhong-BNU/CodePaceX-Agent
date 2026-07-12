@@ -166,6 +166,55 @@ async def test_active_memory_lock_blocks_run(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_expired_active_pid_lock_is_reclaimed(tmp_path: Path) -> None:
+    memory = tmp_path / ".codepacex/memory"
+    memory.mkdir(parents=True)
+    _memory_file(memory / "one.md", "One")
+    lock = memory / LOCK_FILE
+    lock.write_text(
+        json.dumps({"pid": os.getpid(), "created_at": time.time() - 7200}),
+        encoding="utf-8",
+    )
+    assert await MemoryConsolidator(str(tmp_path), min_hours=0, min_sessions=0).maybe_run() is True
+    assert "One" in (memory / "MEMORY.md").read_text(encoding="utf-8")
+    assert not lock.exists()
+    assert not (memory / ".MEMORY.md.tmp").exists()
+    assert not (memory / ".consolidate-state.tmp").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("created_at", [0, float("nan"), float("inf")])
+async def test_invalid_memory_lock_timestamp_is_reclaimed(
+    tmp_path: Path, created_at: float,
+) -> None:
+    memory = tmp_path / ".codepacex/memory"
+    memory.mkdir(parents=True)
+    _memory_file(memory / "one.md", "One")
+    lock = memory / LOCK_FILE
+    lock.write_text(
+        json.dumps({"pid": os.getpid(), "created_at": created_at}),
+        encoding="utf-8",
+    )
+    assert await MemoryConsolidator(str(tmp_path), min_hours=0, min_sessions=0).maybe_run() is True
+    assert not lock.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pid", [0, -1, "invalid"])
+async def test_invalid_memory_lock_pid_is_reclaimed(tmp_path: Path, pid: int | str) -> None:
+    memory = tmp_path / ".codepacex/memory"
+    memory.mkdir(parents=True)
+    _memory_file(memory / "one.md", "One")
+    lock = memory / LOCK_FILE
+    lock.write_text(
+        json.dumps({"pid": pid, "created_at": time.time()}),
+        encoding="utf-8",
+    )
+    assert await MemoryConsolidator(str(tmp_path), min_hours=0, min_sessions=0).maybe_run() is True
+    assert not lock.exists()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("payload", ["not-json", '{"pid": 99999999, "created_at": 0}'])
 async def test_stale_or_broken_memory_lock_is_reclaimed(tmp_path: Path, payload: str) -> None:
     memory = tmp_path / ".codepacex/memory"

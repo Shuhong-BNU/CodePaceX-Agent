@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -78,7 +79,6 @@ class MemoryConsolidator:
             try:
                 fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             except FileExistsError:
-                active = False
                 try:
                     raw_lock = lock.read_text(encoding="utf-8")
                 except OSError:
@@ -86,12 +86,26 @@ class MemoryConsolidator:
                 try:
                     payload = json.loads(raw_lock)
                     pid, created = int(payload["pid"]), float(payload["created_at"])
-                    active = self._pid_alive(pid)
-                    stale = not active or time.time() - created > LOCK_STALE_SECONDS
-                except Exception:
-                    stale = True
-                if not stale or active:
+                    if pid <= 0:
+                        raise ValueError("lock PID must be positive")
+                    now = time.time()
+                    expired = (
+                        not math.isfinite(created)
+                        or created <= 0
+                        or now - created > LOCK_STALE_SECONDS
+                    )
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    active, expired = False, True
+                else:
+                    try:
+                        active = self._pid_alive(pid)
+                    except OSError:
+                        return False
+                if active and not expired:
                     return False
+                # Best-effort stale-lock reclamation retains a narrow
+                # read/check/unlink race across independent processes. A new
+                # locking protocol is intentionally outside this change.
                 try:
                     lock.unlink()
                 except FileNotFoundError:
