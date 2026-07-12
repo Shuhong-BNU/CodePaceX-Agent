@@ -19,6 +19,15 @@ from codepacex.hooks import HookConfigError, HookEngine, load_hooks
 from codepacex.permissions import PermissionMode
 
 
+def _deny_noninteractive_permission(event) -> str:
+    """Resolve a CLI permission prompt without granting unattended access."""
+    from codepacex.agent import PermissionResponse
+
+    if not event.future.done():
+        event.future.set_result(PermissionResponse.DENY)
+    return f"Non-interactive mode denied permission for {event.tool_name}: {event.description}"
+
+
 # 核心实现
 def main() -> None:
     # 先确保 .codepacex/ 目录存在，否则下面写 debug.log 会因目录不存在而崩溃
@@ -119,7 +128,6 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
         ErrorEvent,
         LoopComplete,
         PermissionRequest,
-        PermissionResponse,
         RetryEvent,
         StreamText,
         ThinkingText,
@@ -345,8 +353,12 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
                 emit_json({"type": "retry", "reason": event.reason})
 
         elif isinstance(event, PermissionRequest):
-            # -p 非交互模式：自动批准所有权限请求
-            event.future.set_result(PermissionResponse.ALLOW)
+            # -p 无法向用户确认；所有 ask 必须 fail closed。
+            denial = _deny_noninteractive_permission(event)
+            if is_json:
+                emit_json({"type": "error", "message": denial})
+            else:
+                print(f"Error: {denial}", file=sys.stderr, flush=True)
 
     # 如果有 team 在运行，轮询等待 teammate 完成
     if not team_manager._teams:

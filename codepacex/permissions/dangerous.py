@@ -34,6 +34,44 @@ _GIT_SAFE_OPTIONS = {
     "log": {"--oneline", "--decorate", "--graph", "--stat", "--name-only", "--all", "--no-merges"},
 }
 
+_GIT_GLOBAL_OPTIONS_WITH_VALUE = {
+    "-C", "-c", "--config-env", "--exec-path", "--git-dir", "--namespace", "--work-tree",
+}
+_GIT_GLOBAL_OPTIONS_NO_VALUE = {
+    "-p", "-P", "--bare", "--glob-pathspecs", "--help", "--icase-pathspecs",
+    "--literal-pathspecs", "--no-optional-locks", "--no-pager", "--no-replace-objects",
+    "--noglob-pathspecs", "--paginate", "--version",
+}
+
+
+def _git_clean_after_global_options(args: list[str]) -> bool | None:
+    """Locate ``clean`` after Git globals; ``None`` means unsafe ambiguity."""
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token == "clean":
+            return True
+        if token == "--":
+            return index + 1 < len(args) and args[index + 1] == "clean"
+        if not token.startswith("-"):
+            return False
+        if token in _GIT_GLOBAL_OPTIONS_WITH_VALUE:
+            if index + 1 >= len(args):
+                return None
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in _GIT_GLOBAL_OPTIONS_WITH_VALUE if option.startswith("--")):
+            index += 1
+            continue
+        if token.startswith("-c") and token != "-c":
+            index += 1
+            continue
+        if token in _GIT_GLOBAL_OPTIONS_NO_VALUE:
+            index += 1
+            continue
+        return None
+    return False
+
 
 def is_safe_command(command: str, project_root: Path | None = None) -> bool:
     """Recognize only a deliberately small set of read-only commands."""
@@ -146,8 +184,12 @@ class DangerousCommandDetector:
             target = next((arg for arg in args if not arg.startswith("-")), ".")
             reason = self._critical_delete_reason(target, work_dir, bulk=True)
             return ("deny", reason) if reason else ("ask", "find -delete 会批量删除文件")
-        if executable == "git" and args and args[0] == "clean":
-            return "ask", "git clean 会删除未跟踪文件"
+        if executable == "git":
+            git_clean = _git_clean_after_global_options(args)
+            if git_clean:
+                return "ask", "git clean 会删除未跟踪文件"
+            if git_clean is None:
+                return "ask", "Git 全局参数无法安全解析"
         if re.search(r"(?:^|\s)(?:rm|find|git\s+clean)(?:\s|$)", command):
             return "ask", "检测到无法完全解析的删除操作"
         return None, ""

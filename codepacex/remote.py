@@ -361,9 +361,10 @@ class RemoteServer:
         self._cancel_event = asyncio.Event()
         start_time = time.monotonic()
         stream_buf = ""
+        agent_events = self.agent.run(self.conversation)
 
         try:
-            async for event in self.agent.run(self.conversation):
+            async for event in agent_events:
                 # 检查取消信号
                 if self._cancel_event.is_set():
                     break
@@ -502,8 +503,11 @@ class RemoteServer:
                 "data": {"message": str(exc)},
             })
         finally:
-            self._streaming = False
-            self._cancel_event = None
+            try:
+                await agent_events.aclose()
+            finally:
+                self._streaming = False
+                self._cancel_event = None
 
     # ------------------------------------------------------------------
     # 斜杠命令处理

@@ -114,8 +114,10 @@ class MemoryConsolidator:
         state = memory_dir / STATE_FILE
         staging = memory_dir / f".{ENTRYPOINT_NAME}.tmp"
         state_staging = memory_dir / f"{STATE_FILE}.tmp"
-        original = target.read_bytes() if target.exists() else None
+        original: bytes | None = None
+        target_replaced = False
         try:
+            original = target.read_bytes() if target.exists() else None
             entries: dict[str, str] = {}
             for memory in MemoryManager(self.work_dir).load_project():
                 path = Path(memory.path)
@@ -128,14 +130,16 @@ class MemoryConsolidator:
             staging.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
             state_staging.write_text(str(int(time.time())), encoding="utf-8")
             staging.replace(target)
+            target_replaced = True
             state_staging.replace(state)
             return True
         except Exception:
             try:
-                if original is None:
+                if target_replaced and original is None:
                     target.unlink(missing_ok=True)
-                else:
+                elif target_replaced:
                     restore = memory_dir / f".{ENTRYPOINT_NAME}.restore"
+                    assert original is not None
                     restore.write_bytes(original)
                     restore.replace(target)
             except OSError:

@@ -8,16 +8,20 @@ import pytest
 import yaml
 from pydantic import BaseModel
 
-from codepacex.agent import Agent, PermissionRequest, StreamingExecutor
+from codepacex.__main__ import _deny_noninteractive_permission
+from codepacex.agent import Agent, PermissionRequest, StreamingExecutor, StreamText
 from codepacex.client import LLMClient
 from codepacex.config import load_config
 from codepacex.conversation import ConversationManager
 from codepacex.hooks import Action, Hook, HookEngine
 from codepacex.permissions import DangerousCommandDetector, PathSandbox, PermissionChecker, PermissionMode, RuleEngine
+from codepacex.remote import RemoteServer
 from codepacex.sandbox import build_sandbox_config
 from codepacex.tools import create_default_registry
 from codepacex.tools.base import StreamEnd, TextDelta, Tool, ToolCallComplete, ToolResult
 from codepacex.tools.diff import Diff
+from codepacex.tools.bash import Bash, Params as BashParams
+from codepacex.tools.install_skill import InstallSkill, InstallSkillParams
 
 
 def _checker(tmp_path: Path, *, mode: PermissionMode = PermissionMode.DEFAULT, rules: Path | None = None, sandbox_enabled: bool = False) -> PermissionChecker:
@@ -74,6 +78,31 @@ def test_explicit_allow_cannot_override_mandatory_deny(tmp_path: Path) -> None:
     checker.add_session_allow("Bash", "rm -rf .")
     decision = checker.check(Bash(), {"command": "rm -rf ."})
     assert decision.effect == "deny"
+    assert decision.persistable is False
+
+
+@pytest.mark.parametrize("command", [
+    "git -C .. clean -fdx",
+    "git --work-tree=.. clean -fdx",
+    "git --git-dir ../.git clean -fdx",
+])
+@pytest.mark.parametrize("authorization", ["bypass", "explicit", "session"])
+def test_git_clean_globals_remain_mandatory_ask(
+    tmp_path: Path, command: str, authorization: str
+) -> None:
+    rules = tmp_path / "rules.yaml"
+    if authorization == "explicit":
+        rules.write_text(yaml.safe_dump([{"rule": "Bash(git *)", "effect": "allow"}]), encoding="utf-8")
+    checker = _checker(
+        tmp_path,
+        mode=PermissionMode.BYPASS,
+        rules=rules if authorization == "explicit" else None,
+        sandbox_enabled=True,
+    )
+    if authorization == "session":
+        checker.add_session_allow("Bash", command)
+    decision = checker.check(Bash(), {"command": command})
+    assert decision.effect == "ask"
     assert decision.persistable is False
 
 
@@ -222,6 +251,74 @@ class CountingReadTool(Tool):
         return ToolResult("ok")
 
 
+class CountingBash(Bash):
+    def __init__(self) -> None:
+        self.count = 0
+
+    async def execute(self, params: BashParams) -> ToolResult:
+        self.count += 1
+        return ToolResult("unexpected")
+
+
+class CountingInstallSkill(InstallSkill):
+    def __init__(self) -> None:
+        super().__init__()
+        self.count = 0
+
+    async def execute(self, params: InstallSkillParams) -> ToolResult:
+        self.count += 1
+        return ToolResult("unexpected")
+
+
+class NonInteractiveClient(LLMClient):
+    def __init__(self, tool_name: str, arguments: dict[str, Any]) -> None:
+        self.tool_name = tool_name
+        self.arguments = arguments
+        self.calls = 0
+
+    async def stream(self, conversation: ConversationManager, system: str = "", tools=None) -> AsyncIterator[Any]:
+        self.calls += 1
+        if self.calls == 1:
+            yield ToolCallComplete("t1", self.tool_name, self.arguments)
+            yield StreamEnd("tool_use", input_tokens=1, output_tokens=1)
+        else:
+            yield TextDelta("done")
+            yield StreamEnd("end_turn", input_tokens=1, output_tokens=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("tool_name", "arguments"), [
+    ("Bash", {"command": "rm temp.txt"}),
+    ("Bash", {"command": "git -C .. clean -fdx"}),
+    ("InstallSkill", {"url": "https://github.com/example/repo/tree/main/skills/review"}),
+])
+async def test_noninteractive_ask_denies_without_execution(
+    tmp_path: Path, tool_name: str, arguments: dict[str, Any]
+) -> None:
+    tool = CountingBash() if tool_name == "Bash" else CountingInstallSkill()
+    registry = create_default_registry()
+    registry.register(tool)
+    agent = Agent(
+        NonInteractiveClient(tool_name, arguments),
+        registry,
+        "anthropic",
+        work_dir=str(tmp_path),
+        permission_checker=_checker(tmp_path, mode=PermissionMode.BYPASS),
+    )
+    conversation = ConversationManager()
+    conversation.add_user_message("run unattended")
+    permission_requests = 0
+    denials: list[str] = []
+    async for event in agent.run(conversation):
+        if isinstance(event, PermissionRequest):
+            permission_requests += 1
+            denials.append(_deny_noninteractive_permission(event))
+    assert permission_requests == 1
+    assert len(denials) == 1
+    assert "Non-interactive mode denied permission" in denials[0]
+    assert tool.count == 0
+
+
 class HookAwareClient(LLMClient):
     def __init__(self, tool: CountingReadTool) -> None:
         self.tool = tool
@@ -270,6 +367,107 @@ async def test_streaming_executor_cancels_and_reaps() -> None:
     await asyncio.sleep(0)
     await executor.cancel_and_reap()
     assert finalized.is_set()
+
+
+class PendingReadTool(Tool):
+    name = "PendingRead"
+    description = "Read until cancelled"
+    params_model = EmptyParams
+    category = "read"
+    is_concurrency_safe = True
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.started = asyncio.Event()
+        self.finalized = asyncio.Event()
+
+    async def execute(self, params: EmptyParams) -> ToolResult:
+        self.count += 1
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            self.finalized.set()
+        return ToolResult("unreachable")
+
+
+class PendingReadClient(LLMClient):
+    def __init__(self, first_stop: str = "tool_use") -> None:
+        self.first_stop = first_stop
+        self.calls = 0
+
+    async def stream(self, conversation: ConversationManager, system: str = "", tools=None) -> AsyncIterator[Any]:
+        self.calls += 1
+        if self.calls == 1:
+            yield ToolCallComplete("t1", "PendingRead", {})
+            await asyncio.sleep(0)
+            yield StreamEnd(self.first_stop, input_tokens=1, output_tokens=1)
+        else:
+            yield TextDelta("done")
+            yield StreamEnd("end_turn", input_tokens=1, output_tokens=1)
+
+
+def _pending_agent(tmp_path: Path, tool: PendingReadTool, *, first_stop: str = "tool_use") -> Agent:
+    registry = create_default_registry()
+    registry.register(tool)
+    return Agent(
+        PendingReadClient(first_stop), registry, "anthropic",
+        work_dir=str(tmp_path), permission_checker=_checker(tmp_path),
+    )
+
+
+@pytest.mark.asyncio
+async def test_agent_generator_close_reaps_streaming_tool(tmp_path: Path) -> None:
+    tool = PendingReadTool()
+    generator = _pending_agent(tmp_path, tool).run(ConversationManager())
+    while True:
+        event = await anext(generator)
+        if getattr(event, "tool_name", None) == "PendingRead":
+            break
+    await asyncio.wait_for(tool.started.wait(), timeout=1)
+    await generator.aclose()
+    await asyncio.wait_for(tool.finalized.wait(), timeout=1)
+    assert tool.count == 1
+
+
+@pytest.mark.asyncio
+async def test_max_tokens_reaps_streaming_tool_before_retry(tmp_path: Path) -> None:
+    tool = PendingReadTool()
+    agent = _pending_agent(tmp_path, tool, first_stop="max_tokens")
+    conversation = ConversationManager()
+    conversation.add_user_message("read")
+    async for _ in agent.run(conversation):
+        pass
+    assert tool.count == 1
+    assert tool.finalized.is_set()
+
+
+class ClosableAgent:
+    def __init__(self) -> None:
+        self.closed = asyncio.Event()
+
+    async def run(self, conversation: ConversationManager) -> AsyncIterator[Any]:
+        try:
+            yield StreamText("first")
+            yield StreamText("second")
+        finally:
+            self.closed.set()
+
+
+@pytest.mark.asyncio
+async def test_remote_cancel_closes_agent_generator() -> None:
+    server = RemoteServer([])
+    server.agent = ClosableAgent()  # type: ignore[assignment]
+    server.conversation = ConversationManager()
+
+    async def cancel_after_first(message: dict[str, Any]) -> None:
+        if message["type"] == "stream_text" and server._cancel_event is not None:
+            server._cancel_event.set()
+
+    server._broadcast = cancel_after_first  # type: ignore[method-assign]
+    await server._handle_user_message("run")
+    assert server.agent.closed.is_set()  # type: ignore[union-attr]
+    assert server._streaming is False
 
 
 class DeleteClient(LLMClient):

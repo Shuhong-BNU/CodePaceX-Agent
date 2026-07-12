@@ -302,9 +302,10 @@ class StreamingExecutor:
             return []
         tasks = [t for _, t in sorted(self._tasks, key=lambda x: x[0])]
         results = await asyncio.gather(*tasks, return_exceptions=True)
+        self._tasks.clear()
         out: list[_ToolExecResult] = []
         for r in results:
-            if isinstance(r, Exception):
+            if isinstance(r, BaseException):
                 out.append(_ToolExecResult(
                     tool_id="",
                     tool_name="",
@@ -317,11 +318,15 @@ class StreamingExecutor:
         return out
 
     async def cancel_and_reap(self) -> None:
-        tasks = [task for _, task in self._tasks if not task.done()]
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        tasks = [task for _, task in self._tasks]
+        try:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            self._tasks.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -521,6 +526,19 @@ class Agent:
         return api_conv, tools, events, ""
 
     async def run(self, conversation: ConversationManager) -> AsyncIterator[AgentEvent]:
+        active_executor: list[StreamingExecutor | None] = [None]
+        try:
+            async for event in self._run(conversation, active_executor):
+                yield event
+        finally:
+            if active_executor[0] is not None:
+                await active_executor[0].cancel_and_reap()
+
+    async def _run(
+        self,
+        conversation: ConversationManager,
+        active_executor: list[StreamingExecutor | None],
+    ) -> AsyncIterator[AgentEvent]:
         self._current_conversation = conversation
         fallback_history_exists = bool(conversation.history)
         env_context = build_environment_context(
@@ -632,6 +650,7 @@ class Agent:
             while True:
                 collector = StreamCollector()
                 streaming_executor = StreamingExecutor()
+                active_executor[0] = streaming_executor
                 streamed_count = 0
                 streaming_prefix_open = True
                 stream_started = False
@@ -668,9 +687,11 @@ class Agent:
                     break
                 except asyncio.CancelledError:
                     await streaming_executor.cancel_and_reap()
+                    active_executor[0] = None
                     raise
                 except Exception as e:
                     await streaming_executor.cancel_and_reap()
+                    active_executor[0] = None
                     if stream_started:
                         raise
 
@@ -825,6 +846,8 @@ class Agent:
 
             if response.stop_reason == "max_tokens":
                 if not max_tokens_escalated:
+                    await streaming_executor.cancel_and_reap()
+                    active_executor[0] = None
                     turn_runtime.client.set_max_output_tokens(MAX_TOKENS_CEILING)
                     max_tokens_escalated = True
                     if response.text:
@@ -838,6 +861,8 @@ class Agent:
                     yield RetryEvent(reason="max_tokens escalation")
                     continue
                 elif output_recoveries < MAX_OUTPUT_TOKENS_RECOVERIES:
+                    await streaming_executor.cancel_and_reap()
+                    active_executor[0] = None
                     output_recoveries += 1
                     conversation.add_assistant_message(
                         response.text, thinking_blocks=conv_thinking
@@ -911,6 +936,7 @@ class Agent:
                 content = self._maybe_persist_or_truncate(br.tool_id, br.result.output)
                 tool_results.append(ToolResultBlock(tool_use_id=br.tool_id, content=content, is_error=br.result.is_error))
                 yield ToolResultEvent(tool_id=br.tool_id, tool_name=br.tool_name, output=br.result.output, is_error=br.result.is_error, elapsed=br.elapsed)
+            active_executor[0] = None
 
             batches = partition_tool_calls(response.tool_calls[streamed_count:], self.registry)
 

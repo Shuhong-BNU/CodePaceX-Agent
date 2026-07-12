@@ -198,6 +198,30 @@ async def test_memory_failure_preserves_index_and_state(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_memory_read_failure_releases_lock_and_allows_retry(tmp_path: Path) -> None:
+    memory = tmp_path / ".codepacex/memory"
+    memory.mkdir(parents=True)
+    _memory_file(memory / "one.md", "One")
+    index = memory / "MEMORY.md"
+    index.write_text("original\n", encoding="utf-8")
+    original_read_bytes = Path.read_bytes
+
+    def fail_index_read(self: Path) -> bytes:
+        if self == index:
+            raise OSError("injected index read failure")
+        return original_read_bytes(self)
+
+    consolidator = MemoryConsolidator(str(tmp_path), min_hours=0, min_sessions=0)
+    with patch.object(Path, "read_bytes", fail_index_read):
+        assert await consolidator.maybe_run() is False
+    assert index.read_text(encoding="utf-8") == "original\n"
+    assert not (memory / LOCK_FILE).exists()
+    assert not (memory / ".MEMORY.md.tmp").exists()
+    assert not (memory / ".consolidate-state.tmp").exists()
+    assert await consolidator.maybe_run() is True
+
+
+@pytest.mark.asyncio
 async def test_concurrent_memory_run_executes_once(tmp_path: Path) -> None:
     memory = tmp_path / ".codepacex/memory"
     memory.mkdir(parents=True)
