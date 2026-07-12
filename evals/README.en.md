@@ -83,6 +83,12 @@ The fixture's `.codepacex/permissions.yaml` denies that command through a projec
 ## 🚧 Boundaries
 
 - This is a developer-environment regression eval. User-level config, global instructions, hooks, and permission rules may affect model behavior, so reports record relevant source hashes.
-- No LLM Judge, SWE-bench adapter, dashboard, pass@k, or automatic provider retry is included.
+- No LLM Judge, dashboard, pass@k, or automatic provider retry is included. `swe_bench_live.py` provides deterministic selection, frozen manifests, and official CLI command construction, but a real Docker evaluation has not been run.
 - Real traces and workspaces under `.runs/` are local artifacts and should not be committed directly.
 - Baseline v1 proves the current 6-task suite can pass, but it does not claim broad large-repository repair capability.
+
+Official CLI command construction and dry-run compatibility are tested with:
+
+```bash
+python -m evals.swe_bench_live --dataset-name org/dataset --predictions-path predictions.json --run-id pilot --namespace codepacex --dry-run
+```

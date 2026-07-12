@@ -12,6 +12,7 @@ from codepacex.memory.auto_memory import (
     parse_frontmatter,
 )
 from codepacex.memory.instructions import load_instructions, process_includes
+from codepacex.memory.consolidation import MemoryConsolidator
 from codepacex.memory.recall import (
     RelevantMemory,
     find_relevant_memories,
@@ -34,6 +35,7 @@ __all__ = [
     "ENTRYPOINT_NAME",
     "MemoryFile",
     "MemoryManager",
+    "MemoryConsolidator",
     "RelevantMemory",
     "ResumeResult",
     "Session",
@@ -55,4 +57,3 @@ __all__ = [
     "render_reminder",
     "validate_message_chain",
 ]
-

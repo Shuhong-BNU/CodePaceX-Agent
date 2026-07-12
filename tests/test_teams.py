@@ -579,3 +579,28 @@ class TestAgentCoordinatorIntegration:
         # coordinator 模式走独立的 prompt 生成路径，不包含普通 identity 段
         prompt = build_system_prompt(coordinator_mode=True)
         assert "coordinator" in prompt.lower()
+
+
+def test_coordinator_registry_stays_restricted_until_last_team_deleted(tmp_path):
+    from codepacex.teams.manager import TeamManager
+    from codepacex.tools.team_create import TeamCreateParams, TeamCreateTool
+    from codepacex.tools.team_delete import TeamDeleteParams, TeamDeleteTool
+
+    registry = ToolRegistry()
+    for name in ("Agent", "WriteFile", "EditFile", "Bash"):
+        registry.register(DummyTool(name))
+    agent = MagicMock(agent_id="lead", coordinator_mode=False, registry=registry)
+    agent._full_registry = None
+
+    with patch("codepacex.teams.models.Path.home", return_value=tmp_path), patch.dict(os.environ, {"CODEPACEX_COORDINATOR_MODE": "1"}):
+        manager = TeamManager()
+        create = TeamCreateTool(manager, agent, teammate_mode="in-process", is_interactive=False, enable_coordinator_mode=True)
+        assert not asyncio.run(create.execute(TeamCreateParams(team_name="one"))).is_error
+        assert not asyncio.run(create.execute(TeamCreateParams(team_name="two"))).is_error
+        delete = TeamDeleteTool(manager, agent)
+        assert not asyncio.run(delete.execute(TeamDeleteParams(team_name="one"))).is_error
+        assert agent.coordinator_mode is True
+        assert "WriteFile" not in {tool.name for tool in agent.registry.list_tools()}
+        assert not asyncio.run(delete.execute(TeamDeleteParams(team_name="two"))).is_error
+        assert agent.coordinator_mode is False
+        assert "WriteFile" in {tool.name for tool in agent.registry.list_tools()}

@@ -351,6 +351,10 @@ class MemoryManager:
         result.extend(_load_dir(self._mem_dir))
         return result
 
+    def load_project(self) -> list[MemoryFile]:
+        """Scan only project-scoped memory files."""
+        return _load_dir(self._mem_dir)
+
     def get_memories(self) -> list[str]:
         """返回所有记忆文件的单行摘要，用于 /memory list。
 

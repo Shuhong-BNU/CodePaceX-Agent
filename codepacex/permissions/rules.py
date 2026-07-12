@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 import yaml
 
-Effect = Literal["allow", "deny"]
+Effect = Literal["allow", "deny", "ask"]
 
 _RULE_RE = re.compile(r"^(\w+)\((.+)\)$")
 
@@ -60,22 +60,22 @@ def _load_rules_file(path: Path) -> list[Rule]:
         return []
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (yaml.YAMLError, OSError):
-        return []
+    except (yaml.YAMLError, OSError) as exc:
+        raise ValueError(f"无法读取权限规则 {path}: {exc}") from exc
     if not isinstance(raw, list):
-        return []
+        raise ValueError(f"权限规则文件必须是列表: {path}")
     rules: list[Rule] = []
     for entry in raw:
         if not isinstance(entry, dict):
-            continue
+            raise ValueError(f"权限规则项必须是映射: {path}")
         rule_str = entry.get("rule", "")
         effect = entry.get("effect", "")
-        if effect not in ("allow", "deny"):
-            continue
+        if effect not in ("allow", "deny", "ask"):
+            raise ValueError(f"无效的权限规则 effect: {effect}")
         try:
             rules.append(parse_rule(rule_str, effect))
-        except ValueError:
-            continue
+        except ValueError as exc:
+            raise ValueError(f"无效的权限规则 {rule_str}: {exc}") from exc
     return rules
 
 

@@ -50,7 +50,11 @@ class TeamDeleteTool(Tool):
             return ToolResult(output=f"Failed to delete team: {e}", is_error=True)
 
         coordinator_note = ""
-        if self._parent_agent and self._parent_agent.coordinator_mode:
+        if (
+            self._parent_agent
+            and self._parent_agent.coordinator_mode
+            and not self._team_manager.list_teams()
+        ):
             full_registry = getattr(self._parent_agent, '_full_registry', None)
             if full_registry is not None:
                 self._parent_agent.registry = full_registry

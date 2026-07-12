@@ -248,7 +248,12 @@ def partition_tool_calls(
     batches: list[ToolBatch] = []
     for tc in tool_calls:
         tool = registry.get(tc.tool_name)
-        safe = tool is not None and tool.is_concurrency_safe and registry.is_enabled(tc.tool_name)
+        safe = (
+            tool is not None
+            and tool.is_read_only
+            and tool.is_concurrency_safe
+            and registry.is_enabled(tc.tool_name)
+        )
 
         if safe and batches and batches[-1].concurrent:
             batches[-1].calls.append(tc)
@@ -297,9 +302,10 @@ class StreamingExecutor:
             return []
         tasks = [t for _, t in sorted(self._tasks, key=lambda x: x[0])]
         results = await asyncio.gather(*tasks, return_exceptions=True)
+        self._tasks.clear()
         out: list[_ToolExecResult] = []
         for r in results:
-            if isinstance(r, Exception):
+            if isinstance(r, BaseException):
                 out.append(_ToolExecResult(
                     tool_id="",
                     tool_name="",
@@ -310,6 +316,17 @@ class StreamingExecutor:
             else:
                 out.append(r)
         return out
+
+    async def cancel_and_reap(self) -> None:
+        tasks = [task for _, task in self._tasks]
+        try:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            self._tasks.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +381,11 @@ class Agent:
         # _pending_extraction: 提取期间又触发了新请求，标记需要尾随提取
         self._extracting = False
         self._pending_extraction = False
+        self._consolidator: Any | None = None
+        if memory_manager is not None:
+            from codepacex.memory.consolidation import MemoryConsolidator
+
+            self._consolidator = MemoryConsolidator(work_dir)
         self.session_id: str = ""
         self.active_skills: dict[str, str] = {}
         self._skill_catalog: str = ""
@@ -504,6 +526,19 @@ class Agent:
         return api_conv, tools, events, ""
 
     async def run(self, conversation: ConversationManager) -> AsyncIterator[AgentEvent]:
+        active_executor: list[StreamingExecutor | None] = [None]
+        try:
+            async for event in self._run(conversation, active_executor):
+                yield event
+        finally:
+            if active_executor[0] is not None:
+                await active_executor[0].cancel_and_reap()
+
+    async def _run(
+        self,
+        conversation: ConversationManager,
+        active_executor: list[StreamingExecutor | None],
+    ) -> AsyncIterator[AgentEvent]:
         self._current_conversation = conversation
         fallback_history_exists = bool(conversation.history)
         env_context = build_environment_context(
@@ -614,18 +649,49 @@ class Agent:
 
             while True:
                 collector = StreamCollector()
+                streaming_executor = StreamingExecutor()
+                active_executor[0] = streaming_executor
+                streamed_count = 0
+                streaming_prefix_open = True
                 stream_started = False
                 try:
                     llm_stream = turn_runtime.client.stream(
                         api_conv, system=system, tools=tools
                     )
                     async for event in collector.consume(llm_stream):
+                        if isinstance(event, ToolUseEvent) and streaming_prefix_open:
+                            tc = collector.response.tool_calls[-1]
+                            tool = self.registry.get(tc.tool_name)
+                            decision = (
+                                self.permission_checker.check(tool, tc.arguments)
+                                if tool is not None and self.permission_checker is not None
+                                else None
+                            )
+                            # Hook-enabled turns remain on the normal path so that
+                            # pre/post Hook events can be yielded in order. For the
+                            # fast path, only pre-approved read-only tools are run.
+                            if (
+                                self.hook_engine is None
+                                and tool is not None
+                                and tool.is_read_only
+                                and tool.is_concurrency_safe
+                                and self.registry.is_enabled(tc.tool_name)
+                                and (decision is None or decision.effect == "allow")
+                            ):
+                                streaming_executor.submit(self._execute_single_tool_direct(tc))
+                                streamed_count += 1
+                            else:
+                                streaming_prefix_open = False
                         stream_started = True
                         yield event
                     break
                 except asyncio.CancelledError:
+                    await streaming_executor.cancel_and_reap()
+                    active_executor[0] = None
                     raise
                 except Exception as e:
+                    await streaming_executor.cancel_and_reap()
+                    active_executor[0] = None
                     if stream_started:
                         raise
 
@@ -780,6 +846,8 @@ class Agent:
 
             if response.stop_reason == "max_tokens":
                 if not max_tokens_escalated:
+                    await streaming_executor.cancel_and_reap()
+                    active_executor[0] = None
                     turn_runtime.client.set_max_output_tokens(MAX_TOKENS_CEILING)
                     max_tokens_escalated = True
                     if response.text:
@@ -793,6 +861,8 @@ class Agent:
                     yield RetryEvent(reason="max_tokens escalation")
                     continue
                 elif output_recoveries < MAX_OUTPUT_TOKENS_RECOVERIES:
+                    await streaming_executor.cancel_and_reap()
+                    active_executor[0] = None
                     output_recoveries += 1
                     conversation.add_assistant_message(
                         response.text, thinking_blocks=conv_thinking
@@ -818,6 +888,8 @@ class Agent:
                     and self.memory_manager
                 ):
                     asyncio.ensure_future(self._extract_memories(conversation))
+                if self._consolidator is not None:
+                    asyncio.ensure_future(self._consolidator.maybe_run())
                 if self.hook_engine:
                     ctx = self._build_hook_context("turn_end")
                     await self.hook_engine.run_hooks("turn_end", ctx)
@@ -853,10 +925,35 @@ class Agent:
             )
 
             tool_results: list[ToolResultBlock] = []
-            batches = partition_tool_calls(response.tool_calls, self.registry)
+            # Read-only, pre-authorized prefix calls may already be running while
+            # the model is still streaming. Results are still appended in original
+            # tool-call order, preserving provider protocol invariants.
+            for br in await streaming_executor.collect_results():
+                if br.is_unknown:
+                    consecutive_unknown += 1
+                else:
+                    consecutive_unknown = 0
+                content = self._maybe_persist_or_truncate(br.tool_id, br.result.output)
+                tool_results.append(ToolResultBlock(tool_use_id=br.tool_id, content=content, is_error=br.result.is_error))
+                yield ToolResultEvent(tool_id=br.tool_id, tool_name=br.tool_name, output=br.result.output, is_error=br.result.is_error, elapsed=br.elapsed)
+            active_executor[0] = None
+
+            batches = partition_tool_calls(response.tool_calls[streamed_count:], self.registry)
 
             for batch in batches:
-                if batch.concurrent and len(batch.calls) > 1:
+                predecisions: dict[str, Decision] = {}
+                can_run_direct = batch.concurrent and len(batch.calls) > 1 and self.hook_engine is None
+                if can_run_direct and self.permission_checker:
+                    for tc in batch.calls:
+                        tool = self.registry.get(tc.tool_name)
+                        if tool is None:
+                            can_run_direct = False
+                            break
+                        predecisions[tc.tool_id] = self.permission_checker.check(tool, tc.arguments)
+                    can_run_direct = can_run_direct and all(
+                        decision.effect == "allow" for decision in predecisions.values()
+                    )
+                if can_run_direct:
                     batch_results = await self._execute_batch_parallel(batch.calls)
                     for br in batch_results:
                         if br.is_unknown:
@@ -885,43 +982,10 @@ class Agent:
                         result: ToolResult | None = None
                         elapsed = 0.0
                         is_unknown = False
-
-                        if self.hook_engine:
-                            file_path = self._infer_file_path(tc.arguments)
-                            hook_ctx = self._build_hook_context(
-                                "pre_tool_use",
-                                tool_name=tc.tool_name,
-                                tool_args=tc.arguments,
-                                file_path=file_path,
-                            )
-                            rejection = await self.hook_engine.run_pre_tool_hooks(hook_ctx)
-                            for he in self._drain_hook_events():
-                                yield he
-                            if rejection is not None:
-                                result = ToolResult(
-                                    output=f"Hook rejected: {rejection.reason}",
-                                    is_error=True,
-                                )
-                                content = self._maybe_persist_or_truncate(
-                                    tc.tool_id, result.output
-                                )
-                                tool_results.append(
-                                    ToolResultBlock(
-                                        tool_use_id=tc.tool_id,
-                                        content=content,
-                                        is_error=True,
-                                    )
-                                )
-                                yield ToolResultEvent(
-                                    tool_id=tc.tool_id,
-                                    tool_name=tc.tool_name,
-                                    output=result.output,
-                                    is_error=True,
-                                    elapsed=0.0,
-                                )
-                                continue
-
-                        async for item in self._execute_tool(tc):
+                        decision = predecisions.get(tc.tool_id) or await self._decide_tool(tc)
+                        for he in self._drain_hook_events():
+                            yield he
+                        async for item in self._execute_tool(tc, decision=decision):
                             if isinstance(item, PermissionRequest):
                                 yield item
                             else:
@@ -1021,6 +1085,51 @@ class Agent:
         """为 HITL 权限确认生成人类可读的操作描述。"""
         return PermissionChecker.describe_tool_action(tc.tool_name, tc.arguments)
 
+    async def _decide_tool(self, tc: ToolCallComplete) -> Decision | None:
+        """Compute ordinary policy, run pre hooks, then merge once."""
+        tool = self.registry.get(tc.tool_name)
+        if tool is None:
+            return None
+        assessment = None
+        assessment_error = ""
+        if self.permission_checker:
+            try:
+                assessment = self.permission_checker.assess(tool, tc.arguments)
+            except Exception as exc:
+                assessment_error = f"权限安全检查失败: {exc}"
+        if assessment is not None and assessment.mandatory_denied:
+            try:
+                return self.permission_checker.finalize(assessment)
+            except Exception as exc:
+                return Decision("deny", f"危险命令最终决策失败: {exc}", persistable=False)
+        hook_effect = None
+        hook_reason = ""
+        if self.hook_engine:
+            file_path = self._infer_file_path(tc.arguments)
+            hook_ctx = self._build_hook_context(
+                "pre_tool_use", tool_name=tc.tool_name, tool_args=tc.arguments, file_path=file_path
+            )
+            try:
+                rejection = await self.hook_engine.run_pre_tool_hooks(hook_ctx)
+            except Exception as exc:
+                rejection = ToolRejectedError(tc.tool_name, f"Hook检查失败: {exc}", "pre_tool_use")
+            if rejection is not None:
+                hook_effect, hook_reason = "deny", f"Hook rejected: {rejection.reason}"
+        if assessment is not None:
+            try:
+                return self.permission_checker.finalize(
+                    assessment, hook_effect=hook_effect, hook_reason=hook_reason
+                )
+            except Exception as exc:
+                assessment_error = f"权限最终决策失败: {exc}"
+        if assessment_error:
+            if hook_effect == "deny":
+                return Decision("deny", hook_reason, persistable=False)
+            return Decision("ask", assessment_error, persistable=False)
+        if hook_effect:
+            return Decision(effect="deny", reason=hook_reason, persistable=False)
+        return None
+
     async def _execute_single_tool_direct(
         self, tc: ToolCallComplete
     ) -> _ToolExecResult:
@@ -1071,7 +1180,7 @@ class Agent:
         return list(await asyncio.gather(*tasks))
 
     async def _execute_tool(
-        self, tc: ToolCallComplete
+        self, tc: ToolCallComplete, *, decision: Decision | None = None
     ) -> AsyncIterator[tuple[ToolResult, float, bool]]:
         tool = self.registry.get(tc.tool_name)
         start = time.monotonic()
@@ -1096,9 +1205,9 @@ class Agent:
             return
 
         # 权限检查
-        if self.permission_checker:
+        if decision is None and self.permission_checker:
             decision = self.permission_checker.check(tool, tc.arguments)
-
+        if decision is not None:
             if decision.effect == "deny":
                 result = ToolResult(
                     output=f"Permission denied: {decision.reason}",
@@ -1115,7 +1224,7 @@ class Agent:
                 # 向调用方 yield 权限请求事件，由调用方处理
                 yield PermissionRequest(
                     tool_name=tc.tool_name,
-                    description=desc,
+                    description=f"{desc}\nReason: {decision.reason}",
                     future=future,
                 )
                 response = await future
@@ -1129,12 +1238,13 @@ class Agent:
                     yield result, elapsed, is_unknown
                     return
 
-                if response == PermissionResponse.ALLOW_ALWAYS:
+                if response == PermissionResponse.ALLOW_ALWAYS and decision.persistable:
                     from codepacex.permissions.rules import Rule, extract_content
                     content = extract_content(tc.tool_name, tc.arguments)
                     pattern = f"{content[:60]}*" if len(content) > 60 else f"{content}*"
                     # 持久化规则写入本地文件
                     rule = Rule(tool_name=tc.tool_name, pattern=pattern, effect="allow")
+                    assert self.permission_checker is not None
                     self.permission_checker.rule_engine.append_local_rule(rule)
                     # 同时加入会话级放行集合，本轮立即生效无需磁盘读取
                     self.permission_checker.add_session_allow(tc.tool_name, content)
@@ -1423,36 +1533,18 @@ class Agent:
                 is_error=True,
             )
 
-        if self.hook_engine:
-            file_path = self._infer_file_path(tc.arguments)
-            hook_ctx = self._build_hook_context(
-                "pre_tool_use",
-                tool_name=tc.tool_name,
-                tool_args=tc.arguments,
-                file_path=file_path,
-            )
-            rejection = await self.hook_engine.run_pre_tool_hooks(hook_ctx)
-            if rejection is not None:
-                return ToolResult(
-                    output=f"Hook rejected: {rejection.reason}",
-                    is_error=True,
-                )
-
-        if self.permission_checker:
-            decision = self.permission_checker.check(tool, tc.arguments)
+        decision = await self._decide_tool(tc)
+        if decision is not None:
             if decision.effect == "deny":
                 return ToolResult(
                     output=f"Permission denied: {decision.reason}",
                     is_error=True,
                 )
             if decision.effect == "ask":
-                if self.permission_mode == PermissionMode.BYPASS:
-                    pass  # BYPASS 模式自动批准
-                else:
-                    return ToolResult(
-                        output="Permission denied: non-interactive agent cannot prompt user",
-                        is_error=True,
-                    )
+                return ToolResult(
+                    output=f"Permission denied: non-interactive agent cannot prompt user ({decision.reason})",
+                    is_error=True,
+                )
 
         try:
             params = tool.params_model.model_validate(tc.arguments)

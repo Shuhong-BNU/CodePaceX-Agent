@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
-from codepacex.tools.base import Tool, ToolResult
+from codepacex.tools.base import PathAccess, Tool, ToolResult
 
 if TYPE_CHECKING:
     from codepacex.cache import FileCache
@@ -30,6 +30,7 @@ class ReadFile(Tool):
     params_model = Params
     category = "read"
     is_concurrency_safe = True
+    path_accesses = (PathAccess("file_path", "read"),)
 
 
     def __init__(self, file_cache: FileCache | None = None, file_state_cache: FileStateCache | None = None) -> None:

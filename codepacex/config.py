@@ -156,6 +156,13 @@ class WorktreeConfig:
 
 
 @dataclass
+class SandboxAppConfig:
+    enabled: bool | None = None
+    auto_allow: bool | None = None
+    network_enabled: bool | None = None
+
+
+@dataclass
 class AppConfig:
     providers: list[ProviderConfig]
     fallback: list[str] = field(default_factory=list)
@@ -167,6 +174,7 @@ class AppConfig:
     worktree: WorktreeConfig = field(default_factory=WorktreeConfig)
     teammate_mode: str = ""
     enable_coordinator_mode: bool = False
+    sandbox: SandboxAppConfig = field(default_factory=SandboxAppConfig)
 
 
 def _load_single_file(path: Path) -> AppConfig:
@@ -213,6 +221,13 @@ def _load_single_file(path: Path) -> AppConfig:
         stale_cutoff_hours=wt["stale_cutoff_hours"],
     )
 
+    sandbox_raw = validated["sandbox"]
+    sandbox_cfg = SandboxAppConfig(
+        enabled=sandbox_raw["enabled"],
+        auto_allow=sandbox_raw["auto_allow"],
+        network_enabled=sandbox_raw["network_enabled"],
+    )
+
     return AppConfig(
         providers=providers,
         fallback=validated["fallback"],
@@ -224,6 +239,7 @@ def _load_single_file(path: Path) -> AppConfig:
         worktree=worktree_cfg,
         teammate_mode=validated["teammate_mode"],
         enable_coordinator_mode=validated["enable_coordinator_mode"],
+        sandbox=sandbox_cfg,
     )
 
 
@@ -253,14 +269,27 @@ def _merge_config(base: AppConfig, override: AppConfig) -> AppConfig:
         base.teammate_mode = override.teammate_mode
     if override.enable_coordinator_mode:
         base.enable_coordinator_mode = True
+    if override.sandbox.enabled is not None:
+        base.sandbox.enabled = override.sandbox.enabled
+    if override.sandbox.auto_allow is not None:
+        base.sandbox.auto_allow = override.sandbox.auto_allow
+    if override.sandbox.network_enabled is not None:
+        base.sandbox.network_enabled = override.sandbox.network_enabled
     return base
+
+
+def _finalize_config(config: AppConfig) -> AppConfig:
+    config.sandbox.enabled = bool(config.sandbox.enabled)
+    config.sandbox.auto_allow = bool(config.sandbox.auto_allow)
+    config.sandbox.network_enabled = bool(config.sandbox.network_enabled)
+    return config
 
 
 def load_config(path: Path | None = None) -> AppConfig:
     if path is not None:
         if not path.exists():
             raise ConfigError(f"Config file not found: {path}")
-        return _load_single_file(path)
+        return _finalize_config(_load_single_file(path))
 
     cwd = Path.cwd()
     home = Path.home()
@@ -285,4 +314,4 @@ def load_config(path: Path | None = None) -> AppConfig:
             "No config file found. Expected .codepacex/config.yaml "
             "in project or ~/.codepacex/config.yaml"
         )
-    return merged
+    return _finalize_config(merged)

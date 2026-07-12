@@ -107,6 +107,11 @@ class HookEngine:
                     )
             except Exception as e:
                 log.warning("Hook '%s' execution error: %s", hook.id, e)
+                return ToolRejectedError(
+                    tool=ctx.tool_name,
+                    reason=f"Hook '{hook.id}' execution failed: {e}",
+                    hook_id=hook.id,
+                )
         return None
 
     def get_prompt_messages(self) -> list[str]:

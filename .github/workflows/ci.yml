@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [codex/verifiable-agent-capabilities]
+
+permissions:
+  contents: read
+
+jobs:
+  ubuntu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+      - name: Install project and test dependencies
+        run: python -m pip install -e . pytest pytest-asyncio
+      - name: Run main test suite
+        run: python -m pytest -q --ignore=tests/test_os_sandbox_smoke.py
+      - name: Run Linux sandbox verification
+        run: python -m pytest tests/test_os_sandbox_smoke.py -q -rs
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install project and test dependencies
+        run: python -m pip install -e . pytest pytest-asyncio
+      - name: Run main test suite
+        run: python -m pytest -q --ignore=tests/test_os_sandbox_smoke.py
+      - name: Run macOS sandbox verification
+        run: python -m pytest tests/test_os_sandbox_smoke.py -q -rs
