@@ -20,6 +20,7 @@ class InstallSkill(Tool):
     params_model = InstallSkillParams
     category = "write"
     should_defer = True
+    requires_explicit_authorization = True
 
     def __init__(self) -> None:
         self._on_installed: Callable[[], None] | None = None
