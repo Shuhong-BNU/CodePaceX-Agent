@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from codepacex.commands.registry import Command, CommandContext, CommandType
-from codepacex.sandbox import SandboxConfig, create_sandbox
+from codepacex.sandbox import build_sandbox_config, create_sandbox
 
 
 def _status(ctx: CommandContext) -> str:
@@ -57,10 +57,7 @@ async def handle_sandbox(ctx: CommandContext) -> None:
     work_dir = ctx.agent.work_dir
     bash.work_dir = work_dir
     bash.sandbox = backend
-    bash.sandbox_config = SandboxConfig(
-        allow_write=[work_dir, "/tmp"],
-        deny_write=[f"{work_dir}/.codepacex/config.yaml", f"{work_dir}/.codepacex/config.local.yaml"],
-    )
+    bash.sandbox_config = build_sandbox_config(work_dir)
     if ctx.agent.permission_checker:
         ctx.agent.permission_checker.sandbox_enabled = arg == "on-auto"
     ctx.ui.add_system_message("OS sandbox enabled" + (" with auto allow" if arg == "on-auto" else ""))

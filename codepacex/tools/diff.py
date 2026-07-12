@@ -8,7 +8,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from codepacex.tools.base import Tool, ToolResult
+from codepacex.tools.base import PathAccess, Tool, ToolResult
 
 MAX_DIFF_LINES = 200
 
@@ -48,6 +48,10 @@ class Diff(Tool):
     params_model = DiffParams
     category = "read"
     is_concurrency_safe = True
+    path_accesses = (
+        PathAccess("old_file", "read", "workspace"),
+        PathAccess("new_file", "read", "workspace"),
+    )
 
     async def execute(self, params: DiffParams) -> ToolResult:
         old_path, new_path = Path(params.old_file), Path(params.new_file)

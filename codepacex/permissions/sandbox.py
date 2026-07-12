@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from typing import Literal
 
 
 # 核心实现
@@ -30,28 +31,39 @@ class PathSandbox:
         return self._allowed_roots[0]
 
 
-    def check(self, path: str) -> tuple[bool, str]:
-        p = Path(path).expanduser()
-        if not p.is_absolute():
-            p = self.project_root / p
-        abs_path = p.absolute()
+    def check(
+        self,
+        path: str,
+        *,
+        access: Literal["read", "write"] = "read",
+        workspace_only: bool = False,
+    ) -> tuple[bool, str]:
+        """Resolve a path and verify its real location against allowed roots.
 
+        Non-existent write targets are resolved through their nearest existing
+        ancestor so a symlinked parent cannot escape the workspace.
+        """
         try:
-            real_path = abs_path.resolve(strict=True)
-        except OSError:
-            ancestor = abs_path
-            while not ancestor.exists():
-                parent = ancestor.parent
-                if parent == ancestor:
-                    return False, f"无法解析路径: {path}"
-                ancestor = parent
-            try:
+            candidate = Path(path).expanduser()
+            if not candidate.is_absolute():
+                candidate = self.project_root / candidate
+            absolute = candidate.absolute()
+            if absolute.exists():
+                real_path = absolute.resolve(strict=True)
+            else:
+                ancestor = absolute
+                while not ancestor.exists():
+                    parent = ancestor.parent
+                    if parent == ancestor:
+                        return False, f"无法解析路径: {path}"
+                    ancestor = parent
                 resolved_ancestor = ancestor.resolve(strict=True)
-            except OSError:
-                return False, f"无法解析路径: {path}"
-            real_path = resolved_ancestor / abs_path.relative_to(ancestor)
+                real_path = resolved_ancestor / absolute.relative_to(ancestor)
+            roots = self._allowed_roots[:1] if workspace_only else self._allowed_roots
+        except (OSError, RuntimeError, ValueError) as exc:
+            return False, f"路径解析失败 {path}: {exc}"
 
-        for root in self._allowed_roots:
+        for root in roots:
             try:
                 real_path.relative_to(root)
                 return True, ""

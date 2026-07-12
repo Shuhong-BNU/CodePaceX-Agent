@@ -37,6 +37,19 @@ def create_sandbox() -> Sandbox | None:
     return None
 
 
+def build_sandbox_config(work_dir: str, *, network_enabled: bool = False) -> SandboxConfig:
+    project_config_dir = f"{work_dir}/.codepacex"
+    return SandboxConfig(
+        allow_write=[work_dir, "/tmp"],
+        deny_write=[
+            f"{project_config_dir}/config.yaml",
+            f"{project_config_dir}/config.local.yaml",
+            f"{project_config_dir}/permissions.local.yaml",
+        ],
+        network_enabled=network_enabled,
+    )
+
+
 def configure_bash_sandbox(
     registry: object,
     *,
@@ -59,16 +72,7 @@ def configure_bash_sandbox(
         return None, None, "unsupported operating system"
     if not backend.available():
         return backend, None, f"{type(backend).__name__} is unavailable"
-    project_config_dir = f"{work_dir}/.codepacex"
-    config = SandboxConfig(
-        allow_write=[work_dir, "/tmp"],
-        deny_write=[
-            f"{project_config_dir}/config.yaml",
-            f"{project_config_dir}/config.local.yaml",
-            f"{project_config_dir}/permissions.local.yaml",
-        ],
-        network_enabled=network_enabled,
-    )
+    config = build_sandbox_config(work_dir, network_enabled=network_enabled)
     bash.sandbox = backend
     bash.sandbox_config = config
     return backend, config, "available"

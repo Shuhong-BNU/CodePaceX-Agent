@@ -157,9 +157,9 @@ class WorktreeConfig:
 
 @dataclass
 class SandboxAppConfig:
-    enabled: bool = False
-    auto_allow: bool = False
-    network_enabled: bool = False
+    enabled: bool | None = None
+    auto_allow: bool | None = None
+    network_enabled: bool | None = None
 
 
 @dataclass
@@ -269,20 +269,27 @@ def _merge_config(base: AppConfig, override: AppConfig) -> AppConfig:
         base.teammate_mode = override.teammate_mode
     if override.enable_coordinator_mode:
         base.enable_coordinator_mode = True
-    if override.sandbox.enabled:
-        base.sandbox.enabled = True
-    if override.sandbox.auto_allow:
-        base.sandbox.auto_allow = True
-    if override.sandbox.network_enabled:
-        base.sandbox.network_enabled = True
+    if override.sandbox.enabled is not None:
+        base.sandbox.enabled = override.sandbox.enabled
+    if override.sandbox.auto_allow is not None:
+        base.sandbox.auto_allow = override.sandbox.auto_allow
+    if override.sandbox.network_enabled is not None:
+        base.sandbox.network_enabled = override.sandbox.network_enabled
     return base
+
+
+def _finalize_config(config: AppConfig) -> AppConfig:
+    config.sandbox.enabled = bool(config.sandbox.enabled)
+    config.sandbox.auto_allow = bool(config.sandbox.auto_allow)
+    config.sandbox.network_enabled = bool(config.sandbox.network_enabled)
+    return config
 
 
 def load_config(path: Path | None = None) -> AppConfig:
     if path is not None:
         if not path.exists():
             raise ConfigError(f"Config file not found: {path}")
-        return _load_single_file(path)
+        return _finalize_config(_load_single_file(path))
 
     cwd = Path.cwd()
     home = Path.home()
@@ -307,4 +314,4 @@ def load_config(path: Path | None = None) -> AppConfig:
             "No config file found. Expected .codepacex/config.yaml "
             "in project or ~/.codepacex/config.yaml"
         )
-    return merged
+    return _finalize_config(merged)

@@ -309,7 +309,7 @@ def validate_teammate_mode(mode: object) -> str:
 
 
 def validate_sandbox(raw: dict | None) -> dict:
-    defaults = {"enabled": False, "auto_allow": False, "network_enabled": False}
+    defaults = {"enabled": None, "auto_allow": None, "network_enabled": None}
     if raw is None:
         return defaults
     if not isinstance(raw, dict):
@@ -317,10 +317,10 @@ def validate_sandbox(raw: dict | None) -> dict:
     unknown = set(raw) - set(defaults)
     if unknown:
         raise ConfigError(f"Unknown sandbox fields: {', '.join(sorted(unknown))}")
-    return {
-        key: validate_bool_field(raw.get(key, default), f"sandbox.{key}")
-        for key, default in defaults.items()
-    }
+    result: dict[str, bool | None] = {}
+    for key in defaults:
+        result[key] = validate_bool_field(raw[key], f"sandbox.{key}") if key in raw else None
+    return result
 
 
 def validate_config_structure(raw: object) -> dict:

@@ -16,6 +16,17 @@ SKIP_DIRS = {".git", ".venv", "node_modules", "__pycache__", ".tox", ".mypy_cach
 MAX_OUTPUT_CHARS = 10000
 
 ToolCategory = Literal["read", "write", "command"]
+PathAccessMode = Literal["read", "write"]
+PathScope = Literal["default", "workspace"]
+
+
+@dataclass(frozen=True)
+class PathAccess:
+    """Declare a path argument that must be checked before execution."""
+
+    field: str
+    mode: PathAccessMode
+    scope: PathScope = "default"
 
 
 # 核心实现
@@ -33,6 +44,8 @@ class Tool(ABC):
     is_concurrency_safe: bool = False
     is_system_tool: bool = False
     should_defer: bool = False
+    path_accesses: tuple[PathAccess, ...] = ()
+    requires_explicit_authorization: bool = False
 
     @property
     def is_read_only(self) -> bool:
