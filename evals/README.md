@@ -90,3 +90,13 @@ fixture 中的 `.codepacex/permissions.yaml` 会通过项目级 permission rule 
 ## 📊 简历指标运行产物
 
 `evals/benchmark.py` 为每次真实实验创建版本化 manifest、环境快照、事件 JSONL、usage 和 Markdown 报告，并自动脱敏 API Key 等敏感字段。`evals/run_resume_metrics.py` 只汇总真实采样数据；它不会生成或补全任何缺失的样本。
+
+## SWE-bench 官方适配器
+
+`evals/swe_bench_live.py` 可确定性筛选实例、写入 frozen manifest，并构造官方 `swebench.harness.run_evaluation` 命令。无需安装 evaluator 的 dry-run 示例：
+
+```bash
+./.venv/bin/python -m evals.swe_bench_live --dataset-name org/dataset --predictions-path predictions.json --run-id pilot --namespace codepacex --dry-run
+```
+
+当前只验证官方 CLI 命令构造、manifest 和 dry-run；尚未运行真实 Docker SWE-bench-Live 评测，因此仓库不提供或声称真实 SWE-bench 成绩。

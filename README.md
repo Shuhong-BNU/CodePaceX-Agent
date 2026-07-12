@@ -564,12 +564,13 @@ Review public API changes, compatibility risks, and missing tests.
 | `plan` | allow | ask | ask |
 | `bypassPermissions` | allow | allow | allow |
 
-`plan` 模式会额外放行计划文件写入和少数计划工具。安全只读命令可自动放行；危险 Bash 命中黑名单会直接拒绝；文件路径超出项目根或系统临时目录时，在非 `bypassPermissions` 模式下会触发人工确认。用户级、项目级、本地权限规则以及本会话的 allow-always 记录可以进一步覆盖模式兜底结果。
+`plan` 模式会额外放行计划文件写入和少数计划工具。危险删除和设备操作属于不可覆盖的强制安全层；路径、显式规则和 Hook 按 `deny > ask > allow` 聚合，每次工具调用最多产生一次确认。`bypassPermissions` 只跳过普通模式兜底，不能覆盖强制安全决定。
 
 安全边界：
 
-- 这是应用级权限检查，不是容器、虚拟机或 OS sandbox。
-- 获准执行的 Shell 命令继承 CodePaceX 进程的系统权限。
+- 应用级权限检查始终存在；macOS Seatbelt 与 Linux bubblewrap 是可选的额外 OS 进程边界，可用 `/sandbox` 查看状态。
+- OS backend 不可用时不会静默自动放行，获准执行的 Shell 命令会回到普通权限确认。
+- Seatbelt/bwrap 不是容器或虚拟机，也不宣称隔离所有秘密读取。
 - MCP、Hook 和目录型 Skill 都可能运行外部代码或访问外部服务。
 - `bypassPermissions` 只应在隔离、可信、可恢复的环境中使用。
 
@@ -581,9 +582,7 @@ uv run pytest -q
 uv run python -m compileall -q codepacex tests
 ```
 
-当前本机环境：uv 0.11.23、CPython 3.12.13。2026-06-21 在已经初始化为
-Git 仓库的项目目录中执行全量测试，共收集并运行 560 个测试，560 个全部通过，
-耗时 5.68 秒。
+PR #12 的加固结果以对应 commit 的本地 pytest 输出和 GitHub Actions 为准；系统能力 smoke 的 skipped 状态必须单独报告，不能记为通过。
 
 ## 📊 性能指标说明
 

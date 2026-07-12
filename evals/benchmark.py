@@ -48,6 +48,7 @@ class RunRecorder:
             "platform": platform.platform(),
             "git_commit": manifest.git_commit,
         })
+        (self.path / "events.jsonl").touch()
 
     def write_json(self, name: str, value: Any) -> None:
         (self.path / name).write_text(json.dumps(_redact(value), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -57,10 +58,23 @@ class RunRecorder:
         with (self.path / "events.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
+    def write_artifact(self, name: str, content: str | bytes) -> Path:
+        if Path(name).name != name:
+            raise ValueError("artifact name must not contain a path")
+        artifact_dir = self.path / "artifacts"
+        artifact_dir.mkdir(exist_ok=True)
+        target = artifact_dir / name
+        if isinstance(content, bytes):
+            target.write_bytes(content)
+        else:
+            target.write_text(content, encoding="utf-8")
+        return target
+
     def finalize(self, result: dict[str, Any]) -> None:
-        self.write_json("result.json", result)
+        redacted = _redact(result)
+        self.write_json("result.json", redacted)
         lines = ["# Benchmark Run", "", f"- Run ID: `{self.run_id}`"]
-        for key, value in sorted(result.items()):
+        for key, value in sorted(redacted.items()):
             lines.append(f"- {key}: {value}")
         (self.path / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
