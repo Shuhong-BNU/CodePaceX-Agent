@@ -156,6 +156,13 @@ class WorktreeConfig:
 
 
 @dataclass
+class SandboxAppConfig:
+    enabled: bool = False
+    auto_allow: bool = False
+    network_enabled: bool = False
+
+
+@dataclass
 class AppConfig:
     providers: list[ProviderConfig]
     fallback: list[str] = field(default_factory=list)
@@ -167,6 +174,7 @@ class AppConfig:
     worktree: WorktreeConfig = field(default_factory=WorktreeConfig)
     teammate_mode: str = ""
     enable_coordinator_mode: bool = False
+    sandbox: SandboxAppConfig = field(default_factory=SandboxAppConfig)
 
 
 def _load_single_file(path: Path) -> AppConfig:
@@ -213,6 +221,13 @@ def _load_single_file(path: Path) -> AppConfig:
         stale_cutoff_hours=wt["stale_cutoff_hours"],
     )
 
+    sandbox_raw = validated["sandbox"]
+    sandbox_cfg = SandboxAppConfig(
+        enabled=sandbox_raw["enabled"],
+        auto_allow=sandbox_raw["auto_allow"],
+        network_enabled=sandbox_raw["network_enabled"],
+    )
+
     return AppConfig(
         providers=providers,
         fallback=validated["fallback"],
@@ -224,6 +239,7 @@ def _load_single_file(path: Path) -> AppConfig:
         worktree=worktree_cfg,
         teammate_mode=validated["teammate_mode"],
         enable_coordinator_mode=validated["enable_coordinator_mode"],
+        sandbox=sandbox_cfg,
     )
 
 
@@ -253,6 +269,12 @@ def _merge_config(base: AppConfig, override: AppConfig) -> AppConfig:
         base.teammate_mode = override.teammate_mode
     if override.enable_coordinator_mode:
         base.enable_coordinator_mode = True
+    if override.sandbox.enabled:
+        base.sandbox.enabled = True
+    if override.sandbox.auto_allow:
+        base.sandbox.auto_allow = True
+    if override.sandbox.network_enabled:
+        base.sandbox.network_enabled = True
     return base
 
 

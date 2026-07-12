@@ -105,6 +105,9 @@ class TeamManager:
             return team
         return None
 
+    def list_teams(self) -> list[AgentTeam]:
+        return list(self._teams.values())
+
     def get_task_store(self, team_name: str) -> SharedTaskStore | None:
         if team_name in self._task_stores:
             return self._task_stores[team_name]

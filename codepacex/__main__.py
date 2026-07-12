@@ -106,6 +106,7 @@ def main() -> None:
         worktree_config=config.worktree,
         teammate_mode=config.teammate_mode,
         enable_coordinator_mode=config.enable_coordinator_mode,
+        sandbox_config=config.sandbox,
         driver_class=NoAltScreenDriver,
     )
     app.run()
@@ -137,11 +138,13 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
         RuleEngine,
     )
     from codepacex.tools import create_default_registry
+    from codepacex.sandbox import configure_bash_sandbox
     from codepacex.agents.loader import AgentLoader
     from codepacex.agents.task_manager import TaskManager
     from codepacex.agents.trace import TraceManager
     from codepacex.tools.agent_tool import AgentTool
     from codepacex.tools.impl.tool_search import ToolSearchTool
+    from codepacex.tools.install_skill import InstallSkill
     from codepacex.teams.manager import TeamManager
     from codepacex.teams.models import BackendType
     from codepacex.tools.team_create import TeamCreateTool
@@ -163,6 +166,13 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
     work_dir = os.getcwd()
     home = Path.home()
 
+    registry = create_default_registry()
+    backend, _sandbox_config, sandbox_state = configure_bash_sandbox(
+        registry,
+        enabled=config.sandbox.enabled,
+        network_enabled=config.sandbox.network_enabled,
+        work_dir=work_dir,
+    )
     checker = PermissionChecker(
         detector=DangerousCommandDetector(),
         sandbox=PathSandbox(work_dir),
@@ -172,11 +182,14 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
             local_rules_path=Path(work_dir) / ".codepacex" / "permissions.local.yaml",
         ),
         mode=permission_mode,
+        sandbox_enabled=bool(
+            config.sandbox.auto_allow and backend is not None and sandbox_state == "available"
+        ),
     )
 
     instructions = load_instructions(work_dir)
-    registry = create_default_registry()
     registry.register(ToolSearchTool(registry, protocol=provider.protocol))
+    registry.register(InstallSkill())
 
     agent = Agent(
         client=client,

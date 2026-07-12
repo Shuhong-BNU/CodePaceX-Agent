@@ -83,6 +83,10 @@ fixture 中的 `.codepacex/permissions.yaml` 会通过项目级 permission rule 
 ## 🚧 边界
 
 - 这是 developer-environment regression eval，用户级配置、全局指令、hooks、permission rules 可能影响模型行为，因此 report 会记录相关 source hash。
-- 不包含 LLM Judge、SWE-bench adapter、dashboard、pass@k 或自动 provider retry。
+- 不包含 LLM Judge、dashboard、pass@k 或自动 provider retry。SWE-bench-Live 的实例选择与官方 evaluator adapter 位于 `evals/swe_bench_live.py`；正式 Docker 运行结果仍应保存为本地 `.runs/` artifact。
 - `.runs/` 里的真实 trace 和 workspace 是本地 artifact，不应直接提交。
 - Baseline v1 证明当前 6-task suite 可以稳定通过，但不代表大型真实仓库修复能力已经被覆盖。
+
+## 📊 简历指标运行产物
+
+`evals/benchmark.py` 为每次真实实验创建版本化 manifest、环境快照、事件 JSONL、usage 和 Markdown 报告，并自动脱敏 API Key 等敏感字段。`evals/run_resume_metrics.py` 只汇总真实采样数据；它不会生成或补全任何缺失的样本。

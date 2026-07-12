@@ -594,6 +594,7 @@ class CodePaceXApp(App):
         worktree_config: Any = None,
         teammate_mode: str = "",
         enable_coordinator_mode: bool = False,
+        sandbox_config: Any = None,
         driver_class: type | None = None,
     ) -> None:
         super().__init__(driver_class=driver_class)
@@ -607,6 +608,7 @@ class CodePaceXApp(App):
         self._worktree_config = worktree_config
         self._teammate_mode = teammate_mode
         self._enable_coordinator_mode = enable_coordinator_mode
+        self._sandbox_config = sandbox_config
         self.file_cache = FileCache()
         self.client: LLMClient | None = None
         self.conversation = ConversationManager()
@@ -696,6 +698,13 @@ class CodePaceXApp(App):
 
         work_dir = os.getcwd()
         home = Path.home()
+        from codepacex.sandbox import configure_bash_sandbox
+        backend, _sandbox, sandbox_state = configure_bash_sandbox(
+            self.registry,
+            enabled=bool(self._sandbox_config and self._sandbox_config.enabled),
+            network_enabled=bool(self._sandbox_config and self._sandbox_config.network_enabled),
+            work_dir=work_dir,
+        )
         checker = PermissionChecker(
             detector=DangerousCommandDetector(),
             sandbox=PathSandbox(work_dir),
@@ -705,6 +714,12 @@ class CodePaceXApp(App):
                 local_rules_path=Path(work_dir) / ".codepacex" / "permissions.local.yaml",
             ),
             mode=self._initial_permission_mode,
+            sandbox_enabled=bool(
+                self._sandbox_config
+                and self._sandbox_config.auto_allow
+                and backend is not None
+                and sandbox_state == "available"
+            ),
         )
 
         self._instructions_content = load_instructions(work_dir)
@@ -722,6 +737,12 @@ class CodePaceXApp(App):
         load_skill_tool = LoadSkill()
         self.registry.register(load_skill_tool)
         self._load_skill_tool = load_skill_tool
+        from codepacex.tools.install_skill import InstallSkill
+        install_skill_tool = InstallSkill()
+        install_skill_tool.set_on_installed(
+            lambda: self.skill_loader.load_all() if self.skill_loader else None
+        )
+        self.registry.register(install_skill_tool)
 
         self.registry.register(
             ToolSearchTool(self.registry, protocol=provider.protocol)

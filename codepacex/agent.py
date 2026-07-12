@@ -364,6 +364,11 @@ class Agent:
         # _pending_extraction: 提取期间又触发了新请求，标记需要尾随提取
         self._extracting = False
         self._pending_extraction = False
+        self._consolidator: Any | None = None
+        if memory_manager is not None:
+            from codepacex.memory.consolidation import MemoryConsolidator
+
+            self._consolidator = MemoryConsolidator(work_dir)
         self.session_id: str = ""
         self.active_skills: dict[str, str] = {}
         self._skill_catalog: str = ""
@@ -614,12 +619,37 @@ class Agent:
 
             while True:
                 collector = StreamCollector()
+                streaming_executor = StreamingExecutor()
+                streamed_count = 0
+                streaming_prefix_open = True
                 stream_started = False
                 try:
                     llm_stream = turn_runtime.client.stream(
                         api_conv, system=system, tools=tools
                     )
                     async for event in collector.consume(llm_stream):
+                        if isinstance(event, ToolUseEvent) and streaming_prefix_open:
+                            tc = collector.response.tool_calls[-1]
+                            tool = self.registry.get(tc.tool_name)
+                            decision = (
+                                self.permission_checker.check(tool, tc.arguments)
+                                if tool is not None and self.permission_checker is not None
+                                else None
+                            )
+                            # Hook-enabled turns remain on the normal path so that
+                            # pre/post Hook events can be yielded in order. For the
+                            # fast path, only pre-approved read-only tools are run.
+                            if (
+                                self.hook_engine is None
+                                and tool is not None
+                                and tool.is_concurrency_safe
+                                and self.registry.is_enabled(tc.tool_name)
+                                and (decision is None or decision.effect == "allow")
+                            ):
+                                streaming_executor.submit(self._execute_single_tool_direct(tc))
+                                streamed_count += 1
+                            else:
+                                streaming_prefix_open = False
                         stream_started = True
                         yield event
                     break
@@ -818,6 +848,8 @@ class Agent:
                     and self.memory_manager
                 ):
                     asyncio.ensure_future(self._extract_memories(conversation))
+                if self._consolidator is not None:
+                    asyncio.ensure_future(self._consolidator.maybe_run())
                 if self.hook_engine:
                     ctx = self._build_hook_context("turn_end")
                     await self.hook_engine.run_hooks("turn_end", ctx)
@@ -853,7 +885,19 @@ class Agent:
             )
 
             tool_results: list[ToolResultBlock] = []
-            batches = partition_tool_calls(response.tool_calls, self.registry)
+            # Read-only, pre-authorized prefix calls may already be running while
+            # the model is still streaming. Results are still appended in original
+            # tool-call order, preserving provider protocol invariants.
+            for br in await streaming_executor.collect_results():
+                if br.is_unknown:
+                    consecutive_unknown += 1
+                else:
+                    consecutive_unknown = 0
+                content = self._maybe_persist_or_truncate(br.tool_id, br.result.output)
+                tool_results.append(ToolResultBlock(tool_use_id=br.tool_id, content=content, is_error=br.result.is_error))
+                yield ToolResultEvent(tool_id=br.tool_id, tool_name=br.tool_name, output=br.result.output, is_error=br.result.is_error, elapsed=br.elapsed)
+
+            batches = partition_tool_calls(response.tool_calls[streamed_count:], self.registry)
 
             for batch in batches:
                 if batch.concurrent and len(batch.calls) > 1:

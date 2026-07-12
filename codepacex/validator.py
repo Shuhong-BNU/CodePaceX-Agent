@@ -308,6 +308,21 @@ def validate_teammate_mode(mode: object) -> str:
     return mode
 
 
+def validate_sandbox(raw: dict | None) -> dict:
+    defaults = {"enabled": False, "auto_allow": False, "network_enabled": False}
+    if raw is None:
+        return defaults
+    if not isinstance(raw, dict):
+        raise ConfigError("'sandbox' must be a mapping")
+    unknown = set(raw) - set(defaults)
+    if unknown:
+        raise ConfigError(f"Unknown sandbox fields: {', '.join(sorted(unknown))}")
+    return {
+        key: validate_bool_field(raw.get(key, default), f"sandbox.{key}")
+        for key, default in defaults.items()
+    }
+
+
 def validate_config_structure(raw: object) -> dict:
     """校验的主入口。校验解析后的原始配置，返回清洗后的字典。
 
@@ -336,4 +351,5 @@ def validate_config_structure(raw: object) -> dict:
         "enable_coordinator_mode": validate_bool_field(
             raw.get("enable_coordinator_mode", False), "enable_coordinator_mode"
         ),
+        "sandbox": validate_sandbox(raw.get("sandbox")),
     }

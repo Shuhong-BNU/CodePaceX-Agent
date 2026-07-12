@@ -34,11 +34,13 @@ class PermissionChecker:
         sandbox: PathSandbox,
         rule_engine: RuleEngine,
         mode: PermissionMode = PermissionMode.DEFAULT,
+        sandbox_enabled: bool = False,
     ) -> None:
         self.detector = detector
         self.sandbox = sandbox
         self.rule_engine = rule_engine
         self.mode = mode
+        self.sandbox_enabled = sandbox_enabled
         self.plan_file_path: str = ""
         # Layer 4b: 会话级 allow-always 集合（内存中，不持久化）
         # 存放格式为 "ToolName:pattern"，用户选择 "don't ask again" 时记录
@@ -102,6 +104,16 @@ class PermissionChecker:
             hit, reason = self.detector.detect(content)
             if hit:
                 return Decision(effect="deny", reason=f"危险命令拦截: {reason}")
+
+        # Only enabled by runtime wiring after an OS sandbox backend has been
+        # detected and attached to Bash. Explicit deny/ask rules still win.
+        if self.sandbox_enabled and tool.category == "command":
+            rule_result = self.rule_engine.evaluate(tool.name, content)
+            if rule_result == "deny":
+                return Decision(effect="deny", reason="权限规则拒绝")
+            if rule_result == "ask":
+                return Decision(effect="ask", reason="权限规则要求确认")
+            return Decision(effect="allow", reason="OS 沙箱内执行")
 
         # Layer 2: 路径沙箱（仅文件类工具）
         if tool.category in ("read", "write") and content:

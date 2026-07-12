@@ -8,10 +8,14 @@ from __future__ import annotations
 import asyncio
 import re
 import shlex
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
 from codepacex.tools.base import Tool, ToolResult
+
+if TYPE_CHECKING:
+    from codepacex.sandbox import Sandbox, SandboxConfig
 
 MAX_TIMEOUT = 600
 
@@ -88,16 +92,23 @@ class Bash(Tool):
     description = "Execute a shell command and return stdout and stderr."
     params_model = Params
     category = "command"
+    work_dir: str | None = None
+    sandbox: Sandbox | None = None
+    sandbox_config: SandboxConfig | None = None
 
 
     async def execute(self, params: Params) -> ToolResult:
         timeout = min(params.timeout, MAX_TIMEOUT)
+        actual_command = params.command
+        if self.sandbox and self.sandbox_config and self.sandbox.available():
+            actual_command = self.sandbox.wrap(params.command, self.sandbox_config)
 
         try:
             proc = await asyncio.create_subprocess_shell(
-                params.command,
+                actual_command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                cwd=self.work_dir,
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
@@ -120,4 +131,3 @@ class Bash(Tool):
             output=output,
             is_error=_interpret_exit_code(params.command, proc.returncode or 0),
         )
-

@@ -143,6 +143,7 @@ class ToolRegistry:
 def create_default_registry(file_cache: FileCache | None = None, file_history: Any = None) -> ToolRegistry:
     from codepacex.tools.bash import Bash
     from codepacex.tools.edit_file import EditFile
+    from codepacex.tools.diff import Diff
     from codepacex.tools.file_state_cache import FileStateCache
     from codepacex.tools.glob import Glob
     from codepacex.tools.grep import Grep
@@ -155,6 +156,7 @@ def create_default_registry(file_cache: FileCache | None = None, file_history: A
     registry.register(ReadFile(file_cache=file_cache, file_state_cache=file_state_cache))
     registry.register(WriteFile(file_cache=file_cache, file_history=file_history, file_state_cache=file_state_cache))
     registry.register(EditFile(file_cache=file_cache, file_history=file_history, file_state_cache=file_state_cache))
+    registry.register(Diff())
     registry.register(Bash())
     registry.register(Glob())
     registry.register(Grep())

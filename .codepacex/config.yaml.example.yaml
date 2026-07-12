@@ -1,0 +1,33 @@
+providers:
+  - name: anthropic-official
+    protocol: anthropic
+    base_url: https://api.anthropic.com
+    api_key: ""
+    model: claude-sonnet-4-6
+    thinking: true
+
+  # 首次使用建议只保留一个 Provider。若使用 OpenAI，请删除上面的 Anthropic 项并启用下列配置。
+  # - name: openai-official
+  #   protocol: openai
+  #   base_url: https://api.openai.com/v1
+  #   api_key: ""
+  #   model: gpt-5
+
+permission_mode: default
+
+# Optional OS-level command isolation. macOS uses Seatbelt when available;
+# Linux uses bubblewrap. If the backend is unavailable, CodePaceX keeps normal
+# permission prompts instead of auto-approving commands.
+sandbox:
+  enabled: false
+  auto_allow: false
+  network_enabled: false
+
+mcp_servers: []
+
+  # Streamable HTTP example:
+  # - name: my-http-mcp
+  #   url: https://example.com/mcp
+  #   transport: http   # optional; "http" (default) or "sse"
+  #   headers:
+  #     Authorization: "Bearer ${MY_TOKEN}"

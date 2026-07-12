@@ -54,6 +54,7 @@ from codepacex.skills.loader import SkillLoader
 from codepacex.tools import ToolRegistry, create_default_registry
 from codepacex.tools.impl.tool_search import ToolSearchTool
 from codepacex.tools.load_skill import LoadSkill
+from codepacex.tools.install_skill import InstallSkill
 from codepacex.web_content import INDEX_HTML
 
 log = logging.getLogger(__name__)
@@ -252,6 +253,9 @@ class RemoteServer:
         self.skill_loader.load_all()
         load_skill_tool = LoadSkill()
         self.registry.register(load_skill_tool)
+        install_skill_tool = InstallSkill()
+        install_skill_tool.set_on_installed(lambda: self.skill_loader.load_all() if self.skill_loader else None)
+        self.registry.register(install_skill_tool)
 
         # 创建 Agent
         self.agent = Agent(

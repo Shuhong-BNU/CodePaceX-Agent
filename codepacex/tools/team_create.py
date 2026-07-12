@@ -104,11 +104,12 @@ class TeamCreateTool(Tool):
         from codepacex.teams.coordinator import is_coordinator_mode
         if is_coordinator_mode(self._enable_coordinator_mode):
             from codepacex.agents.tool_filter import apply_coordinator_filter
-            self._parent_agent.coordinator_mode = True
-            self._parent_agent._team_manager = self._team_manager
-            self._parent_agent._full_registry = self._parent_agent.registry
-            self._parent_agent.registry = apply_coordinator_filter(self._parent_agent.registry)
-            coordinator_note = "\nCoordinator Mode activated: tools narrowed to dispatch-only."
+            if not self._parent_agent.coordinator_mode:
+                self._parent_agent.coordinator_mode = True
+                self._parent_agent._team_manager = self._team_manager
+                self._parent_agent._full_registry = self._parent_agent.registry
+                self._parent_agent.registry = apply_coordinator_filter(self._parent_agent.registry)
+                coordinator_note = "\nCoordinator Mode activated: tools narrowed to dispatch-only."
 
         return ToolResult(
             output=(
