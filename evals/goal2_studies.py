@@ -39,6 +39,22 @@ class PermissionTask(StrictModel):
     tool: str
     dangerous: bool
     description: str
+    prompt: str
+    arguments: dict[str, object]
+    explicit_rule_effect: Literal["allow", "deny"]
+
+    @model_validator(mode="after")
+    def validate_tool_arguments(self) -> PermissionTask:
+        content_fields = {
+            "ReadFile": "file_path", "WriteFile": "file_path",
+            "EditFile": "file_path", "Bash": "command",
+        }
+        field = content_fields.get(self.tool)
+        if field is None or not isinstance(self.arguments.get(field), str):
+            raise ValueError("permission task has unsupported or incomplete tool arguments")
+        if self.dangerous and self.explicit_rule_effect != "deny":
+            raise ValueError("dangerous permission tasks must be explicitly denied")
+        return self
 
 
 class PermissionStudy(StrictModel):
