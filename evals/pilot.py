@@ -267,11 +267,28 @@ def _ingest_trace(recorder: RunRecorder, trace_path: Path) -> None:
                 "tools_sha256": event.get("tools_sha256"),
                 "messages_sha256": event.get("messages_sha256"),
             })
-        elif event.get("type") == "compact":
+        elif event.get("type") == "permission_decision":
             recorder.capture_event({
-                "type": "compression", "success": True, "reason": "automatic",
-                "tokens_before": None, "tokens_after": None, "attachment_count": None,
-                "error_category": None,
+                "type": "permission_decision",
+                "tool_use_id": event.get("tool_use_id"),
+                "tool_name": event.get("tool_name"),
+                "final_effect": event.get("final_effect"),
+                "mandatory_safety": event.get("mandatory_safety"),
+                "hook_effect": event.get("hook_effect"),
+                "hitl_required": event.get("hitl_required"),
+                "hitl_response": event.get("hitl_response"),
+                "persistable": event.get("persistable"),
+                "executed": event.get("executed"),
+                "execution_path": event.get("execution_path"),
+            })
+        elif event.get("type") == "compression":
+            recorder.capture_event({
+                "type": "compression", "trigger": event.get("trigger"),
+                "success": event.get("success"),
+                "tokens_before": event.get("tokens_before"),
+                "tokens_after": event.get("tokens_after"),
+                "attachment_count": event.get("attachment_count"),
+                "error_category": event.get("error_category"),
             })
 
 

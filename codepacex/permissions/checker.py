@@ -34,6 +34,7 @@ class PermissionAssessment:
     explicit_effect: DecisionEffect | None = None
     explicit_reason: str = ""
     mandatory_denied: bool = False
+    mandatory_safety: bool = False
 
     def add(self, effect: DecisionEffect, reason: str) -> None:
         self.constraints.append((effect, reason))
@@ -111,6 +112,7 @@ class PermissionChecker:
             if effect:
                 assessment.add(effect, f"危险命令检查: {reason}")
                 assessment.mandatory_denied = effect == "deny"
+                assessment.mandatory_safety = True
 
         # Plan-mode exceptions are ordinary policy, never safety overrides.
         if self.mode == PermissionMode.PLAN:

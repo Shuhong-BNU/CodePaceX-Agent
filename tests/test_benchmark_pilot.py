@@ -102,13 +102,13 @@ def test_recorder_derives_optional_events_without_inventing_usage(tmp_path: Path
         "prompt_tokens_details": {"cached_tokens": 2},
     }
     recorder.capture_event({"type": "usage", "provider_usage": raw_usage, "request_index": 1})
-    recorder.capture_event({"type": "permission_decision", "tool_id": "t1", "decision": "deny", "hitl_required": False, "executed": False})
+    recorder.capture_event({"type": "permission_decision", "tool_use_id": "t1", "final_effect": "deny", "hitl_required": False, "executed": False})
     recorder.capture_event({"type": "compression", "success": False, "reason": "threshold", "tokens_before": 50, "tokens_after": None, "error_category": "provider_error"})
     usage = json.loads((recorder.path / "usage.json").read_text())
     assert usage["requests"][0]["provider_usage"] == raw_usage
     assert "reasoning_tokens" not in usage["requests"][0]["provider_usage"]
     with pytest.raises(ValueError, match="duplicate"):
-        recorder.capture_event({"type": "permission_decision", "tool_id": "t1", "decision": "deny", "hitl_required": False, "executed": False})
+        recorder.capture_event({"type": "permission_decision", "tool_use_id": "t1", "final_effect": "deny", "hitl_required": False, "executed": False})
 
 
 def test_usage_json_preserves_multiple_provider_requests_in_order(tmp_path: Path) -> None:

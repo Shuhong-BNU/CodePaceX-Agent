@@ -9,7 +9,9 @@ import yaml
 from pydantic import BaseModel
 
 from codepacex.__main__ import _deny_noninteractive_permission
-from codepacex.agent import Agent, PermissionRequest, StreamingExecutor, StreamText
+from codepacex.agent import (
+    Agent, PermissionDecisionEvent, PermissionRequest, StreamingExecutor, StreamText,
+)
 from codepacex.client import LLMClient
 from codepacex.config import load_config
 from codepacex.conversation import ConversationManager
@@ -436,10 +438,13 @@ async def test_max_tokens_reaps_streaming_tool_before_retry(tmp_path: Path) -> N
     agent = _pending_agent(tmp_path, tool, first_stop="max_tokens")
     conversation = ConversationManager()
     conversation.add_user_message("read")
-    async for _ in agent.run(conversation):
-        pass
+    events = [event async for event in agent.run(conversation)]
     assert tool.count == 1
     assert tool.finalized.is_set()
+    decisions = [event for event in events if isinstance(event, PermissionDecisionEvent)]
+    assert len(decisions) == 1
+    assert decisions[0].tool_use_id == "t1"
+    assert decisions[0].executed is True
 
 
 class ClosableAgent:

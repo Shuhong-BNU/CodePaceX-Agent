@@ -304,11 +304,11 @@ class RunRecorder:
             raise ValueError("captured event requires a string type")
         payload = {key: value for key, value in event.items() if key != "type"}
         if event_type == "permission_decision":
-            tool_id = payload.get("tool_id")
+            tool_id = payload.get("tool_use_id")
             if not isinstance(tool_id, str) or not tool_id:
-                raise ValueError("permission decision requires tool_id")
+                raise ValueError("permission decision requires tool_use_id")
             previous = self._jsonl_records("permission-events.jsonl")
-            if any(item.get("tool_id") == tool_id for item in previous):
+            if any(item.get("tool_use_id") == tool_id for item in previous):
                 raise ValueError(f"duplicate permission decision for tool ID: {tool_id}")
         elif event_type == "runtime_manifest":
             request_index = payload.get("request_index")

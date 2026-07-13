@@ -125,9 +125,11 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
     from codepacex.agent import (
         Agent,
         CompactNotification,
+        CompressionEvent,
         ErrorEvent,
         LoopComplete,
         PermissionRequest,
+        PermissionDecisionEvent,
         RetryEvent,
         RuntimeManifestEvent,
         StreamText,
@@ -332,6 +334,34 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
                     "system_sha256": event.system_sha256,
                     "tools_sha256": event.tools_sha256,
                     "messages_sha256": event.messages_sha256,
+                })
+
+        elif isinstance(event, PermissionDecisionEvent):
+            if is_json:
+                emit_json({
+                    "type": "permission_decision",
+                    "tool_use_id": event.tool_use_id,
+                    "tool_name": event.tool_name,
+                    "final_effect": event.final_effect,
+                    "mandatory_safety": event.mandatory_safety,
+                    "hook_effect": event.hook_effect,
+                    "hitl_required": event.hitl_required,
+                    "hitl_response": event.hitl_response,
+                    "persistable": event.persistable,
+                    "executed": event.executed,
+                    "execution_path": event.execution_path,
+                })
+
+        elif isinstance(event, CompressionEvent):
+            if is_json:
+                emit_json({
+                    "type": "compression",
+                    "trigger": event.trigger,
+                    "success": event.success,
+                    "tokens_before": event.tokens_before,
+                    "tokens_after": event.tokens_after,
+                    "attachment_count": event.attachment_count,
+                    "error_category": event.error_category,
                 })
 
         elif isinstance(event, TurnComplete):
