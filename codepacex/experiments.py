@@ -67,6 +67,15 @@ class ExperimentProfile(BaseModel):
                 self.compression_profile is CompressionProfile.RECOVERY_V1
             ),
             "permission_strategy": self.permission_strategy.value,
+            "session_allow_all": (
+                self.permission_strategy is PermissionStrategy.SESSION_ALLOW
+            ),
+            "explicit_rules_enabled": (
+                self.permission_strategy is PermissionStrategy.EXPLICIT_RULES
+            ),
+            "sandbox_auto_allow_requested": (
+                self.permission_strategy is PermissionStrategy.SANDBOX_AUTO_ALLOW
+            ),
             "agent_mode": self.agent_mode.value,
             "multi_agent_tools_enabled": self.agent_mode is AgentMode.MULTI,
         }

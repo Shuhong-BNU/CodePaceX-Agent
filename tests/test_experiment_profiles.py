@@ -53,6 +53,9 @@ def test_effective_runtime_maps_every_profile_field() -> None:
         "compression_profile": "summary_only",
         "recovery_attachments_enabled": False,
         "permission_strategy": "sandbox_auto_allow",
+        "session_allow_all": False,
+        "explicit_rules_enabled": False,
+        "sandbox_auto_allow_requested": True,
         "agent_mode": "multi",
         "multi_agent_tools_enabled": True,
     }

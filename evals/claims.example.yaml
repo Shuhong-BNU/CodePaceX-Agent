@@ -31,7 +31,7 @@ claims:
         permission_strategy: default
         agent_mode: single
       experiment_profile_hash: c9c5e3555482ce6fc5e311d78af03b57710d5dad57fe2aaaf4695c33d0768e09
-      runtime_contract_hash: d69add3d9650d86169d6b5832cb0d4d13dbfc9acd0cbd6c24fdb66b01726acdc
+      runtime_contract_hash: e17aae98c9c7d4ea90d5439a9a3e8938a2d81217afbe05c8710e00cc95e12984
       benchmark_asset_hash: replace-with-frozen-benchmark-asset-hash
       max_iterations: 50
       allowed_differences: []

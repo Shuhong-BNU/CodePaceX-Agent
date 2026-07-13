@@ -20,6 +20,7 @@ from codepacex.config import ConfigError, load_config
 from codepacex.experiments import (
     AgentMode,
     ExperimentProfile,
+    PermissionStrategy,
     ToolLoading,
     load_experiment_profile,
 )
@@ -233,7 +234,20 @@ async def _run_prompt(
         ),
         mode=permission_mode,
         sandbox_enabled=bool(
-            config.sandbox.auto_allow and backend is not None and sandbox_state == "available"
+            (
+                config.sandbox.auto_allow
+                or (
+                    experiment_profile is not None
+                    and experiment_profile.permission_strategy
+                    is PermissionStrategy.SANDBOX_AUTO_ALLOW
+                )
+            )
+            and backend is not None and sandbox_state == "available"
+        ),
+        session_allow_all=bool(
+            experiment_profile is not None
+            and experiment_profile.permission_strategy
+            is PermissionStrategy.SESSION_ALLOW
         ),
     )
 
