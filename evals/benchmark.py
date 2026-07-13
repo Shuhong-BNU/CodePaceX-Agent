@@ -24,6 +24,7 @@ RESULT_STATUSES = {
     "success", "task_failure", "timeout", "provider_error",
     "configuration_error", "infrastructure_error", "cancelled", "dry_run",
 }
+SCORABLE_STATUSES = {"success", "task_failure"}
 RESUMABLE_STATUSES = {"timeout", "provider_error", "infrastructure_error", "cancelled"}
 OPTIONAL_JSON = {"usage.json"}
 OPTIONAL_STREAMS = {"permission-events.jsonl", "compression-events.jsonl"}
@@ -179,7 +180,7 @@ class RunRecorder:
         if not RUN_ID_RE.fullmatch(selected):
             raise ValueError("invalid run id")
         self.run_id = selected
-        self.path = root / selected
+        self.path = self._run_path(root, selected)
         self.path.mkdir(parents=True, exist_ok=False)
         self.redactor = SecretRedactor(secrets)
         manifest.run_id = selected
@@ -192,7 +193,7 @@ class RunRecorder:
     def resume(cls, root: Path, run_id: str, expected: RunManifest, *, secrets: Iterable[str] = ()) -> RunRecorder:
         if not RUN_ID_RE.fullmatch(run_id):
             raise ValueError("invalid run id")
-        path = root / run_id
+        path = cls._run_path(root, run_id)
         payload = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
         identity = (
             "experiment_config_hash", "git_commit", "provider", "model_id",
@@ -214,6 +215,16 @@ class RunRecorder:
         recorder.manifest = expected
         recorder.event("run_resumed", {"previous_status": status if result_path.exists() else None})
         return recorder
+
+    @staticmethod
+    def _run_path(root: Path, run_id: str) -> Path:
+        resolved_root = root.resolve()
+        resolved = (resolved_root / run_id).resolve(strict=False)
+        try:
+            resolved.relative_to(resolved_root)
+        except ValueError as exc:
+            raise ValueError("run path escapes runs root") from exc
+        return resolved
 
     @staticmethod
     def _atomic_write(path: Path, content: bytes) -> None:
@@ -256,7 +267,7 @@ class RunRecorder:
             "schema_version": SCHEMA_VERSION, "timestamp": time.time(), **value,
         })
 
-    def _optional_records(self, name: str) -> list[dict[str, Any]]:
+    def _jsonl_records(self, name: str) -> list[dict[str, Any]]:
         path = self.path / name
         if not path.exists():
             return []
@@ -269,6 +280,16 @@ class RunRecorder:
             if isinstance(decoded, dict):
                 records.append(decoded)
         return records
+
+    def _json_object(self, name: str) -> dict[str, Any]:
+        path = self.path / name
+        if not path.exists():
+            return {}
+        try:
+            decoded = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
 
     def capture_event(self, event: dict[str, Any]) -> None:
         """Persist one real runner event and derive optional files when applicable.
@@ -284,12 +305,15 @@ class RunRecorder:
             tool_id = payload.get("tool_id")
             if not isinstance(tool_id, str) or not tool_id:
                 raise ValueError("permission decision requires tool_id")
-            previous = self._optional_records("permission-events.jsonl")
+            previous = self._jsonl_records("permission-events.jsonl")
             if any(item.get("tool_id") == tool_id for item in previous):
                 raise ValueError(f"duplicate permission decision for tool ID: {tool_id}")
         self.event(event_type, payload)
         if event_type == "usage":
-            requests = self._optional_records("usage.json")
+            existing = self._json_object("usage.json")
+            requests = existing.get("requests", [])
+            if not isinstance(requests, list):
+                requests = []
             requests.append(payload)
             self.write_optional_json("usage.json", {"requests": requests})
         elif event_type == "permission_decision":
@@ -325,7 +349,35 @@ class RunRecorder:
             result = {**result, "status": status}
         if status not in RESULT_STATUSES:
             raise ValueError(f"unsupported result status: {status}")
-        payload = {"schema_version": SCHEMA_VERSION, **result}
+        attempts: set[tuple[str, str]] = set()
+        completed: list[dict[str, Any]] = []
+        for event in self._jsonl_records("events.jsonl"):
+            trial = (str(event.get("task_id")), str(event.get("repetition_id")))
+            if event.get("type") == "trial_started":
+                attempts.add(trial)
+            elif event.get("type") == "trial_completed":
+                attempts.add(trial)
+                completed.append(event)
+        errors: dict[str, int] = {}
+        for event in completed:
+            trial_status = str(event.get("status", "infrastructure_error"))
+            if trial_status != "success":
+                errors[trial_status] = errors.get(trial_status, 0) + 1
+        if not attempts and status not in {"success", "dry_run"}:
+            errors[status] = errors.get(status, 0) + 1
+        unscorable = sum(
+            1 for event in completed if event.get("status") not in SCORABLE_STATUSES
+        )
+        payload = {
+            "schema_version": SCHEMA_VERSION,
+            **result,
+            "status": status,
+            "scorable": status in SCORABLE_STATUSES,
+            "attempted_trial_count": len(attempts),
+            "completed_trial_count": len(completed),
+            "unscorable_trial_count": unscorable,
+            "error_category_summary": errors,
+        }
         self.write_json("result.json", payload)
         redacted = self.redactor.redact(payload)
         lines = ["# Benchmark Run", "", f"- Run ID: `{self.run_id}`", f"- Status: `{status}`"]

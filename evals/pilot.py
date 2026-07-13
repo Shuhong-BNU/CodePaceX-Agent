@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -23,6 +23,21 @@ FROZEN_PROTOCOL = "openai-compat"
 FROZEN_BASE_URL = "https://llm-ipge9fy38w648m28.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
 FROZEN_MODEL = "qwen3.7-max-2026-06-08"
 FROZEN_KEY_ENV = "BAILIAN_API_KEY"
+TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+_ENV_NAMES = {
+    "PATH", "TMPDIR", "TMP", "TEMP", "LANG", "PYTHONPATH", "VIRTUAL_ENV",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+    "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+}
+_PROXY_NAMES = {
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+    "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+}
+_EXIT_CODES = {
+    "success": 0, "dry_run": 0, "task_failure": 1, "configuration_error": 2,
+    "timeout": 3, "provider_error": 3, "infrastructure_error": 3, "cancelled": 3,
+}
 
 
 class ModelParameters(BaseModel):
@@ -83,15 +98,19 @@ def _git_dirty(root: Path) -> bool | None:
     return bool(result.stdout) if result.returncode == 0 else None
 
 
-def _hash_text(value: str) -> str:
-    return hashlib.sha256(value.encode()).hexdigest()
+def _validate_task_ids(task_ids: list[str], root: Path) -> None:
+    registry: set[str] = set()
+    for path in (root / "evals" / "tasks").glob("*.yaml"):
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict) and isinstance(raw.get("id"), str):
+            registry.add(raw["id"])
+    for task_id in task_ids:
+        if not TASK_ID_RE.fullmatch(task_id) or task_id not in registry:
+            raise ValueError(f"unknown or unsafe Pilot task ID: {task_id}")
 
 
 def build_manifest(config: PilotConfig, root: Path, *, run_id: str = "") -> RunManifest:
-    from codepacex.prompts import build_system_prompt
-    from codepacex.tools import create_default_registry
-
-    schemas = create_default_registry().get_all_schemas(config.protocol)
+    _validate_task_ids(config.task_ids, root)
     return RunManifest(
         experiment_kind=config.experiment_kind,
         provider=config.provider,
@@ -103,8 +122,8 @@ def build_manifest(config: PilotConfig, root: Path, *, run_id: str = "") -> RunM
         git_commit=current_git_commit(root),
         dirty_worktree=_git_dirty(root),
         prompt_version="codepacex-system-v1",
-        system_prompt_hash=_hash_text(build_system_prompt()),
-        tool_schema_hash=canonical_hash(schemas),
+        system_prompt_hash=None,
+        tool_schema_hash=None,
         feature_flags=config.feature_flags,
         task_ids=config.task_ids,
         model_parameters=config.model_parameters.model_dump(mode="json"),
@@ -141,18 +160,77 @@ def _child_environment(config: PilotConfig, home: str) -> dict[str, str]:
     """Pass only the frozen provider credential to the isolated eval child."""
     environment = {
         key: value for key, value in os.environ.items()
-        if not key.upper().endswith(("_API_KEY", "_TOKEN", "_SECRET"))
+        if key in _ENV_NAMES or key.startswith("LC_")
     }
     environment["HOME"] = home
     environment[config.api_key_env] = os.environ[config.api_key_env]
     return environment
 
 
+def _runtime_secrets(config: PilotConfig) -> list[str]:
+    names = {config.api_key_env, *_PROXY_NAMES}
+    return [os.environ[name] for name in names if os.environ.get(name)]
+
+
+def _provider_payload(config: PilotConfig) -> dict[str, Any]:
+    provider: dict[str, Any] = {
+        "name": config.provider, "protocol": config.protocol, "base_url": config.base_url,
+        "model": config.model_id, "api_key_env": config.api_key_env,
+    }
+    if config.model_parameters.max_output_tokens is not None:
+        provider["max_output_tokens"] = config.model_parameters.max_output_tokens
+    return {"providers": [provider], "fallback": []}
+
+
+def _write_validated_provider_config(config: PilotConfig, path: Path) -> None:
+    from codepacex.config import load_config as load_codepacex_config
+
+    path.write_text(yaml.safe_dump(_provider_payload(config)), encoding="utf-8")
+    loaded = load_codepacex_config(path)
+    primary = loaded.providers[0]
+    if (primary.name, primary.protocol, primary.base_url, primary.model) != (
+        config.provider, config.protocol, config.base_url, config.model_id,
+    ):
+        raise ValueError("generated Provider configuration changed frozen identity")
+
+
 def _aggregate_status(statuses: list[str]) -> str:
-    for status in ("provider_error", "infrastructure_error", "timeout", "task_failure"):
+    for status in (
+        "configuration_error", "provider_error", "timeout", "infrastructure_error",
+        "task_failure",
+    ):
         if status in statuses:
             return status
     return "success"
+
+
+def _suite_status(report_dir: Path, task_id: str, returncode: int) -> str:
+    results = list(report_dir.glob("*/suite_result.json"))
+    if len(results) != 1:
+        return "infrastructure_error"
+    try:
+        suite = json.loads(results[0].read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "infrastructure_error"
+    tasks = suite.get("tasks")
+    if not isinstance(tasks, list) or len(tasks) != 1 or tasks[0].get("id") != task_id:
+        return "infrastructure_error"
+    task = tasks[0]
+    status = task.get("status")
+    if status == "PASS":
+        return "success" if returncode == 0 else "infrastructure_error"
+    if status == "FAIL":
+        return "timeout" if task.get("timed_out") else "task_failure"
+    if status != "ERROR":
+        return "infrastructure_error"
+    error_type = task.get("error_type")
+    if error_type == "provider_network_error":
+        return "provider_error"
+    if error_type in {"auth_error", "config_error"}:
+        return "configuration_error"
+    if error_type == "startup_timeout" or task.get("timed_out"):
+        return "timeout"
+    return "infrastructure_error"
 
 
 def _ingest_trace(recorder: RunRecorder, trace_path: Path) -> None:
@@ -192,16 +270,13 @@ def _run_trials(config: PilotConfig, root: Path, recorder: RunRecorder) -> list[
     stdout_chunks: list[str | bytes] = []
     stderr_chunks: list[str | bytes] = []
     completed = recorder.completed_trials()
-    with tempfile.TemporaryDirectory(prefix="codepacex-pilot-") as home:
+    with (
+        tempfile.TemporaryDirectory(prefix="codepacex-pilot-home-") as home,
+        tempfile.TemporaryDirectory(prefix="codepacex-pilot-stage-") as staging,
+    ):
         config_dir = Path(home) / ".codepacex"
         config_dir.mkdir()
-        (config_dir / "config.yaml").write_text(yaml.safe_dump({
-            "providers": [{"name": config.provider, "protocol": config.protocol,
-                "base_url": config.base_url, "model": config.model_id,
-                "api_key_env": config.api_key_env,
-                "max_output_tokens": config.model_parameters.max_output_tokens}],
-            "fallback": [],
-        }), encoding="utf-8")
+        _write_validated_provider_config(config, config_dir / "config.yaml")
         env = _child_environment(config, home)
         for repetition in range(1, config.repetitions + 1):
             for task_id in config.task_ids:
@@ -209,12 +284,15 @@ def _run_trials(config: PilotConfig, root: Path, recorder: RunRecorder) -> list[
                 if trial in completed:
                     recorder.event("trial_skipped", {"task_id": task_id, "repetition_id": str(repetition), "reason": "already_completed"})
                     continue
-                report_dir = recorder.path / "artifacts" / "task-runs" / f"{task_id}-{repetition}"
+                report_dir = Path(staging) / f"{task_id}-{repetition}"
                 command = [sys.executable, "evals/run_eval.py", "--task", task_id, "--report-dir", str(report_dir)]
                 started = time.monotonic()
+                recorder.event("trial_started", {
+                    "task_id": task_id, "repetition_id": str(repetition),
+                })
                 try:
                     process = subprocess.run(command, cwd=root, env=env, text=True, capture_output=True, timeout=config.timeout_seconds)
-                    status = "success" if process.returncode == 0 else "task_failure"
+                    status = _suite_status(report_dir, task_id, process.returncode)
                     stdout_chunks.append(process.stdout or "")
                     stderr_chunks.append(process.stderr or "")
                     for trace_path in report_dir.glob("*/**/trace.ndjson"):
@@ -245,12 +323,13 @@ def execute(
     if not confirmed or not config.task_ids or not os.environ.get(config.api_key_env):
         return _configuration_error(config, root, runs_dir, run_id)
     recorder = RunRecorder(
-        runs_dir, build_manifest(config, root, run_id=run_id or ""), run_id=run_id, repo_root=root,
+        runs_dir, build_manifest(config, root, run_id=run_id or ""), run_id=run_id,
+        repo_root=root, secrets=_runtime_secrets(config),
     )
     # The only live backend deliberately reuses the deterministic 6-task harness.
     # Tests mock this subprocess; this module never calls it during dry-run or CI.
     statuses = _run_trials(config, root, recorder)
-    recorder.finalize({"status": _aggregate_status(statuses), "execution_mode": "live", "scorable": True})
+    recorder.finalize({"status": _aggregate_status(statuses), "execution_mode": "live"})
     return recorder
 
 
@@ -259,9 +338,12 @@ def resume(
 ) -> RunRecorder:
     if not confirmed or not config.task_ids or not os.environ.get(config.api_key_env):
         raise ValueError("resume requires --confirm-paid-run, tasks, and the configured API key")
-    recorder = RunRecorder.resume(runs_dir, run_id, build_manifest(config, root, run_id=run_id))
+    recorder = RunRecorder.resume(
+        runs_dir, run_id, build_manifest(config, root, run_id=run_id),
+        secrets=_runtime_secrets(config),
+    )
     statuses = _run_trials(config, root, recorder)
-    recorder.finalize({"status": _aggregate_status(statuses), "execution_mode": "live", "scorable": True, "resumed": True})
+    recorder.finalize({"status": _aggregate_status(statuses), "execution_mode": "live", "resumed": True})
     return recorder
 
 
@@ -284,10 +366,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "resume":
             if not args.run_id:
                 raise ValueError("resume requires --run-id")
-            print(resume(config, Path.cwd(), args.runs_dir, args.run_id, confirmed=args.confirm_paid_run).path)
-            return 0
-        print(execute(config, Path.cwd(), args.runs_dir, confirmed=args.confirm_paid_run, run_id=args.run_id).path)
-        return 0
+            recorder = resume(
+                config, Path.cwd(), args.runs_dir, args.run_id,
+                confirmed=args.confirm_paid_run,
+            )
+        else:
+            recorder = execute(
+                config, Path.cwd(), args.runs_dir, confirmed=args.confirm_paid_run,
+                run_id=args.run_id,
+            )
+        print(recorder.path)
+        result = json.loads((recorder.path / "result.json").read_text(encoding="utf-8"))
+        return _EXIT_CODES[str(result["status"])]
     except (ValueError, OSError, yaml.YAMLError) as exc:
         print(f"configuration error: {exc}", file=sys.stderr)
         return 2

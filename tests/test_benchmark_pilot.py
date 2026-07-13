@@ -109,3 +109,48 @@ def test_recorder_derives_optional_events_without_inventing_usage(tmp_path: Path
     assert "reasoning_tokens" not in usage["requests"][0]["provider_usage"]
     with pytest.raises(ValueError, match="duplicate"):
         recorder.capture_event({"type": "permission_decision", "tool_id": "t1", "decision": "deny", "hitl_required": False, "executed": False})
+
+
+def test_usage_json_preserves_multiple_provider_requests_in_order(tmp_path: Path) -> None:
+    recorder = RunRecorder(tmp_path, _manifest(), run_id="usage-order")
+    for index in range(1, 4):
+        recorder.capture_event({
+            "type": "usage", "request_index": index,
+            "provider_usage": {"prompt_tokens": index, "details": {"raw": index}},
+        })
+    requests = json.loads((recorder.path / "usage.json").read_text())["requests"]
+    assert [item["request_index"] for item in requests] == [1, 2, 3]
+    assert requests[2]["provider_usage"] == {"prompt_tokens": 3, "details": {"raw": 3}}
+
+
+@pytest.mark.parametrize(
+    ("status", "scorable"),
+    [
+        ("success", True), ("task_failure", True), ("timeout", False),
+        ("provider_error", False), ("configuration_error", False),
+        ("infrastructure_error", False), ("cancelled", False), ("dry_run", False),
+    ],
+)
+def test_finalize_enforces_scorable_status(status: str, scorable: bool, tmp_path: Path) -> None:
+    recorder = RunRecorder(tmp_path, _manifest(), run_id=status)
+    recorder.finalize({"status": status, "scorable": not scorable})
+    result = json.loads((recorder.path / "result.json").read_text())
+    assert result["scorable"] is scorable
+    assert result["attempted_trial_count"] == 0
+    assert result["completed_trial_count"] == 0
+    assert result["unscorable_trial_count"] == 0
+
+
+def test_finalize_counts_attempts_terminals_and_error_categories(tmp_path: Path) -> None:
+    recorder = RunRecorder(tmp_path, _manifest(), run_id="counts")
+    for task_id, status in (("one", "success"), ("two", "timeout")):
+        recorder.event("trial_started", {"task_id": task_id, "repetition_id": "1"})
+        recorder.event("trial_completed", {
+            "task_id": task_id, "repetition_id": "1", "status": status,
+        })
+    recorder.finalize({"status": "timeout"})
+    result = json.loads((recorder.path / "result.json").read_text())
+    assert result["attempted_trial_count"] == 2
+    assert result["completed_trial_count"] == 2
+    assert result["unscorable_trial_count"] == 1
+    assert result["error_category_summary"] == {"timeout": 1}
