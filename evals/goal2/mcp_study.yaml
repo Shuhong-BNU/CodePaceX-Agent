@@ -1,0 +1,9 @@
+schema_version: 1
+study_id: goal2-mcp-tool-loading
+task_manifest: evals/goal2/mcp_tasks.yaml
+fixture_server: evals/fixtures/mcp_protocol_server.py
+repetitions: 5
+arms:
+  - eager
+  - deferred
+controlled_corpus_only: true
