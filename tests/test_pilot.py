@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from evals import pilot
+from evals.benchmark import RunRecorder
 
 
 def config_file(tmp_path: Path, **changes: object) -> Path:
@@ -166,3 +168,128 @@ def test_cli_execute_configuration_error_uses_exit_code_two(
     assert pilot.main([
         "execute", "--config", str(config), "--runs-dir", str(tmp_path / "runs"),
     ]) == 2
+
+
+def _mock_trial_process(task_status: str = "PASS", duplicate_runtime: bool = False):
+    real_run = subprocess.run
+
+    def fake_run(command, **kwargs):
+        if "evals/run_eval.py" not in command:
+            return real_run(command, **kwargs)
+        task_id = command[command.index("--task") + 1]
+        report_dir = Path(command[command.index("--report-dir") + 1]) / "mock-run"
+        trace = report_dir / task_id / "trace.ndjson"
+        trace.parent.mkdir(parents=True)
+        (report_dir / "suite_result.json").write_text(json.dumps({
+            "tasks": [{"id": task_id, "status": task_status}],
+        }))
+        events = [
+            {
+                "type": "runtime_manifest", "request_index": 1,
+                "provider": "bailian-qwen37-max", "protocol": "openai-compat",
+                "model_id": "qwen3.7-max-2026-06-08", "system_sha256": "s",
+                "tools_sha256": "t", "messages_sha256": "m",
+            },
+            {
+                "type": "usage", "request_index": 1,
+                "provider": "bailian-qwen37-max",
+                "model_id": "qwen3.7-max-2026-06-08",
+                "provider_usage": {"prompt_tokens": 1},
+            },
+            {
+                "type": "permission_decision", "tool_use_id": "same-tool-id",
+                "tool_name": "ReadFile", "final_effect": "allow",
+                "mandatory_safety": False, "hook_effect": None,
+                "hitl_required": False, "hitl_response": None,
+                "persistable": False, "executed": True, "execution_path": "streaming",
+            },
+        ]
+        if duplicate_runtime:
+            events.insert(1, dict(events[0]))
+        trace.write_text("\n".join(json.dumps(event) for event in events) + "\n")
+        return SimpleNamespace(returncode=0, stdout="mock stdout", stderr="")
+
+    return fake_run
+
+
+def test_multiple_trials_keep_local_request_and_tool_ids_distinct(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = pilot.load_config(config_file(tmp_path, task_ids=[
+        "codepacex_001_config_bugfix", "codepacex_002_config_validation",
+    ], repetitions=2))
+    monkeypatch.setenv("BAILIAN_API_KEY", "test-only-bailian-key")
+    with patch("evals.pilot.subprocess.run", side_effect=_mock_trial_process()):
+        recorder = pilot.execute(config, Path.cwd(), tmp_path / "runs", confirmed=True)
+    result = json.loads((recorder.path / "result.json").read_text())
+    assert result["status"] == "success"
+    assert result["attempted_trial_count"] == 4
+    runtime = [json.loads(line) for line in (recorder.path / "runtime-events.jsonl").read_text().splitlines()]
+    assert {(event["task_id"], event["repetition_id"], event["attempt_id"], event["request_index"]) for event in runtime} == {
+        ("codepacex_001_config_bugfix", "1", 1, 1),
+        ("codepacex_002_config_validation", "1", 1, 1),
+        ("codepacex_001_config_bugfix", "2", 1, 1),
+        ("codepacex_002_config_validation", "2", 1, 1),
+    }
+
+
+def test_duplicate_runtime_within_one_trial_finalizes_as_infrastructure_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = pilot.load_config(config_file(tmp_path, task_ids=["codepacex_001_config_bugfix"]))
+    monkeypatch.setenv("BAILIAN_API_KEY", "test-only-bailian-key")
+    with patch("evals.pilot.subprocess.run", side_effect=_mock_trial_process(duplicate_runtime=True)):
+        recorder = pilot.execute(config, Path.cwd(), tmp_path / "runs", confirmed=True)
+    result = json.loads((recorder.path / "result.json").read_text())
+    assert result["status"] == "infrastructure_error"
+    assert result["scorable"] is False
+    assert result["completed_trial_count"] == 1
+
+
+def test_resume_retries_failed_attempt_with_incremented_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = pilot.load_config(config_file(tmp_path, task_ids=["codepacex_001_config_bugfix"]))
+    monkeypatch.setenv("BAILIAN_API_KEY", "test-only-bailian-key")
+    initial = RunRecorder(tmp_path / "runs", pilot.build_manifest(config, Path.cwd()), run_id="retry")
+    initial.event("trial_started", {"task_id": config.task_ids[0], "repetition_id": "1", "attempt_id": 1})
+    initial.event("trial_completed", {
+        "task_id": config.task_ids[0], "repetition_id": "1", "attempt_id": 1,
+        "status": "provider_error",
+    })
+    initial.finalize({"status": "provider_error"})
+    with patch("evals.pilot.subprocess.run", side_effect=_mock_trial_process()):
+        recorder = pilot.resume(config, Path.cwd(), tmp_path / "runs", "retry", confirmed=True)
+    completed = [
+        json.loads(line) for line in (recorder.path / "events.jsonl").read_text().splitlines()
+        if json.loads(line).get("type") == "trial_completed"
+    ]
+    assert [(event["attempt_id"], event["status"]) for event in completed] == [
+        (1, "provider_error"), (2, "success"),
+    ]
+    assert json.loads((recorder.path / "result.json").read_text())["status"] == "success"
+
+
+def test_resume_without_new_trials_preserves_previous_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = pilot.load_config(config_file(tmp_path, task_ids=["codepacex_001_config_bugfix"]))
+    monkeypatch.setenv("BAILIAN_API_KEY", "test-only-bailian-key")
+    initial = RunRecorder(tmp_path / "runs", pilot.build_manifest(config, Path.cwd()), run_id="previous-failure")
+    initial.finalize({"status": "timeout"})
+    with patch("evals.pilot._run_trials", return_value=[]):
+        recorder = pilot.resume(config, Path.cwd(), tmp_path / "runs", "previous-failure", confirmed=True)
+    result = json.loads((recorder.path / "result.json").read_text())
+    assert result["status"] == "timeout"
+    assert result["scorable"] is False
+
+
+def test_cancelled_execution_finalizes_before_reraising(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = pilot.load_config(config_file(tmp_path, task_ids=["codepacex_001_config_bugfix"]))
+    monkeypatch.setenv("BAILIAN_API_KEY", "test-only-bailian-key")
+    captured: list[dict] = []
+    original_finalize = RunRecorder.finalize
+
+    def capture_finalize(self, result):
+        captured.append(dict(result))
+        return original_finalize(self, result)
+
+    with (
+        patch("evals.pilot._run_trials", side_effect=asyncio.CancelledError),
+        patch.object(RunRecorder, "finalize", capture_finalize),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        pilot.execute(config, Path.cwd(), tmp_path / "runs", confirmed=True)
+    assert captured[-1]["status"] == "cancelled"

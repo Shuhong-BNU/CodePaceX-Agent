@@ -76,11 +76,18 @@ def test_resume_requires_matching_identity_and_resumable_status(tmp_path: Path) 
 
 
 def test_success_and_dry_run_are_not_resumable(tmp_path: Path) -> None:
-    for status in ("success", "dry_run", "task_failure"):
+    for status in ("success", "dry_run"):
         recorder = RunRecorder(tmp_path, _manifest(), run_id=status)
         recorder.finalize({"status": status})
         with pytest.raises(ValueError, match="not resumable"):
             RunRecorder.resume(tmp_path, status, _manifest())
+
+
+def test_failed_terminal_statuses_are_resumable(tmp_path: Path) -> None:
+    for status in ("task_failure", "provider_error", "configuration_error", "timeout", "infrastructure_error", "cancelled"):
+        recorder = RunRecorder(tmp_path, _manifest(), run_id=status)
+        recorder.finalize({"status": status})
+        assert RunRecorder.resume(tmp_path, status, _manifest()).previous_status == status
 
 
 def test_failed_run_and_optional_artifacts_remain(tmp_path: Path) -> None:
@@ -156,6 +163,24 @@ def test_finalize_counts_attempts_terminals_and_error_categories(tmp_path: Path)
     assert result["error_category_summary"] == {"timeout": 1}
 
 
+def test_finalize_counts_multiple_attempts_without_overwriting_history(tmp_path: Path) -> None:
+    recorder = RunRecorder(tmp_path, _manifest(), run_id="retry-counts")
+    for attempt_id, status in ((1, "provider_error"), (2, "success")):
+        recorder.event("trial_started", {
+            "task_id": "one", "repetition_id": "1", "attempt_id": attempt_id,
+        })
+        recorder.event("trial_completed", {
+            "task_id": "one", "repetition_id": "1", "attempt_id": attempt_id,
+            "status": status,
+        })
+    recorder.finalize({"status": "success"})
+    result = json.loads((recorder.path / "result.json").read_text())
+    assert result["attempted_trial_count"] == 2
+    assert result["completed_trial_count"] == 2
+    assert result["unscorable_trial_count"] == 1
+    assert result["error_category_summary"] == {"provider_error": 1}
+
+
 def test_runtime_events_are_separate_and_request_indexes_are_unique(tmp_path: Path) -> None:
     recorder = RunRecorder(tmp_path, _manifest(), run_id="runtime")
     event = {
@@ -169,3 +194,30 @@ def test_runtime_events_are_separate_and_request_indexes_are_unique(tmp_path: Pa
     assert json.loads(records[0])["messages_sha256"] == "msg"
     with pytest.raises(ValueError, match="duplicate runtime"):
         recorder.capture_event(event)
+
+
+def test_runtime_and_permission_identity_is_scoped_to_trial_attempt(tmp_path: Path) -> None:
+    recorder = RunRecorder(tmp_path, _manifest(), run_id="attempt-scope")
+
+    def runtime(task_id: str, repetition_id: str, attempt_id: int) -> dict:
+        return {
+            "type": "runtime_manifest", "request_index": 1,
+            "provider": "p", "protocol": "openai-compat", "model_id": "m",
+            "system_sha256": "s", "tools_sha256": "t", "messages_sha256": "msg",
+            "task_id": task_id, "repetition_id": repetition_id, "attempt_id": attempt_id,
+        }
+
+    recorder.capture_event(runtime("task-one", "1", 1))
+    recorder.capture_event(runtime("task-two", "1", 1))
+    recorder.capture_event(runtime("task-one", "1", 2))
+    with pytest.raises(ValueError, match="duplicate runtime"):
+        recorder.capture_event(runtime("task-one", "1", 1))
+
+    permission = {
+        "type": "permission_decision", "tool_use_id": "tool-1",
+        "task_id": "task-one", "repetition_id": "1", "attempt_id": 1,
+    }
+    recorder.capture_event(permission)
+    recorder.capture_event({**permission, "task_id": "task-two"})
+    with pytest.raises(ValueError, match="duplicate permission"):
+        recorder.capture_event(permission)

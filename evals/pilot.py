@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import re
@@ -38,6 +39,10 @@ _EXIT_CODES = {
     "success": 0, "dry_run": 0, "task_failure": 1, "configuration_error": 2,
     "timeout": 3, "provider_error": 3, "infrastructure_error": 3, "cancelled": 3,
 }
+
+
+class PilotConfigurationError(ValueError):
+    """A generated Pilot child configuration cannot be used safely."""
 
 
 class ModelParameters(BaseModel):
@@ -236,6 +241,7 @@ def _suite_status(report_dir: Path, task_id: str, returncode: int) -> str:
 
 def _ingest_trace(
     recorder: RunRecorder, trace_path: Path, task_id: str, repetition_id: str,
+    attempt_id: int,
 ) -> None:
     """Derive only events actually emitted by the existing stream-json runner."""
     try:
@@ -259,6 +265,7 @@ def _ingest_trace(
                 "request_output_tokens": event.get("request_output_tokens"),
                 "provider_usage": event.get("provider_usage"),
                 "task_id": task_id, "repetition_id": repetition_id,
+                "attempt_id": attempt_id,
             })
         elif event.get("type") == "runtime_manifest":
             recorder.capture_event({
@@ -271,6 +278,7 @@ def _ingest_trace(
                 "tools_sha256": event.get("tools_sha256"),
                 "messages_sha256": event.get("messages_sha256"),
                 "task_id": task_id, "repetition_id": repetition_id,
+                "attempt_id": attempt_id,
             })
         elif event.get("type") == "permission_decision":
             recorder.capture_event({
@@ -286,6 +294,7 @@ def _ingest_trace(
                 "executed": event.get("executed"),
                 "execution_path": event.get("execution_path"),
                 "task_id": task_id, "repetition_id": repetition_id,
+                "attempt_id": attempt_id,
             })
         elif event.get("type") == "compression":
             recorder.capture_event({
@@ -296,6 +305,7 @@ def _ingest_trace(
                 "attachment_count": event.get("attachment_count"),
                 "error_category": event.get("error_category"),
                 "task_id": task_id, "repetition_id": repetition_id,
+                "attempt_id": attempt_id,
             })
 
 
@@ -304,26 +314,35 @@ def _run_trials(config: PilotConfig, root: Path, recorder: RunRecorder) -> list[
     statuses: list[str] = []
     stdout_chunks: list[str | bytes] = []
     stderr_chunks: list[str | bytes] = []
-    completed = recorder.completed_trials()
+    successful = recorder.successful_trials()
     with (
         tempfile.TemporaryDirectory(prefix="codepacex-pilot-home-") as home,
         tempfile.TemporaryDirectory(prefix="codepacex-pilot-stage-") as staging,
     ):
         config_dir = Path(home) / ".codepacex"
         config_dir.mkdir()
-        _write_validated_provider_config(config, config_dir / "config.yaml")
+        try:
+            _write_validated_provider_config(config, config_dir / "config.yaml")
+        except (OSError, ValueError) as exc:
+            raise PilotConfigurationError(str(exc)) from exc
         env = _child_environment(config, home)
         for repetition in range(1, config.repetitions + 1):
             for task_id in config.task_ids:
                 trial = (task_id, str(repetition))
-                if trial in completed:
-                    recorder.event("trial_skipped", {"task_id": task_id, "repetition_id": str(repetition), "reason": "already_completed"})
+                if trial in successful:
+                    recorder.event("trial_skipped", {
+                        "task_id": task_id,
+                        "repetition_id": str(repetition),
+                        "reason": "already_successful",
+                    })
                     continue
+                attempt_id = recorder.next_attempt_id(task_id, str(repetition))
                 report_dir = Path(staging) / f"{task_id}-{repetition}"
                 command = [sys.executable, "evals/run_eval.py", "--task", task_id, "--report-dir", str(report_dir)]
                 started = time.monotonic()
                 recorder.event("trial_started", {
                     "task_id": task_id, "repetition_id": str(repetition),
+                    "attempt_id": attempt_id,
                 })
                 try:
                     process = subprocess.run(command, cwd=root, env=env, text=True, capture_output=True, timeout=config.timeout_seconds)
@@ -331,7 +350,7 @@ def _run_trials(config: PilotConfig, root: Path, recorder: RunRecorder) -> list[
                     stdout_chunks.append(process.stdout or "")
                     stderr_chunks.append(process.stderr or "")
                     for trace_path in report_dir.glob("*/**/trace.ndjson"):
-                        _ingest_trace(recorder, trace_path, task_id, str(repetition))
+                        _ingest_trace(recorder, trace_path, task_id, str(repetition), attempt_id)
                 except subprocess.TimeoutExpired as exc:
                     status = "timeout"
                     stdout_chunks.append(exc.stdout or "")
@@ -339,8 +358,17 @@ def _run_trials(config: PilotConfig, root: Path, recorder: RunRecorder) -> list[
                 except OSError as exc:
                     status = "infrastructure_error"
                     stderr_chunks.append(str(exc))
+                except (ValueError, json.JSONDecodeError) as exc:
+                    status = "infrastructure_error"
+                    stderr_chunks.append(f"trace ingestion failed: {exc}")
                 statuses.append(status)
-                recorder.event("trial_completed", {"task_id": task_id, "repetition_id": str(repetition), "status": status, "duration_seconds": time.monotonic() - started})
+                recorder.event("trial_completed", {
+                    "task_id": task_id,
+                    "repetition_id": str(repetition),
+                    "attempt_id": attempt_id,
+                    "status": status,
+                    "duration_seconds": time.monotonic() - started,
+                })
     if stdout_chunks:
         recorder.write_artifact("stdout.txt", "\n".join(_as_text(item) for item in stdout_chunks))
     if stderr_chunks:
@@ -363,8 +391,17 @@ def execute(
     )
     # The only live backend deliberately reuses the deterministic 6-task harness.
     # Tests mock this subprocess; this module never calls it during dry-run or CI.
-    statuses = _run_trials(config, root, recorder)
-    recorder.finalize({"status": _aggregate_status(statuses), "execution_mode": "live"})
+    try:
+        statuses = _run_trials(config, root, recorder)
+        recorder.finalize({"status": _aggregate_status(statuses), "execution_mode": "live"})
+    except asyncio.CancelledError:
+        recorder.finalize({"status": "cancelled", "execution_mode": "live"})
+        raise
+    except PilotConfigurationError:
+        recorder.finalize({"status": "configuration_error", "execution_mode": "live"})
+    except Exception as exc:
+        recorder.event("execution_error", {"category": "infrastructure_error", "message": str(exc)})
+        recorder.finalize({"status": "infrastructure_error", "execution_mode": "live"})
     return recorder
 
 
@@ -377,8 +414,20 @@ def resume(
         runs_dir, run_id, build_manifest(config, root, run_id=run_id),
         secrets=_runtime_secrets(config),
     )
-    statuses = _run_trials(config, root, recorder)
-    recorder.finalize({"status": _aggregate_status(statuses), "execution_mode": "live", "resumed": True})
+    try:
+        statuses = _run_trials(config, root, recorder)
+        status = _aggregate_status(statuses) if statuses else (
+            recorder.previous_status or "infrastructure_error"
+        )
+        recorder.finalize({"status": status, "execution_mode": "live", "resumed": True})
+    except asyncio.CancelledError:
+        recorder.finalize({"status": "cancelled", "execution_mode": "live", "resumed": True})
+        raise
+    except PilotConfigurationError:
+        recorder.finalize({"status": "configuration_error", "execution_mode": "live", "resumed": True})
+    except Exception as exc:
+        recorder.event("execution_error", {"category": "infrastructure_error", "message": str(exc)})
+        recorder.finalize({"status": "infrastructure_error", "execution_mode": "live", "resumed": True})
     return recorder
 
 

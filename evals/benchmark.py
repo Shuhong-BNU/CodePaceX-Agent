@@ -25,7 +25,7 @@ RESULT_STATUSES = {
     "configuration_error", "infrastructure_error", "cancelled", "dry_run",
 }
 SCORABLE_STATUSES = {"success", "task_failure"}
-RESUMABLE_STATUSES = {"timeout", "provider_error", "infrastructure_error", "cancelled"}
+RESUMABLE_STATUSES = RESULT_STATUSES - {"success", "dry_run"}
 OPTIONAL_JSON = {"usage.json"}
 OPTIONAL_STREAMS = {
     "permission-events.jsonl", "compression-events.jsonl", "runtime-events.jsonl",
@@ -216,6 +216,7 @@ class RunRecorder:
         recorder.path = path
         recorder.redactor = SecretRedactor(secrets)
         recorder.manifest = expected
+        recorder.previous_status = status if result_path.exists() else None
         recorder.event("run_resumed", {"previous_status": status if result_path.exists() else None})
         return recorder
 
@@ -294,6 +295,27 @@ class RunRecorder:
             return {}
         return decoded if isinstance(decoded, dict) else {}
 
+    @staticmethod
+    def _attempt_identity(payload: dict[str, Any]) -> tuple[str | None, str | None, int]:
+        """Return a stable attempt scope without changing provider request IDs.
+
+        ``request_index`` and ``tool_use_id`` are local to an Agent process.  A
+        Pilot starts one process per trial, so Recorder-level uniqueness must be
+        scoped to the task, repetition, and attempt that emitted the event.
+        Older artifacts without ``attempt_id`` are treated as their first
+        attempt for backwards-compatible inspection.
+        """
+        task_id = payload.get("task_id")
+        repetition_id = payload.get("repetition_id")
+        attempt_id = payload.get("attempt_id", 1)
+        if task_id is not None and not isinstance(task_id, str):
+            raise ValueError("trial task_id must be a string")
+        if repetition_id is not None and not isinstance(repetition_id, str):
+            raise ValueError("trial repetition_id must be a string")
+        if not isinstance(attempt_id, int) or attempt_id < 1:
+            raise ValueError("trial attempt_id must be a positive integer")
+        return task_id, repetition_id, attempt_id
+
     def capture_event(self, event: dict[str, Any]) -> None:
         """Persist one real runner event and derive optional files when applicable.
 
@@ -308,16 +330,40 @@ class RunRecorder:
             tool_id = payload.get("tool_use_id")
             if not isinstance(tool_id, str) or not tool_id:
                 raise ValueError("permission decision requires tool_use_id")
+            identity = self._attempt_identity(payload)
             previous = self._jsonl_records("permission-events.jsonl")
-            if any(item.get("tool_use_id") == tool_id for item in previous):
+            if any(
+                self._attempt_identity(item) == identity
+                and item.get("tool_use_id") == tool_id
+                for item in previous
+            ):
                 raise ValueError(f"duplicate permission decision for tool ID: {tool_id}")
         elif event_type == "runtime_manifest":
             request_index = payload.get("request_index")
             if not isinstance(request_index, int) or request_index < 1:
                 raise ValueError("runtime manifest requires a positive request_index")
+            identity = self._attempt_identity(payload)
             previous = self._jsonl_records("runtime-events.jsonl")
-            if any(item.get("request_index") == request_index for item in previous):
+            if any(
+                self._attempt_identity(item) == identity
+                and item.get("request_index") == request_index
+                for item in previous
+            ):
                 raise ValueError(f"duplicate runtime request index: {request_index}")
+        elif event_type == "usage":
+            request_index = payload.get("request_index")
+            trial_scoped = {"task_id", "repetition_id", "attempt_id"}.issubset(payload)
+            if request_index is not None and trial_scoped:
+                if not isinstance(request_index, int) or request_index < 1:
+                    raise ValueError("usage request_index must be a positive integer")
+                identity = self._attempt_identity(payload)
+                runtime = self._jsonl_records("runtime-events.jsonl")
+                if not any(
+                    self._attempt_identity(item) == identity
+                    and item.get("request_index") == request_index
+                    for item in runtime
+                ):
+                    raise ValueError("usage event has no matching runtime manifest")
         self.event(event_type, payload)
         if event_type == "usage":
             existing = self._json_object("usage.json")
@@ -354,6 +400,23 @@ class RunRecorder:
                 completed.add((str(event.get("task_id")), str(event.get("repetition_id"))))
         return completed
 
+    def successful_trials(self) -> set[tuple[str, str]]:
+        successful: set[tuple[str, str]] = set()
+        for event in self._jsonl_records("events.jsonl"):
+            if event.get("type") == "trial_completed" and event.get("status") == "success":
+                successful.add((str(event.get("task_id")), str(event.get("repetition_id"))))
+        return successful
+
+    def next_attempt_id(self, task_id: str, repetition_id: str) -> int:
+        attempts = [
+            self._attempt_identity(event)[2]
+            for event in self._jsonl_records("events.jsonl")
+            if event.get("type") in {"trial_started", "trial_completed"}
+            and event.get("task_id") == task_id
+            and event.get("repetition_id") == repetition_id
+        ]
+        return max(attempts, default=0) + 1
+
     def finalize(self, result: dict[str, Any]) -> None:
         status = result.get("status")
         if status is None and isinstance(result.get("success"), bool):
@@ -361,10 +424,11 @@ class RunRecorder:
             result = {**result, "status": status}
         if status not in RESULT_STATUSES:
             raise ValueError(f"unsupported result status: {status}")
-        attempts: set[tuple[str, str]] = set()
+        attempts: set[tuple[str, str, int]] = set()
         completed: list[dict[str, Any]] = []
         for event in self._jsonl_records("events.jsonl"):
-            trial = (str(event.get("task_id")), str(event.get("repetition_id")))
+            task_id, repetition_id, attempt_id = self._attempt_identity(event)
+            trial = (str(task_id), str(repetition_id), attempt_id)
             if event.get("type") == "trial_started":
                 attempts.add(trial)
             elif event.get("type") == "trial_completed":
