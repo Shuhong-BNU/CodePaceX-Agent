@@ -406,7 +406,7 @@ def execute(
         profile_path.write_text(
             yaml.safe_dump(profile.canonical_payload(), sort_keys=True), encoding="utf-8",
         )
-        environment = _child_environment(pilot, home_text)
+        environment = _child_environment(pilot, home_text, root=root)
         for instance_id in ids:
             instance = by_id[instance_id]
             with tempfile.TemporaryDirectory(prefix=f"codepacex-swe-{instance_id}-") as text:

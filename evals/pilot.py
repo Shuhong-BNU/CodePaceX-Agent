@@ -197,13 +197,16 @@ def _configuration_error(
     return recorder
 
 
-def _child_environment(config: PilotConfig, home: str) -> dict[str, str]:
-    """Pass only the frozen provider credential to the isolated eval child."""
+def _child_environment(
+    config: PilotConfig, home: str, *, root: Path,
+) -> dict[str, str]:
+    """Bind the isolated eval child to the frozen checkout and credential."""
     environment = {
         key: value for key, value in os.environ.items()
         if key in _ENV_NAMES or key.startswith("LC_")
     }
     environment["HOME"] = home
+    environment["PYTHONPATH"] = str(root.resolve())
     environment[config.api_key_env] = os.environ[config.api_key_env]
     return environment
 
@@ -415,7 +418,7 @@ def _run_trials(
             _write_validated_provider_config(config, config_dir / "config.yaml")
         except (OSError, ValueError) as exc:
             raise PilotConfigurationError(str(exc)) from exc
-        env = _child_environment(config, home)
+        env = _child_environment(config, home, root=root)
         profile_path = Path(staging) / "experiment-profile.yaml"
         profile_path.write_text(
             yaml.safe_dump(config.experiment_profile.canonical_payload(), sort_keys=True),

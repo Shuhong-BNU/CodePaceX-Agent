@@ -256,7 +256,7 @@ def _run_profile(
         profile_path.write_text(
             yaml.safe_dump(profile.canonical_payload(), sort_keys=True), encoding="utf-8",
         )
-        environment = _child_environment(pilot, home_text)
+        environment = _child_environment(pilot, home_text, root=root)
         tasks, repetitions = scoped_tasks(studies, scope=scope)
         for repetition in range(1, repetitions + 1):
             for task in tasks:

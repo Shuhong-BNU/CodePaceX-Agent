@@ -139,6 +139,7 @@ def test_live_execute_is_mockable_and_child_env_excludes_other_provider_keys(tmp
     monkeypatch.setenv("GITHUB_TOKEN", "also-blocked")
     monkeypatch.setenv("SSH_AUTH_SOCK", "/private/credential-agent")
     monkeypatch.setenv("HTTPS_PROXY", "https://proxy-user:proxy-password@example.test")
+    monkeypatch.setenv("PYTHONPATH", "/tmp/stale-codepacex-checkout")
     captured: dict[str, object] = {}
     real_run = subprocess.run
 
@@ -192,6 +193,7 @@ def test_live_execute_is_mockable_and_child_env_excludes_other_provider_keys(tmp
     assert "GITHUB_TOKEN" not in captured["env"]
     assert "SSH_AUTH_SOCK" not in captured["env"]
     assert captured["env"]["HTTPS_PROXY"].startswith("https://proxy-user")
+    assert captured["env"]["PYTHONPATH"] == str(Path.cwd().resolve())
     all_output = "\n".join(
         path.read_text(encoding="utf-8", errors="replace")
         for path in recorder.path.rglob("*") if path.is_file()

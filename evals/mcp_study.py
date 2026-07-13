@@ -292,7 +292,7 @@ def _run_arm(
             yaml.safe_dump(profile.canonical_payload(), sort_keys=True),
             encoding="utf-8",
         )
-        environment = _child_environment(pilot, str(home))
+        environment = _child_environment(pilot, str(home), root=root)
         selected_tasks, repetitions = scoped_tasks(study, tasks, scope=scope)
         for repetition in range(1, repetitions + 1):
             for task in selected_tasks:
