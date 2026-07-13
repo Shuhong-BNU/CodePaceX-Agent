@@ -347,6 +347,8 @@ def _run_profile(
                     "attempt_id": 1, "status": status,
                     "duration_seconds": time.monotonic() - started,
                     "actual_cny": str(settlement.actual_cny), "grade": grade,
+                    "provider_request_count": requests,
+                    "input_tokens": input_tokens, "output_tokens": output_tokens,
                     **success_rate_fields(status),
                 })
     if all(item == "success" for item in statuses):

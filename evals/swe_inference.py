@@ -509,6 +509,7 @@ def execute(
                 "duration_seconds": trial["duration_seconds"],
                 "actual_cny": trial["actual_cny"],
                 "empty_patch": False, "official_outcome": resolved,
+                "numerator": int(resolved), "denominator": 1,
             })
         resolved_count = sum(outcomes.values())
         recorder.finalize({

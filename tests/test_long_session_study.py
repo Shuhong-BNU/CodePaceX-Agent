@@ -5,14 +5,18 @@ import pytest
 
 from evals.goal2_studies import load_studies
 from evals.long_session_study import (
+    _CycleTelemetry,
     _write_checkpoint,
     dry_run,
+    frozen_profile,
     load_latest_checkpoint,
     recovery_rate_fields,
     schedule,
     strict_cycle_grade,
     validate_checkpoint_chain,
 )
+from evals.benchmark import RunManifest, RunRecorder
+from codepacex.experiments import combined_runtime_hash
 
 
 STUDIES = Path("evals/goal2/studies.yaml")
@@ -54,6 +58,34 @@ def test_recovery_rate_fields_only_count_post_restart_probe() -> None:
         "numerator": 0, "denominator": 1,
     }
     assert recovery_rate_fields("success", recovery_probe=False) == {}
+
+
+def test_long_session_telemetry_persists_runtime_and_provider_usage(tmp_path: Path) -> None:
+    profile = frozen_profile()
+    recorder = RunRecorder(tmp_path, RunManifest(
+        experiment_profile=profile.canonical_payload(),
+        experiment_profile_hash=profile.profile_hash(),
+        runtime_contract_hash=profile.runtime_contract_hash(),
+    ), run_id="long")
+    telemetry = _CycleTelemetry(recorder, "long-pilot-1", 1)
+    telemetry({
+        "type": "runtime_manifest", "provider": "p", "protocol": "openai-compat",
+        "model_id": "m", "system_sha256": "s", "tools_sha256": "t",
+        "messages_sha256": "msg", "tools_bytes": 42,
+        "experiment_profile_hash": profile.profile_hash(),
+        "runtime_contract_hash": profile.runtime_contract_hash(),
+        "combined_runtime_hash": combined_runtime_hash(
+            profile_hash=profile.profile_hash(), system_sha256="s", tools_sha256="t",
+        ),
+    })
+    telemetry({
+        "type": "usage", "provider_usage": {"prompt_tokens": 3, "completion_tokens": 2},
+        "request_input_tokens": 3, "request_output_tokens": 2,
+    })
+    runtime = json.loads((recorder.path / "runtime-events.jsonl").read_text())
+    usage = json.loads((recorder.path / "usage.json").read_text())["requests"][0]
+    assert runtime["tools_bytes"] == 42
+    assert usage["provider_usage"]["prompt_tokens"] == 3
 
 
 def test_long_session_dry_run_is_not_real_wall_clock_evidence(tmp_path: Path) -> None:

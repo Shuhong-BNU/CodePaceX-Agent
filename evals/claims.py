@@ -18,6 +18,15 @@ from evals.benchmark import RUN_ID_RE, canonical_hash, reduction_percent
 
 REGISTERED_METRICS = {
     "provider_input_tokens",
+    "provider_output_tokens",
+    "provider_cache_tokens",
+    "runtime_tool_schema_bytes",
+    "actual_cost_cny",
+    "trial_input_tokens",
+    "trial_output_tokens",
+    "provider_request_count",
+    "integration_conflict_count",
+    "maximum_parallel_children",
     "permission_hitl_count",
     "successful_task_wall_time_seconds",
     "rate",
@@ -38,6 +47,7 @@ REGISTERED_ALLOWED_DIFFERENCES = {
     "manifest.max_iterations",
     "runtime.provider", "runtime.protocol", "runtime.model_id",
     "runtime.system_sha256", "runtime.tools_sha256", "runtime.messages_sha256",
+    "runtime.tools_bytes",
     "runtime.experiment_profile_hash", "runtime.runtime_contract_hash",
     "runtime.combined_runtime_hash",
 }
@@ -62,9 +72,13 @@ _MANIFEST_FIELDS = {
 }
 _RUNTIME_FIELDS = (
     "provider", "protocol", "model_id", "system_sha256", "tools_sha256",
-    "messages_sha256", "experiment_profile_hash", "runtime_contract_hash",
+    "messages_sha256", "tools_bytes", "experiment_profile_hash", "runtime_contract_hash",
     "combined_runtime_hash",
 )
+_RUNTIME_SET_FIELDS = {
+    "provider", "protocol", "model_id", "experiment_profile_hash",
+    "runtime_contract_hash",
+}
 
 
 class ExperimentConditions(BaseModel):
@@ -250,7 +264,11 @@ def _identity(manifest: dict[str, Any], run: Path) -> dict[str, Any]:
             identity[f"manifest.feature_flags.{key}"] = value
     runtime = _runtime_records(run)
     for field in _RUNTIME_FIELDS:
-        identity[f"runtime.{field}"] = [item.get(field) for item in runtime]
+        values = [item.get(field) for item in runtime]
+        identity[f"runtime.{field}"] = (
+            sorted(set(values), key=lambda value: str(value))
+            if field in _RUNTIME_SET_FIELDS else values
+        )
     return identity
 
 
@@ -362,7 +380,9 @@ def _completed_trials(run: Path) -> dict[tuple[str, str], dict[str, Any]]:
     return completed
 
 
-def _provider_token_trials(run: Path) -> dict[tuple[str, str], float]:
+def _provider_usage_trials(
+    run: Path, metric: Literal["input", "output", "cache"],
+) -> dict[tuple[str, str], float]:
     usage_path = run / "usage.json"
     if not usage_path.exists():
         return {}
@@ -377,10 +397,65 @@ def _provider_token_trials(run: Path) -> dict[tuple[str, str], float]:
         raw = item.get("provider_usage")
         if key is None or not isinstance(raw, dict):
             return {}
-        tokens = raw.get("prompt_tokens", raw.get("input_tokens"))
+        if metric == "input":
+            tokens = raw.get("prompt_tokens", raw.get("input_tokens"))
+        elif metric == "output":
+            tokens = raw.get("completion_tokens", raw.get("output_tokens"))
+        else:
+            details = raw.get("prompt_tokens_details", raw.get("input_tokens_details", {}))
+            tokens = raw.get("cache_read_input_tokens")
+            if tokens is None and isinstance(details, dict):
+                tokens = details.get("cached_tokens", details.get("cache_read_tokens"))
+            if tokens is None:
+                tokens = 0
         if not isinstance(tokens, (int, float)):
             return {}
         values[key] = values.get(key, 0.0) + float(tokens)
+    return values
+
+
+def _provider_token_trials(run: Path) -> dict[tuple[str, str], float]:
+    return _provider_usage_trials(run, "input")
+
+
+def _runtime_tool_schema_trials(run: Path) -> dict[tuple[str, str], float]:
+    values: dict[tuple[str, str], float] = {}
+    for item in _runtime_records(run):
+        key = _trial_key(item)
+        value = item.get("tools_bytes")
+        if key is None or not isinstance(value, int) or value < 0:
+            return {}
+        values.setdefault(key, float(value))
+    return values
+
+
+def _actual_cost_trials(run: Path) -> dict[tuple[str, str], float]:
+    values: dict[tuple[str, str], float] = {}
+    for key, event in _completed_trials(run).items():
+        try:
+            value = float(event["actual_cny"])
+        except (KeyError, TypeError, ValueError):
+            return {}
+        if value < 0:
+            return {}
+        values[key] = value
+    return values
+
+
+def _terminal_numeric_trials(
+    run: Path, field: str, *, grade_field: bool = False,
+) -> dict[tuple[str, str], float]:
+    values: dict[tuple[str, str], float] = {}
+    for key, event in _completed_trials(run).items():
+        source = event.get("grade") if grade_field else event
+        if not isinstance(source, dict):
+            return {}
+        raw = source.get(field)
+        if isinstance(raw, bool):
+            raw = int(raw)
+        if not isinstance(raw, (int, float)) or raw < 0:
+            return {}
+        values[key] = float(raw)
     return values
 
 
@@ -505,6 +580,33 @@ def _calculate(
 ) -> tuple[float | None, int]:
     if claim.metric_name == "provider_input_tokens":
         values = _all_trial_values(runs, _provider_token_trials)
+        return (_aggregate(values, claim.aggregation), len(values)) if values else (None, 0)
+    if claim.metric_name == "provider_output_tokens":
+        values = _all_trial_values(runs, lambda run: _provider_usage_trials(run, "output"))
+        return (_aggregate(values, claim.aggregation), len(values)) if values else (None, 0)
+    if claim.metric_name == "provider_cache_tokens":
+        values = _all_trial_values(runs, lambda run: _provider_usage_trials(run, "cache"))
+        return (_aggregate(values, claim.aggregation), len(values)) if values else (None, 0)
+    if claim.metric_name == "runtime_tool_schema_bytes":
+        values = _all_trial_values(runs, _runtime_tool_schema_trials)
+        return (_aggregate(values, claim.aggregation), len(values)) if values else (None, 0)
+    if claim.metric_name == "actual_cost_cny":
+        values = _all_trial_values(runs, _actual_cost_trials)
+        return (_aggregate(values, claim.aggregation), len(values)) if values else (None, 0)
+    terminal_metrics = {
+        "trial_input_tokens": ("input_tokens", False),
+        "trial_output_tokens": ("output_tokens", False),
+        "provider_request_count": ("provider_request_count", False),
+        "integration_conflict_count": ("integration_conflict_markers", True),
+        "maximum_parallel_children": ("maximum_parallel_children", True),
+    }
+    if claim.metric_name in terminal_metrics:
+        field, grade_field = terminal_metrics[claim.metric_name]
+        values = _all_trial_values(
+            runs, lambda run: _terminal_numeric_trials(
+                run, field, grade_field=grade_field,
+            ),
+        )
         return (_aggregate(values, claim.aggregation), len(values)) if values else (None, 0)
     if claim.metric_name == "permission_hitl_count":
         values = _all_trial_values(runs, _permission_trials)

@@ -70,6 +70,11 @@ def _successful_run(
     task_id: str = "task",
     repetition_id: str = "1",
     prompt_tokens: int = 12,
+    completion_tokens: int = 2,
+    cache_tokens: int = 0,
+    tools_bytes: int = 64,
+    actual_cny: str = "0.01",
+    terminal_fields: dict[str, object] | None = None,
     runtime_tools: str = "tools",
     numerator: int | None = None,
     denominator: int | None = None,
@@ -94,7 +99,8 @@ def _successful_run(
         "type": "runtime_manifest", "request_index": 1,
         "provider": provider, "protocol": "openai-compat", "model_id": "m",
         "system_sha256": "system", "tools_sha256": runtime_tools,
-        "messages_sha256": "messages", "task_id": task_id,
+        "messages_sha256": "messages", "tools_bytes": tools_bytes,
+        "task_id": task_id,
         "repetition_id": repetition_id,
         "experiment_profile_hash": profile.profile_hash(),
         "runtime_contract_hash": profile.runtime_contract_hash(),
@@ -105,15 +111,19 @@ def _successful_run(
     })
     recorder.capture_event({
         "type": "usage", "request_index": 1,
-        "provider_usage": {"prompt_tokens": prompt_tokens, "completion_tokens": 2},
+        "provider_usage": {
+            "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
+            "prompt_tokens_details": {"cached_tokens": cache_tokens},
+        },
         "task_id": task_id, "repetition_id": repetition_id,
     })
     terminal = {
         "task_id": task_id, "repetition_id": repetition_id,
-        "status": "success", "duration_seconds": 1.5,
+        "status": "success", "duration_seconds": 1.5, "actual_cny": actual_cny,
     }
     if numerator is not None and denominator is not None:
         terminal.update({"numerator": numerator, "denominator": denominator})
+    terminal.update(terminal_fields or {})
     recorder.event("trial_completed", terminal)
     recorder.finalize({"status": "success"})
 
@@ -127,6 +137,36 @@ def test_claim_compile_recomputes_value_and_sample_size(tmp_path: Path) -> None:
     assert compiled["generated_value"] == 12
     assert compiled["sample_size"] == 1
     assert compiled["generation_command"] == "python -m evals.claims compile"
+
+
+@pytest.mark.parametrize(("metric", "expected"), [
+    ("provider_output_tokens", 2),
+    ("provider_cache_tokens", 3),
+    ("runtime_tool_schema_bytes", 64),
+    ("actual_cost_cny", 0.01),
+])
+def test_goal2_registered_measurements_use_raw_run_artifacts(
+    tmp_path: Path, metric: str, expected: float,
+) -> None:
+    _successful_run(tmp_path, "run", cache_tokens=3)
+    compiled = compile_claims(_document(metric_name=metric), tmp_path)["claims"][0]
+    assert compiled["status"] == "verified"
+    assert compiled["generated_value"] == pytest.approx(expected)
+
+
+def test_multi_agent_terminal_measurements_are_registered(tmp_path: Path) -> None:
+    _successful_run(tmp_path, "run", terminal_fields={
+        "input_tokens": 30, "output_tokens": 4, "provider_request_count": 2,
+        "grade": {"integration_conflict_markers": False, "maximum_parallel_children": 2},
+    })
+    for metric, expected in {
+        "trial_input_tokens": 30, "trial_output_tokens": 4,
+        "provider_request_count": 2, "integration_conflict_count": 0,
+        "maximum_parallel_children": 2,
+    }.items():
+        claim = compile_claims(_document(metric_name=metric), tmp_path)["claims"][0]
+        assert claim["status"] == "verified"
+        assert claim["generated_value"] == expected
 
 
 def test_dry_run_and_missing_runtime_are_insufficient(tmp_path: Path) -> None:
@@ -271,6 +311,29 @@ def test_ab_unbalanced_trial_pairs_are_insufficient(tmp_path: Path) -> None:
     assert claim["status"] == "insufficient-data"
     assert claim["sample_size"] == 1
     assert claim["evidence_summary"]["measured_sample_size"] == 0
+
+
+def test_runtime_provider_identity_is_not_changed_by_request_count(tmp_path: Path) -> None:
+    _successful_run(tmp_path, "run")
+    _successful_run(tmp_path, "second", repetition_id="2")
+    for name in ("runtime-events.jsonl",):
+        path = tmp_path / "second" / name
+        record = json.loads(path.read_text())
+        record["request_index"] = 2
+        path.write_text(path.read_text() + json.dumps(record) + "\n")
+    claim = compile_claims(_document(
+        source_run_ids=["run", "second"], sample_size=2,
+        experiment_conditions=_conditions(
+            allowed_differences=[
+                "runtime.system_sha256", "runtime.tools_sha256",
+                "runtime.messages_sha256", "runtime.tools_bytes",
+                "runtime.combined_runtime_hash",
+            ],
+        ),
+    ), tmp_path)["claims"][0]
+    assert not any(
+        "runtime.provider" in item for item in claim["limitations"]
+    )
 
 
 @pytest.mark.parametrize("declared", [1, 3])

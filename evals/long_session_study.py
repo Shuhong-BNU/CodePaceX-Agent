@@ -218,13 +218,16 @@ class _CycleTelemetry:
     def __call__(self, event: dict[str, Any]) -> None:
         if event.get("type") == "runtime_manifest":
             self.requests += 1
-            self.recorder.event("runtime_observed", {
-                "task_id": self.task_id, "cycle": self.cycle,
-                "cycle_request_index": self.requests,
-                "provider": event.get("provider"), "model_id": event.get("model_id"),
-                "experiment_profile_hash": event.get("experiment_profile_hash"),
-                "runtime_contract_hash": event.get("runtime_contract_hash"),
-                "combined_runtime_hash": event.get("combined_runtime_hash"),
+            self.recorder.capture_event({
+                **event, "request_index": self.requests,
+                "task_id": self.task_id, "repetition_id": str(self.cycle),
+                "attempt_id": 1,
+            })
+        elif event.get("type") == "usage" and self.requests:
+            self.recorder.capture_event({
+                **event, "request_index": self.requests,
+                "task_id": self.task_id, "repetition_id": str(self.cycle),
+                "attempt_id": 1,
             })
         elif event.get("type") == "compression":
             self.recorder.capture_event({
