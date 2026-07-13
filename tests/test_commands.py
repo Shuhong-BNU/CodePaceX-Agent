@@ -372,6 +372,31 @@ class TestStatusHandler:
         assert "default" in ui.messages[0]
 
 
+class TestPermissionHandler:
+
+    @pytest.mark.asyncio
+    async def test_reset_writes_valid_empty_rules_and_allows_append(self, tmp_path) -> None:
+        from codepacex.commands.handlers.permission import handle_permission
+        from codepacex.permissions.rules import Rule, RuleEngine
+
+        local_path = tmp_path / ".codepacex" / "permissions.local.yaml"
+        local_path.parent.mkdir()
+        local_path.write_text("- rule: Bash(git status)\n  effect: allow\n", encoding="utf-8")
+        engine = RuleEngine(local_rules_path=local_path)
+        agent = MagicMock()
+        agent.permission_checker.rule_engine = engine
+        ui = MockUI()
+        ctx = _make_context(args="reset", ui=ui)
+        ctx.agent = agent
+
+        await handle_permission(ctx)
+
+        assert local_path.read_text(encoding="utf-8") == "[]\n"
+        assert engine.evaluate("Bash", "git status") is None
+        engine.append_local_rule(Rule("Bash", "git diff", "allow"))
+        assert engine.evaluate("Bash", "git diff") == "allow"
+
+
 class TestModelHandler:
     @staticmethod
     def _providers():

@@ -62,6 +62,8 @@ def _load_rules_file(path: Path) -> list[Rule]:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (yaml.YAMLError, OSError) as exc:
         raise ValueError(f"无法读取权限规则 {path}: {exc}") from exc
+    if raw is None:
+        return []
     if not isinstance(raw, list):
         raise ValueError(f"权限规则文件必须是列表: {path}")
     rules: list[Rule] = []

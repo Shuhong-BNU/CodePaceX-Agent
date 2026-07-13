@@ -22,8 +22,20 @@ def test_bwrap_builder_orders_bind_and_network_flags(tmp_path: Path) -> None:
         "printf ok", SandboxConfig(allow_write=[str(tmp_path)], deny_write=[str(protected)])
     )
     assert command.index("--ro-bind / /") < command.index(f"--bind {tmp_path} {tmp_path}")
-    assert command.index(f"--bind {tmp_path} {tmp_path}") < command.index(f"--ro-bind {protected} {protected}")
+    assert command.index(f"--bind {tmp_path} {tmp_path}") < command.index(f"--ro-bind-try {protected} {protected}")
     assert "--unshare-net" in command
+
+
+def test_bwrap_builder_uses_optional_read_only_binds_for_missing_paths(tmp_path: Path) -> None:
+    existing = tmp_path / "existing.yaml"
+    existing.write_text("protected", encoding="utf-8")
+    missing = tmp_path / "missing.yaml"
+    command = BwrapSandbox().wrap(
+        "printf ok",
+        SandboxConfig(deny_write=[str(existing), str(missing)]),
+    )
+    assert f"--ro-bind-try {existing} {existing}" in command
+    assert f"--ro-bind-try {missing} {missing}" in command
 
 
 def _seatbelt_capability_or_skip() -> None:
@@ -94,15 +106,27 @@ def test_linux_bwrap_real_smoke(tmp_path: Path) -> None:
     _bwrap_capability_or_skip()
     work = tmp_path / "work"
     work.mkdir()
+    protected = work / "protected.txt"
+    protected.write_text("protected", encoding="utf-8")
     outside = tmp_path / "outside.txt"
     sandbox = BwrapSandbox()
-    config = SandboxConfig(allow_write=[str(work)], network_enabled=False)
+    config = SandboxConfig(
+        allow_write=[str(work)],
+        deny_write=[str(work / "missing.yaml"), str(protected)],
+        network_enabled=False,
+    )
 
     inside = subprocess.run(
         sandbox.wrap(f"printf inside > {shlex.quote(str(work / 'inside.txt'))}", config),
         shell=True, text=True, capture_output=True, check=False,
     )
     assert inside.returncode == 0, inside.stderr
+    protected_write = subprocess.run(
+        sandbox.wrap(f"printf changed > {shlex.quote(str(protected))}", config),
+        shell=True, text=True, capture_output=True, check=False,
+    )
+    assert protected_write.returncode != 0
+    assert protected.read_text(encoding="utf-8") == "protected"
     blocked = subprocess.run(
         sandbox.wrap(f"printf outside > {shlex.quote(str(outside))}", config),
         shell=True, text=True, capture_output=True, check=False,
