@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [codex/verifiable-agent-capabilities]
+    branches: [main]
 
 permissions:
   contents: read
@@ -25,6 +25,14 @@ jobs:
         run: python -m pip install -e . pytest pytest-asyncio
       - name: Run main test suite
         run: python -m pytest -q --ignore=tests/test_os_sandbox_smoke.py
+      - name: Validate Benchmark Pilot harness without a model call
+        run: |
+          python -m evals.pilot validate
+          python -m evals.pilot dry-run --runs-dir "$RUNNER_TEMP/codepacex-pilot"
+          python -m evals.claims validate
+          python -m evals.claims compile
+      - name: Scan tracked source for credential-shaped values
+        run: python -m evals.secret_scan
       - name: Run Linux sandbox verification
         run: python -m pytest tests/test_os_sandbox_smoke.py -q -rs
 
@@ -40,5 +48,11 @@ jobs:
         run: python -m pip install -e . pytest pytest-asyncio
       - name: Run main test suite
         run: python -m pytest -q --ignore=tests/test_os_sandbox_smoke.py
+      - name: Validate Benchmark Pilot harness without a model call
+        run: |
+          python -m evals.pilot validate
+          python -m evals.pilot dry-run --runs-dir "$RUNNER_TEMP/codepacex-pilot"
+          python -m evals.claims validate
+          python -m evals.claims compile
       - name: Run macOS sandbox verification
         run: python -m pytest tests/test_os_sandbox_smoke.py -q -rs

@@ -91,6 +91,34 @@ fixture 中的 `.codepacex/permissions.yaml` 会通过项目级 permission rule 
 
 `evals/benchmark.py` 为每次真实实验创建版本化 manifest、环境快照、事件 JSONL、usage 和 Markdown 报告，并自动脱敏 API Key 等敏感字段。`evals/run_resume_metrics.py` 只汇总真实采样数据；它不会生成或补全任何缺失的样本。
 
+## 🧪 Benchmark Pilot Harness（本轮新增）
+
+本轮在既有 6-task Eval 之上增加了可复现实验的记录与证据链，不替代既有 deterministic eval：
+
+```bash
+# 仅校验冻结配置，不创建 Run、不初始化模型 Client
+./.venv/bin/python -m evals.pilot validate
+
+# 创建完整的 dry-run Run；不会访问网络或调用模型
+./.venv/bin/python -m evals.pilot dry-run
+
+# 只在人工确认付费实验、任务清单非空且环境中已有 Key 时才允许进入 live 路径
+./.venv/bin/python -m evals.pilot execute --confirm-paid-run
+
+# 从已存在的真实 Run 重新计算 Claims；缺失证据只会输出 insufficient-data
+./.venv/bin/python -m evals.claims compile
+```
+
+冻结主实验配置位于 `evals/pilot.qwen.yaml`：`bailian-qwen37-max`、`openai-compat`、`qwen3.7-max-2026-06-08`，且 fallback 与自动 retry 均关闭。该配置只引用环境变量名，永不写入密钥。live 路径复用现有 6-task Runner，并在隔离的临时 HOME 中运行；本 PR 的测试与 CI 只运行 validate/dry-run 和 mock subprocess，不会发起付费调用。
+
+每次 terminal Run 的五个核心文件是 `manifest.json`、`environment.json`、`events.jsonl`、`result.json` 与 `report.md`。usage、Runtime Hash、权限、压缩和 patch/test-output 附件仅在真实事件或真实文件存在时生成。Runtime Hash 在协议转换完成后针对实际 system/tools/messages payload 计算，只保存 SHA-256 与实际 Provider 身份，不保存请求原文。Provider 返回的 usage 结构按原样保存，缺失字段不会补零或推断。
+
+`.runs/` 是本地、脱敏前的实验产物，不能提交；可提交的 Claims 也只能由注册计算器从可计分、条件一致的 Run 重新生成。A/B 默认逐字段比较 Manifest 与 Runtime 身份，研究变量只能通过 `allowed_differences` 精确放行；放行项仍保留在 evidence summary。当前 Pilot 没有 feature flag 到 Runtime 的映射，因此 live Run 与 verified Claim 只允许空 `feature_flags`。`experiment_config_hash` 仅用于审计，不代替字段级比较。dry-run、不可计分 Run、缺失样本、未配对 trial 和未获放行的身份差异都不能被标为 verified。
+
+Claims 声明的 sample size 必须与真实 trial 或真实 A/B 配对数完全相等。rate 使用汇总后的 numerator/denominator；A/B 仅比较完全相同的 `task_id + repetition_id` 配对，且双方都必须具有唯一、成功的终态 Attempt；含多个终态 Attempt 的 trial 在 Pilot v1 中是 insufficient-data。p95 唯一使用 nearest-rank：`sorted_values[ceil(0.95 * n) - 1]`，不使用插值。
+
+当前状态：可复现实验采集、dry-run 校验与 Claims 溯源已实现并有测试；尚未运行任何本轮 Qwen paid Pilot、真实 SWE-bench-Live、Token 节省率实验或长会话实验，因此没有这些项目的实际指标或成绩。
+
 ## SWE-bench 官方适配器
 
 `evals/swe_bench_live.py` 可确定性筛选实例、写入 frozen manifest，并构造官方 `swebench.harness.run_evaluation` 命令。无需安装 evaluator 的 dry-run 示例：

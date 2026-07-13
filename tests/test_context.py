@@ -570,6 +570,46 @@ def _make_long_conversation(n_tail: int = 6, tail_tokens: int = 4000) -> Convers
 
 @pytest.mark.asyncio
 class TestAutoCompactKeepRecent:
+    async def test_runtime_event_sink_receives_compression_request(self, tmp_path: Path) -> None:
+        from codepacex.tools.base import RuntimeManifestEvent, StreamEnd, TextDelta
+
+        class RuntimeSummaryClient:
+            async def stream(self, conversation, system=""):
+                yield RuntimeManifestEvent("p", "openai-compat", "m", "s", "t", "msg")
+                yield TextDelta("<summary>RUNTIME SUMMARY</summary>")
+                yield StreamEnd("end_turn")
+
+        conv = _make_long_conversation()
+        conv.record_usage_anchor(input_tokens=200_000)
+        captured = []
+        await auto_compact(
+            conv, RuntimeSummaryClient(), context_window=200_000,
+            session_dir=tmp_path, runtime_event_sink=captured.append,
+        )
+        assert len(captured) == 1
+        assert captured[0].provider == "p"
+
+    async def test_usage_sink_receives_the_matching_compression_response(self, tmp_path: Path) -> None:
+        from codepacex.tools.base import RuntimeManifestEvent, StreamEnd, TextDelta
+
+        class RuntimeSummaryClient:
+            async def stream(self, conversation, system=""):
+                yield RuntimeManifestEvent("p", "openai-compat", "m", "s", "t", "msg")
+                yield TextDelta("<summary>RUNTIME SUMMARY</summary>")
+                yield StreamEnd("end_turn", input_tokens=11, output_tokens=7,
+                                provider_usage={"prompt_tokens": 11, "completion_tokens": 7})
+
+        conv = _make_long_conversation()
+        conv.record_usage_anchor(input_tokens=200_000)
+        pairs = []
+        await auto_compact(
+            conv, RuntimeSummaryClient(), context_window=200_000, session_dir=tmp_path,
+            usage_event_sink=lambda runtime, usage: pairs.append((runtime, usage)),
+        )
+        assert len(pairs) == 1
+        assert pairs[0][0].model_id == "m"
+        assert pairs[0][1].provider_usage == {"prompt_tokens": 11, "completion_tokens": 7}
+
     async def test_recent_messages_kept_verbatim(self, tmp_path: Path) -> None:
         conv = _make_long_conversation()
         # 快照记录保留窗口选中了哪些尾部消息，让断言跟随算法本身，

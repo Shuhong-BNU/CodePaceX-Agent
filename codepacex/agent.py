@@ -52,6 +52,7 @@ from codepacex.prompts import build_environment_context, build_plan_mode_reminde
 from codepacex.tools import ToolRegistry
 from codepacex.tools.base import (
     MAX_OUTPUT_CHARS,
+    RuntimeManifestEvent,
     StreamEnd,
     StreamEvent,
     TextDelta,
@@ -120,6 +121,12 @@ class LoopComplete:
 class UsageEvent:
     input_tokens: int
     output_tokens: int
+    request_input_tokens: int | None = None
+    request_output_tokens: int | None = None
+    provider_usage: dict[str, Any] | None = None
+    provider: str | None = None
+    model_id: str | None = None
+    request_index: int | None = None
 
 
 @dataclass
@@ -134,6 +141,30 @@ class CompactNotification:
     # 结构化 boundary（摘要 + 原文保留尾部），UI/session 层用它持久化 compact_boundary 记录。
     # 失败路径下为 None。
     boundary: "CompactBoundary | None" = None
+
+
+@dataclass
+class CompressionEvent:
+    trigger: str
+    success: bool
+    tokens_before: int
+    tokens_after: int | None = None
+    attachment_count: int | None = None
+    error_category: str | None = None
+
+
+@dataclass
+class PermissionDecisionEvent:
+    tool_use_id: str
+    tool_name: str
+    final_effect: str
+    mandatory_safety: bool
+    hook_effect: str | None
+    hitl_required: bool
+    hitl_response: str | None
+    persistable: bool
+    executed: bool
+    execution_path: str
 
 
 @dataclass
@@ -155,6 +186,7 @@ class PermissionRequest:
     tool_name: str
     description: str
     future: asyncio.Future[PermissionResponse]
+    tool_use_id: str = ""
 
 
 AgentEvent = (
@@ -170,6 +202,9 @@ AgentEvent = (
     | PermissionRequest
     | CompactNotification
     | HookEvent
+    | RuntimeManifestEvent
+    | PermissionDecisionEvent
+    | CompressionEvent
 )
 
 
@@ -188,16 +223,19 @@ class LLMResponse:
     text: str = ""
     tool_calls: list[ToolCallComplete] = field(default_factory=list)
     thinking_blocks: list[ThinkingBlock] = field(default_factory=list)
+    provider_usage: dict[str, Any] | None = None
     stop_reason: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read: int = 0
     cache_creation: int = 0
+    request_index: int | None = None
 
 
 class StreamCollector:
-    def __init__(self) -> None:
+    def __init__(self, request_indexer: Callable[[], int] | None = None) -> None:
         self.response = LLMResponse()
+        self._request_indexer = request_indexer
 
     async def consume(
         self, stream: AsyncIterator[StreamEvent]
@@ -212,6 +250,11 @@ class StreamCollector:
                 self.response.thinking_blocks.append(
                     ThinkingBlock(thinking=event.thinking, signature=event.signature)
                 )
+            elif isinstance(event, RuntimeManifestEvent):
+                if self._request_indexer is not None:
+                    event.request_index = self._request_indexer()
+                self.response.request_index = event.request_index
+                yield event
             elif isinstance(event, ToolCallStart):
                 pass
             elif isinstance(event, ToolCallDelta):
@@ -229,6 +272,7 @@ class StreamCollector:
                 self.response.output_tokens = event.output_tokens
                 self.response.cache_read = event.cache_read
                 self.response.cache_creation = event.cache_creation
+                self.response.provider_usage = event.provider_usage
 
 
 # ---------------------------------------------------------------------------
@@ -267,12 +311,27 @@ def partition_tool_calls(
 # ---------------------------------------------------------------------------
 
 @dataclass
-class _ToolExecResult:
+class _ToolDecision:
+    decision: Decision
+    mandatory_safety: bool = False
+    hook_effect: str | None = None
+
+
+@dataclass
+class ToolExecutionOutcome:
     tool_id: str
     tool_name: str
     result: ToolResult
     elapsed: float
     is_unknown: bool
+    final_effect: str
+    mandatory_safety: bool
+    hook_effect: str | None
+    hitl_required: bool
+    hitl_response: str | None
+    persistable: bool
+    executed: bool
+    execution_path: str
 
 
 @dataclass
@@ -286,45 +345,65 @@ class _ModelRuntime:
 
 class StreamingExecutor:
     def __init__(self) -> None:
-        self._tasks: list[tuple[int, asyncio.Task[_ToolExecResult]]] = []
+        self._tasks: list[
+            tuple[int, asyncio.Task[ToolExecutionOutcome], ToolExecutionOutcome | None]
+        ] = []
         self._order = 0
 
     def submit(
         self,
         coro: Any,
+        cancelled_outcome: ToolExecutionOutcome | None = None,
     ) -> None:
         task = asyncio.create_task(coro)
-        self._tasks.append((self._order, task))
+        self._tasks.append((self._order, task, cancelled_outcome))
         self._order += 1
 
-    async def collect_results(self) -> list[_ToolExecResult]:
+    async def collect_results(self) -> list[ToolExecutionOutcome]:
         if not self._tasks:
             return []
-        tasks = [t for _, t in sorted(self._tasks, key=lambda x: x[0])]
+        ordered = sorted(self._tasks, key=lambda item: item[0])
+        tasks = [task for _, task, _ in ordered]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.clear()
-        out: list[_ToolExecResult] = []
-        for r in results:
+        out: list[ToolExecutionOutcome] = []
+        for r, (_, _, fallback) in zip(results, ordered):
             if isinstance(r, BaseException):
-                out.append(_ToolExecResult(
+                out.append(fallback or ToolExecutionOutcome(
                     tool_id="",
                     tool_name="",
                     result=ToolResult(output=f"Tool execution error: {r}", is_error=True),
                     elapsed=0.0,
                     is_unknown=False,
+                    final_effect="allow",
+                    mandatory_safety=False,
+                    hook_effect=None,
+                    hitl_required=False,
+                    hitl_response=None,
+                    persistable=False,
+                    executed=False,
+                    execution_path="streaming",
                 ))
             else:
                 out.append(r)
         return out
 
-    async def cancel_and_reap(self) -> None:
-        tasks = [task for _, task in self._tasks]
+    async def cancel_and_reap(self) -> list[ToolExecutionOutcome]:
+        ordered = sorted(self._tasks, key=lambda item: item[0])
+        tasks = [task for _, task, _ in ordered]
         try:
             for task in tasks:
                 if not task.done():
                     task.cancel()
             if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+            else:
+                results = []
+            return [
+                result if isinstance(result, ToolExecutionOutcome) else fallback
+                for result, (_, _, fallback) in zip(results, ordered)
+                if isinstance(result, ToolExecutionOutcome) or fallback is not None
+            ]
         finally:
             self._tasks.clear()
 
@@ -372,6 +451,7 @@ class Agent:
         self.recovery_state: RecoveryState = RecoveryState()
         self.total_input_tokens = 0
         self.total_output_tokens = 0
+        self._runtime_request_index = 0
         self.instructions_content = instructions_content
         self.memory_manager = memory_manager
         self.hook_engine = hook_engine
@@ -409,6 +489,70 @@ class Agent:
         if self.session_id:
             return str(Path(self.work_dir) / ".codepacex" / "sessions" / f"{self.session_id}.jsonl")
         return ""
+
+    def _next_runtime_request_index(self) -> int:
+        self._runtime_request_index += 1
+        return self._runtime_request_index
+
+    def _index_runtime_event(self, event: RuntimeManifestEvent) -> RuntimeManifestEvent:
+        event.request_index = self._next_runtime_request_index()
+        return event
+
+    @staticmethod
+    def _runtime_event_payload(event: RuntimeManifestEvent) -> dict[str, Any]:
+        return {
+            "type": "runtime_manifest",
+            "request_index": event.request_index,
+            "provider": event.provider,
+            "protocol": event.protocol,
+            "model_id": event.model_id,
+            "system_sha256": event.system_sha256,
+            "tools_sha256": event.tools_sha256,
+            "messages_sha256": event.messages_sha256,
+        }
+
+    @staticmethod
+    def _compression_event_payload(event: CompressionEvent) -> dict[str, Any]:
+        return {
+            "type": "compression",
+            "trigger": event.trigger,
+            "success": event.success,
+            "tokens_before": event.tokens_before,
+            "tokens_after": event.tokens_after,
+            "attachment_count": event.attachment_count,
+            "error_category": event.error_category,
+        }
+
+    def _usage_from_stream_end(
+        self, runtime_event: RuntimeManifestEvent, stream_end: StreamEnd,
+    ) -> UsageEvent:
+        """Account for a completed SDK request without inventing provider fields."""
+        self.total_input_tokens += stream_end.input_tokens
+        self.total_output_tokens += stream_end.output_tokens
+        return UsageEvent(
+            input_tokens=self.total_input_tokens,
+            output_tokens=self.total_output_tokens,
+            request_input_tokens=stream_end.input_tokens,
+            request_output_tokens=stream_end.output_tokens,
+            provider_usage=stream_end.provider_usage,
+            provider=runtime_event.provider,
+            model_id=runtime_event.model_id,
+            request_index=runtime_event.request_index,
+        )
+
+    @staticmethod
+    def _usage_event_payload(event: UsageEvent) -> dict[str, Any]:
+        return {
+            "type": "usage",
+            "input_tokens": event.input_tokens,
+            "output_tokens": event.output_tokens,
+            "request_input_tokens": event.request_input_tokens,
+            "request_output_tokens": event.request_output_tokens,
+            "provider_usage": event.provider_usage,
+            "provider": event.provider,
+            "model_id": event.model_id,
+            "request_index": event.request_index,
+        }
 
     @property
     def plan_mode(self) -> bool:
@@ -489,6 +633,15 @@ class Agent:
         apply_budget: bool = True,
     ) -> tuple[ConversationManager | None, list[dict[str, Any]], list[AgentEvent], str]:
         events: list[AgentEvent] = []
+        runtime_events: list[RuntimeManifestEvent] = []
+        compression_usage: list[UsageEvent] = []
+
+        def on_runtime(event: RuntimeManifestEvent) -> None:
+            runtime_events.append(self._index_runtime_event(event))
+
+        def on_usage(event: RuntimeManifestEvent, stream_end: StreamEnd) -> None:
+            compression_usage.append(self._usage_from_stream_end(event, stream_end))
+        tokens_before = conversation.current_tokens()
         compact_result = await auto_compact(
             conversation,
             runtime.client,
@@ -499,8 +652,16 @@ class Agent:
             recovery=self.recovery_state,
             tool_schemas=self.registry.get_all_schemas(runtime.protocol),
             transcript_path=self._transcript_path,
+            runtime_event_sink=on_runtime,
+            usage_event_sink=on_usage,
         )
+        events.extend(runtime_events)
+        events.extend(compression_usage)
         if isinstance(compact_result, CompactEvent):
+            events.append(CompressionEvent(
+                trigger="automatic", success=True,
+                tokens_before=compact_result.before_tokens,
+            ))
             events.append(
                 CompactNotification(
                     before_tokens=compact_result.before_tokens,
@@ -512,6 +673,10 @@ class Agent:
             mem = self.memory_manager.load() if self.memory_manager else ""
             conversation.inject_long_term_memory(self.instructions_content, mem)
         elif isinstance(compact_result, str):
+            events.append(CompressionEvent(
+                trigger="automatic", success=False, tokens_before=tokens_before,
+                error_category="compression_error",
+            ))
             return None, [], events, compact_result
 
         tools = self.registry.get_all_schemas(runtime.protocol)
@@ -526,6 +691,7 @@ class Agent:
         return api_conv, tools, events, ""
 
     async def run(self, conversation: ConversationManager) -> AsyncIterator[AgentEvent]:
+        self._runtime_request_index = 0
         active_executor: list[StreamingExecutor | None] = [None]
         try:
             async for event in self._run(conversation, active_executor):
@@ -648,10 +814,11 @@ class Agent:
                 append_replacement_records(self.session_dir, _new_records)
 
             while True:
-                collector = StreamCollector()
+                collector = StreamCollector(self._next_runtime_request_index)
                 streaming_executor = StreamingExecutor()
                 active_executor[0] = streaming_executor
                 streamed_count = 0
+                streaming_decisions: dict[str, _ToolDecision] = {}
                 streaming_prefix_open = True
                 stream_started = False
                 try:
@@ -662,11 +829,6 @@ class Agent:
                         if isinstance(event, ToolUseEvent) and streaming_prefix_open:
                             tc = collector.response.tool_calls[-1]
                             tool = self.registry.get(tc.tool_name)
-                            decision = (
-                                self.permission_checker.check(tool, tc.arguments)
-                                if tool is not None and self.permission_checker is not None
-                                else None
-                            )
                             # Hook-enabled turns remain on the normal path so that
                             # pre/post Hook events can be yielded in order. For the
                             # fast path, only pre-approved read-only tools are run.
@@ -676,13 +838,25 @@ class Agent:
                                 and tool.is_read_only
                                 and tool.is_concurrency_safe
                                 and self.registry.is_enabled(tc.tool_name)
-                                and (decision is None or decision.effect == "allow")
                             ):
-                                streaming_executor.submit(self._execute_single_tool_direct(tc))
-                                streamed_count += 1
+                                decision = await self._assess_tool(tc)
+                                streaming_decisions[tc.tool_id] = decision
+                                if decision.decision.effect == "allow":
+                                    streaming_executor.submit(
+                                        self._execute_single_tool_direct(
+                                            tc, decision, execution_path="streaming",
+                                        ),
+                                        self._cancelled_tool_outcome(
+                                            tc, decision, "streaming",
+                                        ),
+                                    )
+                                    streamed_count += 1
+                                else:
+                                    streaming_prefix_open = False
                             else:
                                 streaming_prefix_open = False
-                        stream_started = True
+                        if not isinstance(event, RuntimeManifestEvent):
+                            stream_started = True
                         yield event
                     break
                 except asyncio.CancelledError:
@@ -690,8 +864,10 @@ class Agent:
                     active_executor[0] = None
                     raise
                 except Exception as e:
-                    await streaming_executor.cancel_and_reap()
+                    cancelled_outcomes = await streaming_executor.cancel_and_reap()
                     active_executor[0] = None
+                    for outcome in cancelled_outcomes:
+                        yield self._permission_decision_event(outcome)
                     if stream_started:
                         raise
 
@@ -837,6 +1013,12 @@ class Agent:
             yield UsageEvent(
                 input_tokens=self.total_input_tokens,
                 output_tokens=self.total_output_tokens,
+                request_input_tokens=response.input_tokens,
+                request_output_tokens=response.output_tokens,
+                provider_usage=response.provider_usage,
+                provider=turn_runtime.provider.name if turn_runtime.provider else None,
+                model_id=turn_runtime.provider.model if turn_runtime.provider else None,
+                request_index=response.request_index,
             )
 
             conv_thinking = [
@@ -846,8 +1028,10 @@ class Agent:
 
             if response.stop_reason == "max_tokens":
                 if not max_tokens_escalated:
-                    await streaming_executor.cancel_and_reap()
+                    cancelled_outcomes = await streaming_executor.cancel_and_reap()
                     active_executor[0] = None
+                    for outcome in cancelled_outcomes:
+                        yield self._permission_decision_event(outcome)
                     turn_runtime.client.set_max_output_tokens(MAX_TOKENS_CEILING)
                     max_tokens_escalated = True
                     if response.text:
@@ -861,8 +1045,10 @@ class Agent:
                     yield RetryEvent(reason="max_tokens escalation")
                     continue
                 elif output_recoveries < MAX_OUTPUT_TOKENS_RECOVERIES:
-                    await streaming_executor.cancel_and_reap()
+                    cancelled_outcomes = await streaming_executor.cancel_and_reap()
                     active_executor[0] = None
+                    for outcome in cancelled_outcomes:
+                        yield self._permission_decision_event(outcome)
                     output_recoveries += 1
                     conversation.add_assistant_message(
                         response.text, thinking_blocks=conv_thinking
@@ -935,26 +1121,30 @@ class Agent:
                     consecutive_unknown = 0
                 content = self._maybe_persist_or_truncate(br.tool_id, br.result.output)
                 tool_results.append(ToolResultBlock(tool_use_id=br.tool_id, content=content, is_error=br.result.is_error))
+                yield self._permission_decision_event(br)
                 yield ToolResultEvent(tool_id=br.tool_id, tool_name=br.tool_name, output=br.result.output, is_error=br.result.is_error, elapsed=br.elapsed)
             active_executor[0] = None
 
             batches = partition_tool_calls(response.tool_calls[streamed_count:], self.registry)
 
             for batch in batches:
-                predecisions: dict[str, Decision] = {}
+                predecisions: dict[str, _ToolDecision] = {
+                    tc.tool_id: streaming_decisions[tc.tool_id]
+                    for tc in batch.calls if tc.tool_id in streaming_decisions
+                }
                 can_run_direct = batch.concurrent and len(batch.calls) > 1 and self.hook_engine is None
-                if can_run_direct and self.permission_checker:
+                if can_run_direct:
                     for tc in batch.calls:
-                        tool = self.registry.get(tc.tool_name)
-                        if tool is None:
-                            can_run_direct = False
-                            break
-                        predecisions[tc.tool_id] = self.permission_checker.check(tool, tc.arguments)
+                        if tc.tool_id not in predecisions:
+                            predecisions[tc.tool_id] = await self._assess_tool(tc)
                     can_run_direct = can_run_direct and all(
-                        decision.effect == "allow" for decision in predecisions.values()
+                        decision.decision.effect == "allow"
+                        for decision in predecisions.values()
                     )
                 if can_run_direct:
-                    batch_results = await self._execute_batch_parallel(batch.calls)
+                    batch_results = await self._execute_batch_parallel(
+                        batch.calls, predecisions,
+                    )
                     for br in batch_results:
                         if br.is_unknown:
                             consecutive_unknown += 1
@@ -970,6 +1160,7 @@ class Agent:
                                 is_error=br.result.is_error,
                             )
                         )
+                        yield self._permission_decision_event(br)
                         yield ToolResultEvent(
                             tool_id=br.tool_id,
                             tool_name=br.tool_name,
@@ -979,27 +1170,33 @@ class Agent:
                         )
                 else:
                     for tc in batch.calls:
-                        result: ToolResult | None = None
-                        elapsed = 0.0
-                        is_unknown = False
-                        decision = predecisions.get(tc.tool_id) or await self._decide_tool(tc)
+                        outcome: ToolExecutionOutcome | None = None
+                        decision = predecisions.get(tc.tool_id) or await self._assess_tool(tc)
                         for he in self._drain_hook_events():
                             yield he
                         async for item in self._execute_tool(tc, decision=decision):
                             if isinstance(item, PermissionRequest):
                                 yield item
                             else:
-                                result, elapsed, is_unknown = item
+                                outcome = item
 
-                        if result is None:
-                            result = ToolResult(output="Error: no result from tool", is_error=True)
+                        if outcome is None:
+                            outcome = ToolExecutionOutcome(
+                                tc.tool_id, tc.tool_name,
+                                ToolResult("Error: no result from tool", is_error=True),
+                                0.0, False, decision.decision.effect,
+                                decision.mandatory_safety, decision.hook_effect,
+                                False, None, decision.decision.persistable, False,
+                                "sequential",
+                            )
 
-                        if is_unknown:
+                        if outcome.is_unknown:
                             consecutive_unknown += 1
                         else:
                             consecutive_unknown = 0
 
-                        if self.hook_engine:
+                        yield self._permission_decision_event(outcome)
+                        if self.hook_engine and outcome.executed:
                             file_path = self._infer_file_path(tc.arguments)
                             hook_ctx = self._build_hook_context(
                                 "post_tool_use",
@@ -1012,21 +1209,21 @@ class Agent:
                                 yield he
 
                         content = self._maybe_persist_or_truncate(
-                            tc.tool_id, result.output
+                            tc.tool_id, outcome.result.output
                         )
                         tool_results.append(
                             ToolResultBlock(
                                 tool_use_id=tc.tool_id,
                                 content=content,
-                                is_error=result.is_error,
+                                is_error=outcome.result.is_error,
                             )
                         )
                         yield ToolResultEvent(
                             tool_id=tc.tool_id,
                             tool_name=tc.tool_name,
-                            output=result.output,
-                            is_error=result.is_error,
-                            elapsed=elapsed,
+                            output=outcome.result.output,
+                            is_error=outcome.result.is_error,
+                            elapsed=outcome.elapsed,
                         )
 
             if consecutive_unknown >= 3:
@@ -1085,11 +1282,17 @@ class Agent:
         """为 HITL 权限确认生成人类可读的操作描述。"""
         return PermissionChecker.describe_tool_action(tc.tool_name, tc.arguments)
 
-    async def _decide_tool(self, tc: ToolCallComplete) -> Decision | None:
-        """Compute ordinary policy, run pre hooks, then merge once."""
+    async def _assess_tool(self, tc: ToolCallComplete) -> _ToolDecision:
+        """Compute policy and Hook constraints once, retaining audit metadata."""
         tool = self.registry.get(tc.tool_name)
         if tool is None:
-            return None
+            return _ToolDecision(
+                Decision("deny", f"unknown tool: {tc.tool_name}", persistable=False)
+            )
+        if not self.registry.is_enabled(tc.tool_name):
+            return _ToolDecision(
+                Decision("deny", f"disabled tool: {tc.tool_name}", persistable=False)
+            )
         assessment = None
         assessment_error = ""
         if self.permission_checker:
@@ -1099,9 +1302,12 @@ class Agent:
                 assessment_error = f"权限安全检查失败: {exc}"
         if assessment is not None and assessment.mandatory_denied:
             try:
-                return self.permission_checker.finalize(assessment)
+                decision = self.permission_checker.finalize(assessment)
             except Exception as exc:
-                return Decision("deny", f"危险命令最终决策失败: {exc}", persistable=False)
+                decision = Decision(
+                    "deny", f"危险命令最终决策失败: {exc}", persistable=False,
+                )
+            return _ToolDecision(decision, mandatory_safety=True)
         hook_effect = None
         hook_reason = ""
         if self.hook_engine:
@@ -1117,46 +1323,139 @@ class Agent:
                 hook_effect, hook_reason = "deny", f"Hook rejected: {rejection.reason}"
         if assessment is not None:
             try:
-                return self.permission_checker.finalize(
+                decision = self.permission_checker.finalize(
                     assessment, hook_effect=hook_effect, hook_reason=hook_reason
+                )
+                return _ToolDecision(
+                    decision,
+                    mandatory_safety=assessment.mandatory_safety,
+                    hook_effect=hook_effect,
                 )
             except Exception as exc:
                 assessment_error = f"权限最终决策失败: {exc}"
         if assessment_error:
             if hook_effect == "deny":
-                return Decision("deny", hook_reason, persistable=False)
-            return Decision("ask", assessment_error, persistable=False)
+                decision = Decision("deny", hook_reason, persistable=False)
+            else:
+                decision = Decision("ask", assessment_error, persistable=False)
+            return _ToolDecision(
+                decision,
+                mandatory_safety=bool(
+                    assessment is not None and assessment.mandatory_safety
+                ),
+                hook_effect=hook_effect,
+            )
         if hook_effect:
-            return Decision(effect="deny", reason=hook_reason, persistable=False)
-        return None
+            return _ToolDecision(
+                Decision(effect="deny", reason=hook_reason, persistable=False),
+                hook_effect=hook_effect,
+            )
+        return _ToolDecision(Decision("allow", "no permission restriction"))
+
+    async def _decide_tool(self, tc: ToolCallComplete) -> Decision:
+        return (await self._assess_tool(tc)).decision
+
+    @staticmethod
+    def _permission_decision_event(
+        outcome: ToolExecutionOutcome,
+    ) -> PermissionDecisionEvent:
+        """Single final telemetry exit for every tool execution path."""
+        return PermissionDecisionEvent(
+            tool_use_id=outcome.tool_id,
+            tool_name=outcome.tool_name,
+            final_effect=outcome.final_effect,
+            mandatory_safety=outcome.mandatory_safety,
+            hook_effect=outcome.hook_effect,
+            hitl_required=outcome.hitl_required,
+            hitl_response=outcome.hitl_response,
+            persistable=outcome.persistable,
+            executed=outcome.executed,
+            execution_path=outcome.execution_path,
+        )
+
+    @staticmethod
+    def _permission_event_payload(event: PermissionDecisionEvent) -> dict[str, Any]:
+        return {
+            "type": "permission_decision",
+            "tool_use_id": event.tool_use_id,
+            "tool_name": event.tool_name,
+            "final_effect": event.final_effect,
+            "mandatory_safety": event.mandatory_safety,
+            "hook_effect": event.hook_effect,
+            "hitl_required": event.hitl_required,
+            "hitl_response": event.hitl_response,
+            "persistable": event.persistable,
+            "executed": event.executed,
+            "execution_path": event.execution_path,
+        }
+
+    @staticmethod
+    def _cancelled_tool_outcome(
+        tc: ToolCallComplete, decision: _ToolDecision, execution_path: str,
+    ) -> ToolExecutionOutcome:
+        return ToolExecutionOutcome(
+            tc.tool_id, tc.tool_name,
+            ToolResult("Tool execution cancelled", is_error=True), 0.0, False,
+            decision.decision.effect, decision.mandatory_safety,
+            decision.hook_effect, False, None, decision.decision.persistable,
+            False, execution_path,
+        )
 
     async def _execute_single_tool_direct(
-        self, tc: ToolCallComplete
-    ) -> _ToolExecResult:
+        self, tc: ToolCallComplete, decision: _ToolDecision | None = None,
+        *, execution_path: str = "direct",
+    ) -> ToolExecutionOutcome:
         tool = self.registry.get(tc.tool_name)
         start = time.monotonic()
+        decision = decision or await self._assess_tool(tc)
 
         if tool is None:
-            return _ToolExecResult(
+            return ToolExecutionOutcome(
                 tool_id=tc.tool_id,
                 tool_name=tc.tool_name,
                 result=ToolResult(output=f"Error: unknown tool '{tc.tool_name}'", is_error=True),
                 elapsed=time.monotonic() - start,
                 is_unknown=True,
+                final_effect="deny", mandatory_safety=False,
+                hook_effect=decision.hook_effect, hitl_required=False,
+                hitl_response=None, persistable=False, executed=False,
+                execution_path=execution_path,
             )
 
         if not self.registry.is_enabled(tc.tool_name):
-            return _ToolExecResult(
+            return ToolExecutionOutcome(
                 tool_id=tc.tool_id,
                 tool_name=tc.tool_name,
                 result=ToolResult(output=f"Error: tool '{tc.tool_name}' is disabled", is_error=True),
                 elapsed=time.monotonic() - start,
                 is_unknown=False,
+                final_effect="deny", mandatory_safety=False,
+                hook_effect=decision.hook_effect, hitl_required=False,
+                hitl_response=None, persistable=False, executed=False,
+                execution_path=execution_path,
             )
 
+        if decision.decision.effect != "allow":
+            return ToolExecutionOutcome(
+                tool_id=tc.tool_id, tool_name=tc.tool_name,
+                result=ToolResult(
+                    output=f"Permission denied: {decision.decision.reason}", is_error=True,
+                ),
+                elapsed=time.monotonic() - start, is_unknown=False,
+                final_effect=decision.decision.effect,
+                mandatory_safety=decision.mandatory_safety,
+                hook_effect=decision.hook_effect, hitl_required=False,
+                hitl_response=None, persistable=decision.decision.persistable,
+                executed=False, execution_path=execution_path,
+            )
+
+        executed = False
         try:
             params = tool.params_model.model_validate(tc.arguments)
+            executed = True
             result = await tool.execute(params)
+        except asyncio.CancelledError:
+            result = ToolResult(output="Tool execution cancelled", is_error=True)
         except ValidationError as e:
             result = ToolResult(output=f"Parameter validation error: {e}", is_error=True)
         except Exception as e:
@@ -1164,81 +1463,103 @@ class Agent:
 
         self._snapshot_for_recovery(tc, result)
 
-        return _ToolExecResult(
+        return ToolExecutionOutcome(
             tool_id=tc.tool_id,
             tool_name=tc.tool_name,
             result=result,
             elapsed=time.monotonic() - start,
             is_unknown=False,
+            final_effect=decision.decision.effect,
+            mandatory_safety=decision.mandatory_safety,
+            hook_effect=decision.hook_effect,
+            hitl_required=False,
+            hitl_response=None,
+            persistable=decision.decision.persistable,
+            executed=executed,
+            execution_path=execution_path,
         )
 
 
     async def _execute_batch_parallel(
-        self, calls: list[ToolCallComplete]
-    ) -> list[_ToolExecResult]:
-        tasks = [self._execute_single_tool_direct(tc) for tc in calls]
+        self, calls: list[ToolCallComplete], decisions: dict[str, _ToolDecision],
+    ) -> list[ToolExecutionOutcome]:
+        tasks = [
+            self._execute_single_tool_direct(
+                tc, decisions[tc.tool_id], execution_path="parallel",
+            )
+            for tc in calls
+        ]
         return list(await asyncio.gather(*tasks))
 
     async def _execute_tool(
-        self, tc: ToolCallComplete, *, decision: Decision | None = None
-    ) -> AsyncIterator[tuple[ToolResult, float, bool]]:
+        self, tc: ToolCallComplete, *, decision: _ToolDecision | None = None
+    ) -> AsyncIterator[PermissionRequest | ToolExecutionOutcome]:
         tool = self.registry.get(tc.tool_name)
         start = time.monotonic()
         is_unknown = False
+        decision = decision or await self._assess_tool(tc)
 
         if tool is None:
-            result = ToolResult(
-                output=f"Error: unknown tool '{tc.tool_name}'", is_error=True
+            yield await self._execute_single_tool_direct(
+                tc, decision, execution_path="sequential",
             )
-            is_unknown = True
-            elapsed = time.monotonic() - start
-            yield result, elapsed, is_unknown
             return
 
         if not self.registry.is_enabled(tc.tool_name):
-            result = ToolResult(
-                output=f"Error: tool '{tc.tool_name}' is disabled in current mode",
-                is_error=True,
+            yield await self._execute_single_tool_direct(
+                tc, decision, execution_path="sequential",
             )
-            elapsed = time.monotonic() - start
-            yield result, elapsed, is_unknown
             return
 
-        # 权限检查
-        if decision is None and self.permission_checker:
-            decision = self.permission_checker.check(tool, tc.arguments)
-        if decision is not None:
-            if decision.effect == "deny":
+        hitl_required = decision.decision.effect == "ask"
+        hitl_response: str | None = None
+        if decision.decision.effect != "allow":
+            if decision.decision.effect == "deny":
                 result = ToolResult(
-                    output=f"Permission denied: {decision.reason}",
+                    output=f"Permission denied: {decision.decision.reason}",
                     is_error=True,
                 )
-                elapsed = time.monotonic() - start
-                yield result, elapsed, is_unknown
+                yield ToolExecutionOutcome(
+                    tc.tool_id, tc.tool_name, result, time.monotonic() - start,
+                    is_unknown, "deny", decision.mandatory_safety,
+                    decision.hook_effect, False, None,
+                    decision.decision.persistable, False, "sequential",
+                )
                 return
 
-            if decision.effect == "ask":
+            if decision.decision.effect == "ask":
                 loop = asyncio.get_running_loop()
                 future: asyncio.Future[PermissionResponse] = loop.create_future()
                 desc = self._build_permission_description(tc)
                 # 向调用方 yield 权限请求事件，由调用方处理
                 yield PermissionRequest(
                     tool_name=tc.tool_name,
-                    description=f"{desc}\nReason: {decision.reason}",
+                    description=f"{desc}\nReason: {decision.decision.reason}",
                     future=future,
+                    tool_use_id=tc.tool_id,
                 )
                 response = await future
+                hitl_response = (
+                    response.value if isinstance(response, PermissionResponse) else str(response)
+                )
 
-                if response == PermissionResponse.DENY:
+                if response in {PermissionResponse.DENY, "deny"}:
                     result = ToolResult(
                         output="Permission denied: 用户拒绝了此操作",
                         is_error=True,
                     )
-                    elapsed = time.monotonic() - start
-                    yield result, elapsed, is_unknown
+                    yield ToolExecutionOutcome(
+                        tc.tool_id, tc.tool_name, result, time.monotonic() - start,
+                        is_unknown, "ask", decision.mandatory_safety,
+                        decision.hook_effect, True, hitl_response,
+                        decision.decision.persistable, False, "sequential",
+                    )
                     return
 
-                if response == PermissionResponse.ALLOW_ALWAYS and decision.persistable:
+                if (
+                    response == PermissionResponse.ALLOW_ALWAYS
+                    and decision.decision.persistable
+                ):
                     from codepacex.permissions.rules import Rule, extract_content
                     content = extract_content(tc.tool_name, tc.arguments)
                     pattern = f"{content[:60]}*" if len(content) > 60 else f"{content}*"
@@ -1249,8 +1570,10 @@ class Agent:
                     # 同时加入会话级放行集合，本轮立即生效无需磁盘读取
                     self.permission_checker.add_session_allow(tc.tool_name, content)
 
+        executed = False
         try:
             params = tool.params_model.model_validate(tc.arguments)
+            executed = True
             result = await tool.execute(params)
         except ValidationError as e:
             result = ToolResult(
@@ -1263,8 +1586,12 @@ class Agent:
 
         self._snapshot_for_recovery(tc, result)
 
-        elapsed = time.monotonic() - start
-        yield result, elapsed, is_unknown
+        yield ToolExecutionOutcome(
+            tc.tool_id, tc.tool_name, result, time.monotonic() - start,
+            is_unknown, decision.decision.effect, decision.mandatory_safety,
+            decision.hook_effect, hitl_required, hitl_response,
+            decision.decision.persistable, executed, "sequential",
+        )
 
     def _snapshot_for_recovery(
         self, tc: ToolCallComplete, result: ToolResult
@@ -1320,12 +1647,23 @@ class Agent:
                 await self._extract_memories(conversation)
 
     async def manual_compact(
-        self, conversation: ConversationManager
+        self,
+        conversation: ConversationManager,
+        event_callback: Callable[[AgentEvent], None] | None = None,
     ) -> CompactNotification | ErrorEvent:
         # auto_compact 会用摘要替换 conversation.history，所有 tool-result 内容
         # （原始或已替换的）都将被丢弃。这里跳过 apply_tool_result_budget —
         # 它在主循环中的唯一目的是为 LLM 调用生成 api_conv，而本路径不需要
         # 发起看到替换结果的 LLM 调用（auto_compact 内部的摘要调用操作的是原始对话）。
+        runtime_events: list[RuntimeManifestEvent] = []
+        usage_events: list[UsageEvent] = []
+
+        def on_runtime(event: RuntimeManifestEvent) -> None:
+            runtime_events.append(self._index_runtime_event(event))
+
+        def on_usage(event: RuntimeManifestEvent, stream_end: StreamEnd) -> None:
+            usage_events.append(self._usage_from_stream_end(event, stream_end))
+
         result = await auto_compact(
             conversation,
             self.client,
@@ -1337,8 +1675,17 @@ class Agent:
             recovery=self.recovery_state,
             tool_schemas=self.registry.get_all_schemas(self.protocol),
             transcript_path=self._transcript_path,
+            runtime_event_sink=on_runtime,
+            usage_event_sink=on_usage,
         )
+        if event_callback is not None:
+            for event in [*runtime_events, *usage_events]:
+                event_callback(event)
         if isinstance(result, CompactEvent):
+            if event_callback is not None:
+                event_callback(CompressionEvent(
+                    trigger="manual", success=True, tokens_before=result.before_tokens,
+                ))
             env_context = build_environment_context(
             self.work_dir, self.active_skills, self._skill_catalog, self._agent_catalog
         )
@@ -1352,6 +1699,12 @@ class Agent:
                 message=f"上下文已压缩（压缩前 {result.before_tokens:,} tokens）",
                 boundary=result.boundary,
             )
+        if event_callback is not None and isinstance(result, str):
+            event_callback(CompressionEvent(
+                trigger="manual", success=False,
+                tokens_before=conversation.current_tokens(),
+                error_category="compression_error",
+            ))
         return ErrorEvent(message=result or "压缩失败：对话历史为空或未达到压缩条件")
 
     async def run_to_completion(
@@ -1374,6 +1727,8 @@ class Agent:
 
         if task:
             conversation.add_user_message(task)
+
+        self._runtime_request_index = 0
 
         hook_prompts = (
             self.hook_engine.get_prompt_messages() if self.hook_engine else None
@@ -1405,6 +1760,16 @@ class Agent:
                 for note in self.notification_fn():
                     conversation.add_system_reminder(note)
 
+            compact_runtime_events: list[RuntimeManifestEvent] = []
+            compact_usage_events: list[UsageEvent] = []
+
+            def on_compact_runtime(event: RuntimeManifestEvent) -> None:
+                compact_runtime_events.append(self._index_runtime_event(event))
+
+            def on_compact_usage(event: RuntimeManifestEvent, stream_end: StreamEnd) -> None:
+                compact_usage_events.append(self._usage_from_stream_end(event, stream_end))
+
+            compact_tokens_before = conversation.current_tokens()
             compact_result = await auto_compact(
                 conversation,
                 self.client,
@@ -1415,9 +1780,27 @@ class Agent:
                 recovery=self.recovery_state,
                 tool_schemas=self.registry.get_all_schemas(self.protocol),
                 transcript_path=self._transcript_path,
+                runtime_event_sink=on_compact_runtime,
+                usage_event_sink=on_compact_usage,
             )
+            if event_callback:
+                for runtime_event in compact_runtime_events:
+                    event_callback(self._runtime_event_payload(runtime_event))
+                for usage_event in compact_usage_events:
+                    event_callback(self._usage_event_payload(usage_event))
             if isinstance(compact_result, CompactEvent):
+                if event_callback:
+                    event_callback(self._compression_event_payload(CompressionEvent(
+                        trigger="automatic", success=True,
+                        tokens_before=compact_result.before_tokens,
+                    )))
                 conversation.inject_environment(env_context)
+            elif isinstance(compact_result, str) and event_callback:
+                event_callback(self._compression_event_payload(CompressionEvent(
+                    trigger="automatic", success=False,
+                    tokens_before=compact_tokens_before,
+                    error_category="compression_error",
+                )))
 
             deferred_names = self.registry.get_deferred_tool_names()
             if deferred_names:
@@ -1434,10 +1817,11 @@ class Agent:
             if _new_records:
                 append_replacement_records(self.session_dir, _new_records)
 
-            collector = StreamCollector()
+            collector = StreamCollector(self._next_runtime_request_index)
             llm_stream = self.client.stream(api_conv, system=system, tools=tools)
-            async for _event in collector.consume(llm_stream):
-                pass
+            async for stream_event in collector.consume(llm_stream):
+                if event_callback and isinstance(stream_event, RuntimeManifestEvent):
+                    event_callback(self._runtime_event_payload(stream_event))
 
             response = collector.response
             self.total_input_tokens += response.input_tokens
@@ -1449,6 +1833,7 @@ class Agent:
                     "usage": {
                         "inputTokens": self.total_input_tokens,
                         "outputTokens": self.total_output_tokens,
+                        "requestIndex": response.request_index,
                     },
                 })
 
@@ -1499,13 +1884,18 @@ class Agent:
                         "toolName": tc.tool_name,
                         "args": tc.arguments,
                     })
-                result = await self._execute_tool_noninteractive(tc)
-                content = self._maybe_persist_or_truncate(tc.tool_id, result.output)
+                outcome = await self._execute_tool_noninteractive(tc)
+                permission_event = self._permission_decision_event(outcome)
+                if event_callback:
+                    event_callback(self._permission_event_payload(permission_event))
+                content = self._maybe_persist_or_truncate(
+                    tc.tool_id, outcome.result.output,
+                )
                 tool_results.append(
                     ToolResultBlock(
                         tool_use_id=tc.tool_id,
                         content=content,
-                        is_error=result.is_error,
+                        is_error=outcome.result.is_error,
                     )
                 )
 
@@ -1519,35 +1909,47 @@ class Agent:
 
     async def _execute_tool_noninteractive(
         self, tc: ToolCallComplete
-    ) -> ToolResult:
+    ) -> ToolExecutionOutcome:
         tool = self.registry.get(tc.tool_name)
+        start = time.monotonic()
+        decision = await self._assess_tool(tc)
 
         if tool is None:
-            return ToolResult(
-                output=f"Error: unknown tool '{tc.tool_name}'", is_error=True
+            return await self._execute_single_tool_direct(
+                tc, decision, execution_path="noninteractive",
             )
 
         if not self.registry.is_enabled(tc.tool_name):
-            return ToolResult(
-                output=f"Error: tool '{tc.tool_name}' is disabled",
-                is_error=True,
+            return await self._execute_single_tool_direct(
+                tc, decision, execution_path="noninteractive",
             )
 
-        decision = await self._decide_tool(tc)
-        if decision is not None:
-            if decision.effect == "deny":
-                return ToolResult(
-                    output=f"Permission denied: {decision.reason}",
+        if decision.decision.effect != "allow":
+            if decision.decision.effect == "deny":
+                result = ToolResult(
+                    output=f"Permission denied: {decision.decision.reason}",
                     is_error=True,
                 )
-            if decision.effect == "ask":
-                return ToolResult(
-                    output=f"Permission denied: non-interactive agent cannot prompt user ({decision.reason})",
+                hitl_required = False
+            else:
+                result = ToolResult(
+                    output=("Permission denied: non-interactive agent cannot prompt "
+                            f"user ({decision.decision.reason})"),
                     is_error=True,
                 )
+                hitl_required = True
+            return ToolExecutionOutcome(
+                tc.tool_id, tc.tool_name, result, time.monotonic() - start,
+                False, decision.decision.effect, decision.mandatory_safety,
+                decision.hook_effect, hitl_required,
+                "deny" if hitl_required else None,
+                decision.decision.persistable, False, "noninteractive",
+            )
 
+        executed = False
         try:
             params = tool.params_model.model_validate(tc.arguments)
+            executed = True
             result = await tool.execute(params)
         except ValidationError as e:
             result = ToolResult(
@@ -1558,7 +1960,7 @@ class Agent:
                 output=f"Tool execution error: {e}", is_error=True
             )
 
-        if self.hook_engine:
+        if self.hook_engine and executed:
             file_path = self._infer_file_path(tc.arguments)
             hook_ctx = self._build_hook_context(
                 "post_tool_use",
@@ -1568,7 +1970,11 @@ class Agent:
             )
             await self.hook_engine.run_hooks("post_tool_use", hook_ctx)
 
-        return result
+        return ToolExecutionOutcome(
+            tc.tool_id, tc.tool_name, result, time.monotonic() - start,
+            False, "allow", decision.mandatory_safety, decision.hook_effect,
+            False, None, decision.decision.persistable, executed, "noninteractive",
+        )
 
     def _maybe_persist_or_truncate(self, tool_use_id: str, text: str) -> str:
         from codepacex.context.manager import (
