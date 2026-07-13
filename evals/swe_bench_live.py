@@ -200,6 +200,7 @@ def write_goal2_manifest(
         "model": model,
         "provider": provider,
         "source_repository": "https://github.com/microsoft/SWE-bench-Live",
+        "evaluator_namespace": "starryzhang",
         "dataset_jsonl_sha256": dataset_jsonl_sha256,
         "pilot_instances": sorted(pilot_ids),
         "formal_instances": [{
@@ -235,7 +236,9 @@ def build_evaluator_command(
     return command
 
 
-def run_official_evaluator(**kwargs: Any) -> subprocess.CompletedProcess[str]:
+def run_official_evaluator(
+    *, cwd: Path | None = None, **kwargs: Any,
+) -> subprocess.CompletedProcess[str]:
     predictions_path = Path(kwargs["predictions_path"])
     if not predictions_path.is_file():
         raise FileNotFoundError(f"predictions file not found: {predictions_path}")
@@ -245,7 +248,10 @@ def run_official_evaluator(**kwargs: Any) -> subprocess.CompletedProcess[str]:
         available = False
     if not available:
         raise RuntimeError("official swebench evaluator is not installed")
-    return subprocess.run(build_evaluator_command(**kwargs), text=True, capture_output=True, check=False)
+    return subprocess.run(
+        build_evaluator_command(**kwargs), cwd=cwd,
+        text=True, capture_output=True, check=False,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -84,6 +84,8 @@ def load_validated_matrix(
         raise ValueError("Goal 2 SWE matrix must use schema version 2")
     if matrix.get("dataset_branch") != "python-only" or matrix.get("split") != "lite":
         raise ValueError("Goal 2 SWE matrix branch or split changed")
+    if matrix.get("evaluator_namespace") != "starryzhang":
+        raise ValueError("Goal 2 SWE evaluator namespace changed")
     dataset_hash = hashlib.sha256(dataset_jsonl.read_bytes()).hexdigest()
     if matrix.get("dataset_jsonl_sha256") != dataset_hash:
         raise ValueError("official dataset JSONL hash does not match frozen matrix")
@@ -427,11 +429,11 @@ def execute(
         predictions_path = recorder.path / "predictions.json"
         report_dir = recorder.path / "evaluation_results"
         report_dir.mkdir()
-        namespace = "" if platform.machine() in {"arm64", "aarch64"} else "swebench"
         evaluator = run_official_evaluator(
             dataset_name=str(matrix["dataset_name"]), split=str(matrix["split"]),
             predictions_path=predictions_path, instance_ids=ids, max_workers=1,
-            run_id=run_id, namespace=namespace, report_dir=report_dir,
+            run_id=run_id, namespace=str(matrix["evaluator_namespace"]),
+            report_dir=report_dir, cwd=recorder.path,
         )
         recorder.write_artifact(
             "test-output.txt", (evaluator.stdout or "") + "\n" + (evaluator.stderr or ""),
@@ -443,7 +445,7 @@ def execute(
                 "official_evaluator_returncode": evaluator.returncode,
             })
             return recorder
-        outcomes = collect_official_outcomes(report_dir, set(ids))
+        outcomes = collect_official_outcomes(recorder.path, set(ids))
         for trial in pending:
             instance_id = str(trial["instance_id"])
             resolved = outcomes[instance_id]

@@ -91,12 +91,13 @@ def test_evaluator_return_code_is_propagated(tmp_path: Path) -> None:
     completed = subprocess.CompletedProcess(["swebench"], 7, "out", "err")
     with patch("evals.swe_bench_live.importlib.util.find_spec", return_value=object()), patch(
         "evals.swe_bench_live.subprocess.run", return_value=completed
-    ):
+    ) as run_mock:
         result = run_official_evaluator(
             dataset_name="org/live", split="test", predictions_path=predictions,
             instance_ids=["one"], max_workers=1, run_id="run", namespace="codepacex",
         )
     assert result.returncode == 7
+    assert run_mock.call_args.kwargs["cwd"] is None
 
 
 def test_cli_dry_run_needs_no_evaluator(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

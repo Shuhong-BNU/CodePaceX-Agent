@@ -100,6 +100,7 @@ def test_goal2_manifest_records_revision_buckets_and_disjoint_pilot(tmp_path) ->
     assert payload["dataset_revision"] == "dataset-sha"
     assert len(payload["formal_instances"]) == 20
     assert payload["source_repository"] == "https://github.com/microsoft/SWE-bench-Live"
+    assert payload["evaluator_namespace"] == "starryzhang"
     assert len(payload["instance_payload_hashes"]) == 23
     assert payload["instance_payload_hashes"]["pilot-0"] == instance_payload_hash(pilot[0])
     with pytest.raises(ValueError, match="exactly match"):
