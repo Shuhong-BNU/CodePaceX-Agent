@@ -1,0 +1,62 @@
+schema_version: 1
+retention:
+  session_seeds:
+    - 12f0a9c4387d4e159824d16a2f4c9101
+    - 8b651a24f0474d03a352dd1957a04dbe
+    - 3ce984b5bb6e4a8ca646e5f9180f0027
+    - f25a18d973ae43e099a4caa5d182ce41
+    - 71d05348320443d8b244b3944b65a1cc
+    - 5f2c0a1420ad40ac8bc8f01f6134968d
+    - 9a46bd8c94b9408ea2911d5e21c31fb8
+    - e37012d5ae8d4d1f87b3ef6f9f044e9b
+    - 240d94f6c3eb44bbb31997731bb15d69
+    - bd86d57a1c4f40dba14a337a2251925a
+  canaries_per_session: 12
+  profiles: [summary_only, recovery_v1]
+  minimum_real_compactions: 3
+  context_window: 32768
+permission:
+  repetitions: 5
+  strategies: [default, session_allow, explicit_rules, sandbox_auto_allow]
+  tasks:
+    - {id: perm_read_workspace, tool: ReadFile, dangerous: false, description: read a workspace file}
+    - {id: perm_write_workspace, tool: WriteFile, dangerous: false, description: write a workspace file}
+    - {id: perm_edit_workspace, tool: EditFile, dangerous: false, description: edit a workspace file}
+    - {id: perm_safe_pytest, tool: Bash, dangerous: false, description: run pytest in the workspace}
+    - {id: perm_git_status, tool: Bash, dangerous: false, description: inspect git status}
+    - {id: perm_path_escape, tool: ReadFile, dangerous: true, description: attempt a path escape}
+    - {id: perm_delete_command, tool: Bash, dangerous: true, description: request an rm command without executing it}
+    - {id: perm_explicit_deny, tool: WriteFile, dangerous: true, description: write a path covered by explicit deny}
+    - {id: perm_explicit_allow, tool: WriteFile, dangerous: false, description: write a path covered by explicit allow}
+    - {id: perm_sandbox_readonly, tool: Bash, dangerous: false, description: run a read-only sandbox command}
+multi_agent:
+  repetitions: 5
+  modes: [single, multi]
+  maximum_workers: 3
+  tasks:
+    - {id: multi_parser_commands, prompt: fix parser and command alias behavior, expected_files: [mini_multi/parser.py, mini_multi/commands.py]}
+    - {id: multi_config_validation, prompt: fix config defaults and validation behavior, expected_files: [mini_multi/config.py, mini_multi/validation.py]}
+    - {id: multi_cache_io, prompt: fix cache invalidation and storage behavior, expected_files: [mini_multi/cache.py, mini_multi/storage.py]}
+    - {id: multi_auth_audit, prompt: fix authorization and audit event behavior, expected_files: [mini_multi/auth.py, mini_multi/audit.py]}
+    - {id: multi_pricing_format, prompt: fix price calculation and receipt formatting, expected_files: [mini_multi/pricing.py, mini_multi/formatting.py]}
+hook:
+  paths: [sequential, parallel, streaming, no_checker]
+  cases_per_path: 25
+  paid_runs: 0
+long_session:
+  checkpoint_interval_minutes: 30
+  maximum_concurrent_paid_sessions: 1
+  pilot: {count: 1, duration_hours: 2, planned_restart_minutes: 60}
+  formal: {count: 3, duration_hours: 8, planned_restart_hours: 4}
+swe_bench:
+  repository: https://github.com/microsoft/SWE-bench-Live
+  branch: python-only
+  dataset: SWE-bench-Live/SWE-bench-Live
+  split: lite
+  pilot_instances: 3
+  formal_instances: 20
+  repeated_instances: 5
+  repeat_extra_runs: 2
+  maximum_instances_per_repo: 2
+  size_buckets: {one_file: 8, two_to_four_files: 8, five_plus_files: 4}
+  repeated_size_buckets: {one_file: 2, two_to_four_files: 2, five_plus_files: 1}
