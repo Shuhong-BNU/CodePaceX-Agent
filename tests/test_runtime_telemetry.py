@@ -94,6 +94,11 @@ async def test_clients_emit_hashes_before_sdk_call(
 
     assert event.system_sha256 == _canonical_sha256(expected_system)
     assert event.tools_sha256 == _canonical_sha256(expected_tools)
+    assert event.tools_bytes == len(
+        __import__("json").dumps(
+            expected_tools, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+    )
     assert event.messages_sha256 == _canonical_sha256(messages)
 
 

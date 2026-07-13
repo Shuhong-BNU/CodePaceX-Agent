@@ -111,6 +111,19 @@ def strict_canary_grade(answer: str, canaries: list[str]) -> tuple[bool, dict[st
     }
 
 
+def retention_rate_fields(status: str, grade: dict[str, Any]) -> dict[str, int]:
+    expected = int(grade.get("expected_count") or 0)
+    if expected <= 0:
+        return {}
+    exact = (
+        status == "success"
+        and grade.get("ordered_exact_match") is True
+        and int(grade.get("successful_compactions") or 0)
+        >= int(grade.get("minimum_compactions") or 0)
+    )
+    return {"numerator": expected if exact else 0, "denominator": expected}
+
+
 def filler_messages(seed: str, cycle: int) -> list[tuple[str, str]]:
     """Deterministic synthetic transcript load; no claim treats it as organic use."""
     pairs: list[tuple[str, str]] = []
@@ -347,6 +360,7 @@ def execute(
                     "task_id": task_id, "repetition_id": "1", "attempt_id": 1,
                     "status": status, "duration_seconds": time.monotonic() - started,
                     "actual_cny": str(settlement.actual_cny), "grade": grade,
+                    **retention_rate_fields(status, grade),
                 })
             aggregate = (
                 "success" if statuses and all(item == "success" for item in statuses)

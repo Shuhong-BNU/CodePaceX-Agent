@@ -158,6 +158,12 @@ def strict_cycle_grade(answer: str, *, cycle: int, marker: str) -> tuple[bool, d
     }
 
 
+def recovery_rate_fields(status: str, *, recovery_probe: bool) -> dict[str, int]:
+    if not recovery_probe:
+        return {}
+    return {"numerator": int(status == "success"), "denominator": 1}
+
+
 def _git_dirty(root: Path) -> bool | None:
     result = subprocess.run(
         ["git", "-C", str(root), "status", "--porcelain"],
@@ -358,6 +364,10 @@ def execute(
     statuses: list[str] = []
     with gate.locked():
         for cycle in range(next_cycle, int(spec["cycle_count"]) + 1):
+            recovery_probe = (
+                restart_completed
+                and cycle == int(spec["restart_after_cycle"]) + 1
+            )
             due = (
                 _utc_timestamp(started_at)
                 + cycle * int(spec["workload_interval_minutes"]) * 60
@@ -402,6 +412,8 @@ def execute(
                 "task_id": task_id, "repetition_id": str(cycle), "attempt_id": 1,
                 "status": status, "duration_seconds": time.monotonic() - started,
                 "actual_cny": str(settlement.actual_cny), "grade": grade,
+                "post_restart_recovery_probe": recovery_probe,
+                **recovery_rate_fields(status, recovery_probe=recovery_probe),
             })
             checkpoint_due = cycle % int(spec["checkpoint_every_cycles"]) == 0
             restart_due = cycle == int(spec["restart_after_cycle"]) and not restart_completed

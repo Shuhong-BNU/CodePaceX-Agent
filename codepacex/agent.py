@@ -541,6 +541,7 @@ class Agent:
             "system_sha256": event.system_sha256,
             "tools_sha256": event.tools_sha256,
             "messages_sha256": event.messages_sha256,
+            "tools_bytes": event.tools_bytes,
             "experiment_profile_hash": event.experiment_profile_hash,
             "runtime_contract_hash": event.runtime_contract_hash,
             "combined_runtime_hash": event.combined_runtime_hash,

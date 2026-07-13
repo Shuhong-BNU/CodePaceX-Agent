@@ -12,6 +12,7 @@ from evals.multi_agent_study import (
     dry_run,
     grade_trial,
     profiles,
+    success_rate_fields,
 )
 
 
@@ -71,3 +72,8 @@ def test_multi_agent_dry_run_creates_two_unscorable_arms(tmp_path: Path) -> None
         json.loads((item.path / "result.json").read_text())["status"] == "dry_run"
         for item in recorders
     )
+
+
+def test_multi_agent_success_rate_fields_count_every_formal_trial() -> None:
+    assert success_rate_fields("success") == {"numerator": 1, "denominator": 1}
+    assert success_rate_fields("task_failure") == {"numerator": 0, "denominator": 1}

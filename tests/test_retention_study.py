@@ -2,7 +2,9 @@ import json
 from pathlib import Path
 
 from evals.goal2_studies import load_studies
-from evals.retention_study import dry_run, filler_messages, profiles, strict_canary_grade
+from evals.retention_study import (
+    dry_run, filler_messages, profiles, retention_rate_fields, strict_canary_grade,
+)
 
 
 STUDIES = Path("evals/goal2/studies.yaml")
@@ -28,6 +30,17 @@ def test_controlled_filler_is_deterministic_and_does_not_contain_canaries() -> N
     assert first != filler_messages("session", 2)
     assert len(first) == 8
     assert "CNY-" not in repr(first)
+
+
+def test_retention_rate_fields_are_conservative_exact_match_counts() -> None:
+    assert retention_rate_fields("success", {
+        "ordered_exact_match": True, "expected_count": 12,
+        "successful_compactions": 3, "minimum_compactions": 3,
+    }) == {"numerator": 12, "denominator": 12}
+    assert retention_rate_fields("task_failure", {
+        "ordered_exact_match": False, "expected_count": 12,
+        "successful_compactions": 3, "minimum_compactions": 3,
+    }) == {"numerator": 0, "denominator": 12}
 
 
 def test_retention_dry_run_creates_two_unscorable_arms(tmp_path: Path) -> None:

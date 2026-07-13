@@ -42,11 +42,14 @@ ANTHROPIC_MODEL_FETCH_TIMEOUT = 3.0
 _EPHEMERAL = {"type": "ephemeral"}
 
 
-def _canonical_sha256(value: Any) -> str:
-    encoded = json.dumps(
+def _canonical_bytes(value: Any) -> bytes:
+    return json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+
+
+def _canonical_sha256(value: Any) -> str:
+    return hashlib.sha256(_canonical_bytes(value)).hexdigest()
 
 
 def _runtime_manifest_event(
@@ -60,6 +63,7 @@ def _runtime_manifest_event(
         system_sha256=_canonical_sha256(system),
         tools_sha256=_canonical_sha256(tools),
         messages_sha256=_canonical_sha256(messages),
+        tools_bytes=len(_canonical_bytes(tools)),
     )
 
 

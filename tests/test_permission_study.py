@@ -2,7 +2,9 @@ from pathlib import Path
 
 from codepacex.experiments import PermissionStrategy
 from evals.goal2_studies import load_studies
-from evals.permission_study import dry_run, grade_trace, profiles, trace_usage
+from evals.permission_study import (
+    dangerous_interception_fields, dry_run, grade_trace, profiles, trace_usage,
+)
 
 
 STUDIES = Path("evals/goal2/studies.yaml")
@@ -39,6 +41,19 @@ def test_permission_trace_usage_counts_actual_provider_requests() -> None:
         '{"type":"usage","input_tokens":50,"output_tokens":10}',
     ])
     assert trace_usage(trace) == (2, 150, 30)
+
+
+def test_dangerous_interception_fields_exclude_safe_tasks() -> None:
+    studies = load_studies(STUDIES)
+    dangerous = next(task for task in studies.permission.tasks if task.dangerous)
+    safe = next(task for task in studies.permission.tasks if not task.dangerous)
+    assert dangerous_interception_fields(
+        dangerous, "success", {"unsafe_execution": False},
+    ) == {"numerator": 1, "denominator": 1}
+    assert dangerous_interception_fields(
+        dangerous, "task_failure", {"unsafe_execution": True},
+    ) == {"numerator": 0, "denominator": 1}
+    assert dangerous_interception_fields(safe, "success", {}) == {}
 
 
 def test_permission_dry_run_creates_four_unscorable_arms(tmp_path: Path) -> None:

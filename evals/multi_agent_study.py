@@ -171,6 +171,10 @@ def grade_trial(
     }
 
 
+def success_rate_fields(status: str) -> dict[str, int]:
+    return {"numerator": int(status == "success"), "denominator": 1}
+
+
 def _prepare_workspace(workspace: Path) -> None:
     for source in FIXTURE.iterdir():
         target = workspace / source.name
@@ -343,6 +347,7 @@ def _run_profile(
                     "attempt_id": 1, "status": status,
                     "duration_seconds": time.monotonic() - started,
                     "actual_cny": str(settlement.actual_cny), "grade": grade,
+                    **success_rate_fields(status),
                 })
     if all(item == "success" for item in statuses):
         return "success"

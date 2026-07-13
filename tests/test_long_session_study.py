@@ -8,6 +8,7 @@ from evals.long_session_study import (
     _write_checkpoint,
     dry_run,
     load_latest_checkpoint,
+    recovery_rate_fields,
     schedule,
     strict_cycle_grade,
     validate_checkpoint_chain,
@@ -43,6 +44,16 @@ def test_cycle_grader_requires_exact_json() -> None:
     assert strict_cycle_grade(expected, cycle=1, marker="abc")[0]
     assert not strict_cycle_grade(expected + "\nextra", cycle=1, marker="abc")[0]
     assert not strict_cycle_grade('{"cycle":1,"marker":"wrong","status":"ok"}', cycle=1, marker="abc")[0]
+
+
+def test_recovery_rate_fields_only_count_post_restart_probe() -> None:
+    assert recovery_rate_fields("success", recovery_probe=True) == {
+        "numerator": 1, "denominator": 1,
+    }
+    assert recovery_rate_fields("task_failure", recovery_probe=True) == {
+        "numerator": 0, "denominator": 1,
+    }
+    assert recovery_rate_fields("success", recovery_probe=False) == {}
 
 
 def test_long_session_dry_run_is_not_real_wall_clock_evidence(tmp_path: Path) -> None:
