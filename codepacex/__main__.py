@@ -129,6 +129,7 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
         LoopComplete,
         PermissionRequest,
         RetryEvent,
+        RuntimeManifestEvent,
         StreamText,
         ThinkingText,
         ToolResultEvent,
@@ -317,6 +318,20 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
                     "provider_usage": event.provider_usage,
                     "provider": event.provider,
                     "model_id": event.model_id,
+                    "request_index": event.request_index,
+                })
+
+        elif isinstance(event, RuntimeManifestEvent):
+            if is_json:
+                emit_json({
+                    "type": "runtime_manifest",
+                    "request_index": event.request_index,
+                    "provider": event.provider,
+                    "protocol": event.protocol,
+                    "model_id": event.model_id,
+                    "system_sha256": event.system_sha256,
+                    "tools_sha256": event.tools_sha256,
+                    "messages_sha256": event.messages_sha256,
                 })
 
         elif isinstance(event, TurnComplete):

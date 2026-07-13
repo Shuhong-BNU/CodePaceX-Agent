@@ -103,6 +103,19 @@ class ThinkingComplete:
 
 
 @dataclass
+class RuntimeManifestEvent:
+    """Hashes of the final, provider-specific SDK payload without raw content."""
+
+    provider: str
+    protocol: str
+    model_id: str
+    system_sha256: str
+    tools_sha256: str
+    messages_sha256: str
+    request_index: int | None = None
+
+
+@dataclass
 class StreamEnd:
     stop_reason: str
     input_tokens: int = 0
@@ -120,4 +133,7 @@ class StreamEnd:
     provider_usage: dict[str, Any] | None = None
 
 
-StreamEvent = TextDelta | ThinkingDelta | ThinkingComplete | ToolCallStart | ToolCallDelta | ToolCallComplete | StreamEnd
+StreamEvent = (
+    TextDelta | ThinkingDelta | ThinkingComplete | ToolCallStart | ToolCallDelta
+    | ToolCallComplete | RuntimeManifestEvent | StreamEnd
+)

@@ -52,6 +52,7 @@ from codepacex.prompts import build_environment_context, build_plan_mode_reminde
 from codepacex.tools import ToolRegistry
 from codepacex.tools.base import (
     MAX_OUTPUT_CHARS,
+    RuntimeManifestEvent,
     StreamEnd,
     StreamEvent,
     TextDelta,
@@ -125,6 +126,7 @@ class UsageEvent:
     provider_usage: dict[str, Any] | None = None
     provider: str | None = None
     model_id: str | None = None
+    request_index: int | None = None
 
 
 @dataclass
@@ -175,6 +177,7 @@ AgentEvent = (
     | PermissionRequest
     | CompactNotification
     | HookEvent
+    | RuntimeManifestEvent
 )
 
 
@@ -199,11 +202,13 @@ class LLMResponse:
     output_tokens: int = 0
     cache_read: int = 0
     cache_creation: int = 0
+    request_index: int | None = None
 
 
 class StreamCollector:
-    def __init__(self) -> None:
+    def __init__(self, request_indexer: Callable[[], int] | None = None) -> None:
         self.response = LLMResponse()
+        self._request_indexer = request_indexer
 
     async def consume(
         self, stream: AsyncIterator[StreamEvent]
@@ -218,6 +223,11 @@ class StreamCollector:
                 self.response.thinking_blocks.append(
                     ThinkingBlock(thinking=event.thinking, signature=event.signature)
                 )
+            elif isinstance(event, RuntimeManifestEvent):
+                if self._request_indexer is not None:
+                    event.request_index = self._request_indexer()
+                self.response.request_index = event.request_index
+                yield event
             elif isinstance(event, ToolCallStart):
                 pass
             elif isinstance(event, ToolCallDelta):
@@ -379,6 +389,7 @@ class Agent:
         self.recovery_state: RecoveryState = RecoveryState()
         self.total_input_tokens = 0
         self.total_output_tokens = 0
+        self._runtime_request_index = 0
         self.instructions_content = instructions_content
         self.memory_manager = memory_manager
         self.hook_engine = hook_engine
@@ -416,6 +427,27 @@ class Agent:
         if self.session_id:
             return str(Path(self.work_dir) / ".codepacex" / "sessions" / f"{self.session_id}.jsonl")
         return ""
+
+    def _next_runtime_request_index(self) -> int:
+        self._runtime_request_index += 1
+        return self._runtime_request_index
+
+    def _index_runtime_event(self, event: RuntimeManifestEvent) -> RuntimeManifestEvent:
+        event.request_index = self._next_runtime_request_index()
+        return event
+
+    @staticmethod
+    def _runtime_event_payload(event: RuntimeManifestEvent) -> dict[str, Any]:
+        return {
+            "type": "runtime_manifest",
+            "request_index": event.request_index,
+            "provider": event.provider,
+            "protocol": event.protocol,
+            "model_id": event.model_id,
+            "system_sha256": event.system_sha256,
+            "tools_sha256": event.tools_sha256,
+            "messages_sha256": event.messages_sha256,
+        }
 
     @property
     def plan_mode(self) -> bool:
@@ -496,6 +528,7 @@ class Agent:
         apply_budget: bool = True,
     ) -> tuple[ConversationManager | None, list[dict[str, Any]], list[AgentEvent], str]:
         events: list[AgentEvent] = []
+        runtime_events: list[RuntimeManifestEvent] = []
         compact_result = await auto_compact(
             conversation,
             runtime.client,
@@ -506,7 +539,9 @@ class Agent:
             recovery=self.recovery_state,
             tool_schemas=self.registry.get_all_schemas(runtime.protocol),
             transcript_path=self._transcript_path,
+            runtime_event_sink=runtime_events.append,
         )
+        events.extend(self._index_runtime_event(event) for event in runtime_events)
         if isinstance(compact_result, CompactEvent):
             events.append(
                 CompactNotification(
@@ -533,6 +568,7 @@ class Agent:
         return api_conv, tools, events, ""
 
     async def run(self, conversation: ConversationManager) -> AsyncIterator[AgentEvent]:
+        self._runtime_request_index = 0
         active_executor: list[StreamingExecutor | None] = [None]
         try:
             async for event in self._run(conversation, active_executor):
@@ -655,7 +691,7 @@ class Agent:
                 append_replacement_records(self.session_dir, _new_records)
 
             while True:
-                collector = StreamCollector()
+                collector = StreamCollector(self._next_runtime_request_index)
                 streaming_executor = StreamingExecutor()
                 active_executor[0] = streaming_executor
                 streamed_count = 0
@@ -689,7 +725,8 @@ class Agent:
                                 streamed_count += 1
                             else:
                                 streaming_prefix_open = False
-                        stream_started = True
+                        if not isinstance(event, RuntimeManifestEvent):
+                            stream_started = True
                         yield event
                     break
                 except asyncio.CancelledError:
@@ -849,6 +886,7 @@ class Agent:
                 provider_usage=response.provider_usage,
                 provider=turn_runtime.provider.name if turn_runtime.provider else None,
                 model_id=turn_runtime.provider.model if turn_runtime.provider else None,
+                request_index=response.request_index,
             )
 
             conv_thinking = [
@@ -1387,6 +1425,8 @@ class Agent:
         if task:
             conversation.add_user_message(task)
 
+        self._runtime_request_index = 0
+
         hook_prompts = (
             self.hook_engine.get_prompt_messages() if self.hook_engine else None
         )
@@ -1417,6 +1457,7 @@ class Agent:
                 for note in self.notification_fn():
                     conversation.add_system_reminder(note)
 
+            compact_runtime_events: list[RuntimeManifestEvent] = []
             compact_result = await auto_compact(
                 conversation,
                 self.client,
@@ -1427,7 +1468,13 @@ class Agent:
                 recovery=self.recovery_state,
                 tool_schemas=self.registry.get_all_schemas(self.protocol),
                 transcript_path=self._transcript_path,
+                runtime_event_sink=compact_runtime_events.append,
             )
+            if event_callback:
+                for runtime_event in compact_runtime_events:
+                    event_callback(self._runtime_event_payload(
+                        self._index_runtime_event(runtime_event)
+                    ))
             if isinstance(compact_result, CompactEvent):
                 conversation.inject_environment(env_context)
 
@@ -1446,10 +1493,11 @@ class Agent:
             if _new_records:
                 append_replacement_records(self.session_dir, _new_records)
 
-            collector = StreamCollector()
+            collector = StreamCollector(self._next_runtime_request_index)
             llm_stream = self.client.stream(api_conv, system=system, tools=tools)
-            async for _event in collector.consume(llm_stream):
-                pass
+            async for stream_event in collector.consume(llm_stream):
+                if event_callback and isinstance(stream_event, RuntimeManifestEvent):
+                    event_callback(self._runtime_event_payload(stream_event))
 
             response = collector.response
             self.total_input_tokens += response.input_tokens
@@ -1461,6 +1509,7 @@ class Agent:
                     "usage": {
                         "inputTokens": self.total_input_tokens,
                         "outputTokens": self.total_output_tokens,
+                        "requestIndex": response.request_index,
                     },
                 })
 

@@ -27,7 +27,9 @@ RESULT_STATUSES = {
 SCORABLE_STATUSES = {"success", "task_failure"}
 RESUMABLE_STATUSES = {"timeout", "provider_error", "infrastructure_error", "cancelled"}
 OPTIONAL_JSON = {"usage.json"}
-OPTIONAL_STREAMS = {"permission-events.jsonl", "compression-events.jsonl"}
+OPTIONAL_STREAMS = {
+    "permission-events.jsonl", "compression-events.jsonl", "runtime-events.jsonl",
+}
 ALLOWED_ARTIFACTS = {"patch.diff", "test-output.txt", "stdout.txt", "stderr.txt"}
 SECRET_KEYS = {
     "api_key", "apikey", "x_api_key", "authorization", "bearer", "password",
@@ -308,6 +310,13 @@ class RunRecorder:
             previous = self._jsonl_records("permission-events.jsonl")
             if any(item.get("tool_id") == tool_id for item in previous):
                 raise ValueError(f"duplicate permission decision for tool ID: {tool_id}")
+        elif event_type == "runtime_manifest":
+            request_index = payload.get("request_index")
+            if not isinstance(request_index, int) or request_index < 1:
+                raise ValueError("runtime manifest requires a positive request_index")
+            previous = self._jsonl_records("runtime-events.jsonl")
+            if any(item.get("request_index") == request_index for item in previous):
+                raise ValueError(f"duplicate runtime request index: {request_index}")
         self.event(event_type, payload)
         if event_type == "usage":
             existing = self._json_object("usage.json")
@@ -320,6 +329,8 @@ class RunRecorder:
             self.optional_event("permission-events.jsonl", payload)
         elif event_type == "compression":
             self.optional_event("compression-events.jsonl", payload)
+        elif event_type == "runtime_manifest":
+            self.optional_event("runtime-events.jsonl", payload)
 
     def write_artifact(self, name: str, content: str | bytes) -> Path:
         if name not in ALLOWED_ARTIFACTS or Path(name).name != name:

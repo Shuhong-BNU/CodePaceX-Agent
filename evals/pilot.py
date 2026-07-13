@@ -256,6 +256,17 @@ def _ingest_trace(recorder: RunRecorder, trace_path: Path) -> None:
                 "request_output_tokens": event.get("request_output_tokens"),
                 "provider_usage": event.get("provider_usage"),
             })
+        elif event.get("type") == "runtime_manifest":
+            recorder.capture_event({
+                "type": "runtime_manifest",
+                "request_index": event.get("request_index"),
+                "provider": event.get("provider"),
+                "protocol": event.get("protocol"),
+                "model_id": event.get("model_id"),
+                "system_sha256": event.get("system_sha256"),
+                "tools_sha256": event.get("tools_sha256"),
+                "messages_sha256": event.get("messages_sha256"),
+            })
         elif event.get("type") == "compact":
             recorder.capture_event({
                 "type": "compression", "success": True, "reason": "automatic",

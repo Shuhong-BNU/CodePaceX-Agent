@@ -154,3 +154,18 @@ def test_finalize_counts_attempts_terminals_and_error_categories(tmp_path: Path)
     assert result["completed_trial_count"] == 2
     assert result["unscorable_trial_count"] == 1
     assert result["error_category_summary"] == {"timeout": 1}
+
+
+def test_runtime_events_are_separate_and_request_indexes_are_unique(tmp_path: Path) -> None:
+    recorder = RunRecorder(tmp_path, _manifest(), run_id="runtime")
+    event = {
+        "type": "runtime_manifest", "request_index": 1, "provider": "p",
+        "protocol": "openai-compat", "model_id": "m", "system_sha256": "s",
+        "tools_sha256": "t", "messages_sha256": "msg",
+    }
+    recorder.capture_event(event)
+    records = (recorder.path / "runtime-events.jsonl").read_text().splitlines()
+    assert len(records) == 1
+    assert json.loads(records[0])["messages_sha256"] == "msg"
+    with pytest.raises(ValueError, match="duplicate runtime"):
+        recorder.capture_event(event)

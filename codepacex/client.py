@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from abc import ABC, abstractmethod
 from typing import Any, AsyncIterator
@@ -22,6 +23,7 @@ from codepacex.serialization import (
 from codepacex.tools.base import (
     StreamEnd,
     StreamEvent,
+    RuntimeManifestEvent,
     TextDelta,
     ThinkingComplete,
     ThinkingDelta,
@@ -38,6 +40,27 @@ ANTHROPIC_MODEL_FETCH_TIMEOUT = 3.0
 
 
 _EPHEMERAL = {"type": "ephemeral"}
+
+
+def _canonical_sha256(value: Any) -> str:
+    encoded = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _runtime_manifest_event(
+    *, provider: str, protocol: str, model: str,
+    system: Any, tools: Any, messages: Any,
+) -> RuntimeManifestEvent:
+    return RuntimeManifestEvent(
+        provider=provider,
+        protocol=protocol,
+        model_id=model,
+        system_sha256=_canonical_sha256(system),
+        tools_sha256=_canonical_sha256(tools),
+        messages_sha256=_canonical_sha256(messages),
+    )
 
 
 def _provider_usage_payload(usage: Any) -> dict[str, Any] | None:
@@ -151,6 +174,8 @@ def _supports_adaptive_thinking(model: str) -> bool:
 
 class AnthropicClient(LLMClient):
     def __init__(self, config: ProviderConfig) -> None:
+        self.provider = config.name
+        self.protocol = config.protocol
         self.model = config.model
         self.thinking = config.thinking
         self.max_output_tokens = config.get_max_output_tokens()
@@ -240,6 +265,11 @@ class AnthropicClient(LLMClient):
         delta_cache_read = 0
         delta_cache_creation = 0
 
+        yield _runtime_manifest_event(
+            provider=self.provider, protocol=self.protocol, model=self.model,
+            system=kwargs.get("system"), tools=kwargs.get("tools"),
+            messages=kwargs["messages"],
+        )
         try:
             async with self._client.messages.stream(**kwargs) as stream:
                 async for event in stream:
@@ -347,6 +377,8 @@ class AnthropicClient(LLMClient):
 
 class OpenAIClient(LLMClient):
     def __init__(self, config: ProviderConfig) -> None:
+        self.provider = config.name
+        self.protocol = config.protocol
         self.model = config.model
         self.max_output_tokens = config.get_max_output_tokens()
         api_key = config.resolve_api_key()
@@ -385,6 +417,11 @@ class OpenAIClient(LLMClient):
         reasoning_id = ""
         reasoning_text = ""
 
+        yield _runtime_manifest_event(
+            provider=self.provider, protocol=self.protocol, model=self.model,
+            system=kwargs.get("instructions"), tools=kwargs.get("tools"),
+            messages=kwargs["input"],
+        )
         try:
             response_stream = await self._client.responses.create(**kwargs)
             async for event in response_stream:
@@ -480,6 +517,8 @@ class OpenAICompatClient(LLMClient):
     """
 
     def __init__(self, config: ProviderConfig) -> None:
+        self.provider = config.name
+        self.protocol = config.protocol
         self.model = config.model
         self.max_output_tokens = config.get_max_output_tokens()
         api_key = config.resolve_api_key()
@@ -548,6 +587,14 @@ class OpenAICompatClient(LLMClient):
         active_calls: dict[int, dict[str, str]] = {}  # 索引 -> {id, name, args}
         reasoning_accum = ""
 
+        embedded_system = (
+            messages[0] if messages and messages[0].get("role") == "system" else None
+        )
+        yield _runtime_manifest_event(
+            provider=self.provider, protocol=self.protocol, model=self.model,
+            system=embedded_system, tools=kwargs.get("tools"),
+            messages=kwargs["messages"],
+        )
         try:
             response = await self._client.chat.completions.create(**kwargs)
             async for chunk in response:
