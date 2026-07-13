@@ -1,20 +1,141 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "CodePaceX Claims v1",
-  "type": "object",
-  "required": ["schema_version", "claims"],
-  "properties": {
-    "schema_version": {"const": 1},
-    "claims": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["claim_id", "metric_name", "unit", "sample_size", "source_run_ids"],
-        "properties": {
-          "metric_name": {"enum": ["provider_input_tokens", "permission_hitl_count", "successful_task_wall_time_seconds", "rate", "ab_reduction_percent"]},
-          "status": {"enum": ["draft", "verified", "insufficient-data"]}
+  "$defs": {
+    "Claim": {
+      "additionalProperties": false,
+      "properties": {
+        "aggregation": {
+          "description": "Aggregation over measured trials or pairs. p95 uses nearest-rank: sorted_values[ceil(0.95 * n) - 1].",
+          "enum": ["sum", "mean", "median", "p95", "pooled_rate"],
+          "title": "Aggregation",
+          "type": "string"
+        },
+        "claim_id": {"title": "Claim Id", "type": "string"},
+        "description_en": {"title": "Description En", "type": "string"},
+        "description_zh": {"title": "Description Zh", "type": "string"},
+        "experiment_conditions": {"$ref": "#/$defs/ExperimentConditions"},
+        "generated_value": {
+          "anyOf": [{"type": "number"}, {"type": "null"}],
+          "default": null,
+          "title": "Generated Value"
+        },
+        "generation_command": {
+          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "default": null,
+          "title": "Generation Command"
+        },
+        "limitations": {
+          "items": {"type": "string"},
+          "title": "Limitations",
+          "type": "array"
+        },
+        "metric_name": {"title": "Metric Name", "type": "string"},
+        "sample_size": {
+          "exclusiveMinimum": 0,
+          "title": "Sample Size",
+          "type": "integer"
+        },
+        "source_run_ids": {
+          "items": {"type": "string"},
+          "minItems": 1,
+          "title": "Source Run Ids",
+          "type": "array"
+        },
+        "status": {
+          "default": "draft",
+          "enum": ["draft", "verified", "insufficient-data"],
+          "title": "Status",
+          "type": "string"
+        },
+        "unit": {"title": "Unit", "type": "string"}
+      },
+      "required": [
+        "claim_id", "description_zh", "description_en", "metric_name",
+        "aggregation", "unit", "sample_size", "experiment_conditions",
+        "source_run_ids"
+      ],
+      "title": "Claim",
+      "type": "object"
+    },
+    "ExperimentConditions": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_differences": {
+          "description": "Exact registered identity paths allowed to differ; no wildcards.",
+          "items": {"type": "string"},
+          "title": "Allowed Differences",
+          "type": "array"
+        },
+        "base_url_origin": {
+          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "title": "Base Url Origin"
+        },
+        "baseline_run_ids": {
+          "items": {"type": "string"},
+          "title": "Baseline Run Ids",
+          "type": "array"
+        },
+        "fallback_enabled": {"title": "Fallback Enabled", "type": "boolean"},
+        "feature_flags": {
+          "additionalProperties": true,
+          "title": "Feature Flags",
+          "type": "object"
+        },
+        "git_commit": {"title": "Git Commit", "type": "string"},
+        "improved_run_ids": {
+          "items": {"type": "string"},
+          "title": "Improved Run Ids",
+          "type": "array"
+        },
+        "model_id": {"title": "Model Id", "type": "string"},
+        "model_parameters": {
+          "additionalProperties": true,
+          "title": "Model Parameters",
+          "type": "object"
+        },
+        "prompt_version": {"title": "Prompt Version", "type": "string"},
+        "protocol": {"title": "Protocol", "type": "string"},
+        "provider": {"title": "Provider", "type": "string"},
+        "repetitions": {"minimum": 1, "title": "Repetitions", "type": "integer"},
+        "retry_budget": {
+          "anyOf": [{"type": "integer"}, {"type": "null"}],
+          "title": "Retry Budget"
+        },
+        "task_ids": {
+          "items": {"type": "string"},
+          "title": "Task Ids",
+          "type": "array"
+        },
+        "timeout_seconds": {
+          "anyOf": [{"type": "integer"}, {"type": "null"}],
+          "title": "Timeout Seconds"
         }
-      }
+      },
+      "required": [
+        "provider", "protocol", "model_id", "base_url_origin", "git_commit",
+        "prompt_version", "model_parameters", "timeout_seconds", "retry_budget",
+        "fallback_enabled", "task_ids", "repetitions", "feature_flags",
+        "allowed_differences"
+      ],
+      "title": "ExperimentConditions",
+      "type": "object"
     }
-  }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "claims": {
+      "items": {"$ref": "#/$defs/Claim"},
+      "title": "Claims",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": ["claims"],
+  "title": "ClaimDocument",
+  "type": "object"
 }

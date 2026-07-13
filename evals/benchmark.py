@@ -114,6 +114,7 @@ class RunManifest:
     tool_schema_hash: str | None = None
     feature_flags: dict[str, Any] = field(default_factory=dict)
     task_ids: list[str] = field(default_factory=list)
+    repetitions: int = 1
     model_parameters: dict[str, Any] = field(default_factory=dict)
     context_window: int | None = None
     max_output_tokens: int | None = None

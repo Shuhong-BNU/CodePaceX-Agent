@@ -1,12 +1,30 @@
 schema_version: 1
 claims:
   - claim_id: pilot-token-example
+    description_zh: 冻结百炼 Qwen Pilot 的 Provider 输入 Token 总量
+    description_en: Provider input Token total for the frozen Bailian Qwen Pilot
     metric_name: provider_input_tokens
+    aggregation: sum
     unit: tokens
     sample_size: 1
     experiment_conditions:
       provider: bailian-qwen37-max
+      protocol: openai-compat
       model_id: qwen3.7-max-2026-06-08
+      base_url_origin: https://llm-ipge9fy38w648m28.cn-beijing.maas.aliyuncs.com
+      git_commit: replace-with-run-git-commit
+      prompt_version: codepacex-system-v1
+      model_parameters:
+        temperature: null
+        top_p: null
+        max_output_tokens: null
+      timeout_seconds: null
+      retry_budget: 0
+      fallback_enabled: false
+      task_ids: []
+      repetitions: 1
+      feature_flags: {}
+      allowed_differences: []
     source_run_ids:
       - replace-with-successful-run-id
     status: draft

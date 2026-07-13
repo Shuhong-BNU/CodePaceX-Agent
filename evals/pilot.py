@@ -126,6 +126,7 @@ def build_manifest(config: PilotConfig, root: Path, *, run_id: str = "") -> RunM
         tool_schema_hash=None,
         feature_flags=config.feature_flags,
         task_ids=config.task_ids,
+        repetitions=config.repetitions,
         model_parameters=config.model_parameters.model_dump(mode="json"),
         context_window=None,
         max_output_tokens=config.model_parameters.max_output_tokens,
@@ -233,7 +234,9 @@ def _suite_status(report_dir: Path, task_id: str, returncode: int) -> str:
     return "infrastructure_error"
 
 
-def _ingest_trace(recorder: RunRecorder, trace_path: Path) -> None:
+def _ingest_trace(
+    recorder: RunRecorder, trace_path: Path, task_id: str, repetition_id: str,
+) -> None:
     """Derive only events actually emitted by the existing stream-json runner."""
     try:
         lines = trace_path.read_text(encoding="utf-8").splitlines()
@@ -255,6 +258,7 @@ def _ingest_trace(recorder: RunRecorder, trace_path: Path) -> None:
                 "request_input_tokens": event.get("request_input_tokens"),
                 "request_output_tokens": event.get("request_output_tokens"),
                 "provider_usage": event.get("provider_usage"),
+                "task_id": task_id, "repetition_id": repetition_id,
             })
         elif event.get("type") == "runtime_manifest":
             recorder.capture_event({
@@ -266,6 +270,7 @@ def _ingest_trace(recorder: RunRecorder, trace_path: Path) -> None:
                 "system_sha256": event.get("system_sha256"),
                 "tools_sha256": event.get("tools_sha256"),
                 "messages_sha256": event.get("messages_sha256"),
+                "task_id": task_id, "repetition_id": repetition_id,
             })
         elif event.get("type") == "permission_decision":
             recorder.capture_event({
@@ -280,6 +285,7 @@ def _ingest_trace(recorder: RunRecorder, trace_path: Path) -> None:
                 "persistable": event.get("persistable"),
                 "executed": event.get("executed"),
                 "execution_path": event.get("execution_path"),
+                "task_id": task_id, "repetition_id": repetition_id,
             })
         elif event.get("type") == "compression":
             recorder.capture_event({
@@ -289,6 +295,7 @@ def _ingest_trace(recorder: RunRecorder, trace_path: Path) -> None:
                 "tokens_after": event.get("tokens_after"),
                 "attachment_count": event.get("attachment_count"),
                 "error_category": event.get("error_category"),
+                "task_id": task_id, "repetition_id": repetition_id,
             })
 
 
@@ -324,7 +331,7 @@ def _run_trials(config: PilotConfig, root: Path, recorder: RunRecorder) -> list[
                     stdout_chunks.append(process.stdout or "")
                     stderr_chunks.append(process.stderr or "")
                     for trace_path in report_dir.glob("*/**/trace.ndjson"):
-                        _ingest_trace(recorder, trace_path)
+                        _ingest_trace(recorder, trace_path, task_id, str(repetition))
                 except subprocess.TimeoutExpired as exc:
                     status = "timeout"
                     stdout_chunks.append(exc.stdout or "")
