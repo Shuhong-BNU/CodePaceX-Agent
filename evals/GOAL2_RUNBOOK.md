@@ -143,7 +143,7 @@ python -m evals.claims validate \
 python -m evals.claims compile \
   --claims evals/.runs/goal2-control/claims.goal2.yaml \
   --runs-dir evals/.runs/goal2 \
-  --output evals/.runs/goal2-control/claims.goal2.compiled.json
+  --output evals/.runs/goal2-control/claims.goal2.compiled.yaml
 ```
 
 Claims 只接受同一个 frozen commit 的完整 Run；样本数必须精确相等，A/B 必须精确配对，批准的 Runtime 差异仍写入 evidence summary。Hook 使用独立确定性 JSON 作为 Claim 来源，因为它没有 Provider Runtime。任何 `insufficient-data`、infra failure、被筛掉的失败 Run、dry-run、mock、fixture-only 或 synthetic schema 都不得写成真实效果。
