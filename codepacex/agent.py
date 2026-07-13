@@ -120,6 +120,11 @@ class LoopComplete:
 class UsageEvent:
     input_tokens: int
     output_tokens: int
+    request_input_tokens: int | None = None
+    request_output_tokens: int | None = None
+    provider_usage: dict[str, Any] | None = None
+    provider: str | None = None
+    model_id: str | None = None
 
 
 @dataclass
@@ -188,6 +193,7 @@ class LLMResponse:
     text: str = ""
     tool_calls: list[ToolCallComplete] = field(default_factory=list)
     thinking_blocks: list[ThinkingBlock] = field(default_factory=list)
+    provider_usage: dict[str, Any] | None = None
     stop_reason: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
@@ -229,6 +235,7 @@ class StreamCollector:
                 self.response.output_tokens = event.output_tokens
                 self.response.cache_read = event.cache_read
                 self.response.cache_creation = event.cache_creation
+                self.response.provider_usage = event.provider_usage
 
 
 # ---------------------------------------------------------------------------
@@ -837,6 +844,11 @@ class Agent:
             yield UsageEvent(
                 input_tokens=self.total_input_tokens,
                 output_tokens=self.total_output_tokens,
+                request_input_tokens=response.input_tokens,
+                request_output_tokens=response.output_tokens,
+                provider_usage=response.provider_usage,
+                provider=turn_runtime.provider.name if turn_runtime.provider else None,
+                model_id=turn_runtime.provider.model if turn_runtime.provider else None,
             )
 
             conv_thinking = [

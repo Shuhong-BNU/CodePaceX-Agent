@@ -115,6 +115,9 @@ class StreamEnd:
     # 计数，所以 cache_creation 在那边始终为 0。
     cache_read: int = 0
     cache_creation: int = 0
+    # Exact provider usage payload when the SDK exposes one.  Consumers must
+    # preserve absent fields rather than inferring token accounting.
+    provider_usage: dict[str, Any] | None = None
 
 
 StreamEvent = TextDelta | ThinkingDelta | ThinkingComplete | ToolCallStart | ToolCallDelta | ToolCallComplete | StreamEnd

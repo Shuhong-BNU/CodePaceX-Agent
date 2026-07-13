@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CodePaceX Claims v1",
+  "type": "object",
+  "required": ["schema_version", "claims"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["claim_id", "metric_name", "unit", "sample_size", "source_run_ids"],
+        "properties": {
+          "metric_name": {"enum": ["provider_input_tokens", "permission_hitl_count", "successful_task_wall_time_seconds", "rate", "ab_reduction_percent"]},
+          "status": {"enum": ["draft", "verified", "insufficient-data"]}
+        }
+      }
+    }
+  }
+}

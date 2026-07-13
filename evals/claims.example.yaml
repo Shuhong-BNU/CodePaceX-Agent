@@ -1,0 +1,14 @@
+schema_version: 1
+claims:
+  - claim_id: pilot-token-example
+    metric_name: provider_input_tokens
+    unit: tokens
+    sample_size: 1
+    experiment_conditions:
+      provider: bailian-qwen37-max
+      model_id: qwen3.7-max-2026-06-08
+    source_run_ids:
+      - replace-with-successful-run-id
+    status: draft
+    limitations:
+      - This template is intentionally insufficient until a real successful Pilot Run exists.

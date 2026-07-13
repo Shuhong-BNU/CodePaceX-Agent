@@ -92,3 +92,20 @@ def test_failed_run_and_optional_artifacts_remain(tmp_path: Path) -> None:
     assert (recorder.path / "permission-events.jsonl").exists()
     assert (recorder.path / "usage.json").exists()
     assert "hunter2" not in (recorder.path / "report.md").read_text(encoding="utf-8")
+
+
+def test_recorder_derives_optional_events_without_inventing_usage(tmp_path: Path) -> None:
+    recorder = RunRecorder(tmp_path, RunManifest(provider="p", model_id="m"), run_id="events")
+    raw_usage = {
+        "prompt_tokens": 10,
+        "completion_tokens": 3,
+        "prompt_tokens_details": {"cached_tokens": 2},
+    }
+    recorder.capture_event({"type": "usage", "provider_usage": raw_usage, "request_index": 1})
+    recorder.capture_event({"type": "permission_decision", "tool_id": "t1", "decision": "deny", "hitl_required": False, "executed": False})
+    recorder.capture_event({"type": "compression", "success": False, "reason": "threshold", "tokens_before": 50, "tokens_after": None, "error_category": "provider_error"})
+    usage = json.loads((recorder.path / "usage.json").read_text())
+    assert usage["requests"][0]["provider_usage"] == raw_usage
+    assert "reasoning_tokens" not in usage["requests"][0]["provider_usage"]
+    with pytest.raises(ValueError, match="duplicate"):
+        recorder.capture_event({"type": "permission_decision", "tool_id": "t1", "decision": "deny", "hitl_required": False, "executed": False})

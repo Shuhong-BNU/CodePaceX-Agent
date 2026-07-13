@@ -40,6 +40,19 @@ ANTHROPIC_MODEL_FETCH_TIMEOUT = 3.0
 _EPHEMERAL = {"type": "ephemeral"}
 
 
+def _provider_usage_payload(usage: Any) -> dict[str, Any] | None:
+    """Return the SDK's usage shape without completing or reinterpreting it."""
+    if usage is None:
+        return None
+    dump = getattr(usage, "model_dump", None)
+    if callable(dump):
+        value = dump(exclude_none=True)
+        return value if isinstance(value, dict) else None
+    if isinstance(usage, dict):
+        return usage
+    return None
+
+
 # 核心实现
 def _mark_last_user_tail_for_cache(messages: list[dict[str, Any]]) -> None:
     """给最后一条 user 消息的最后一个 block 附加 cache_control。
@@ -315,6 +328,7 @@ class AnthropicClient(LLMClient):
                     output_tokens=usage.output_tokens,
                     cache_read=cache_read,
                     cache_creation=cache_creation,
+                    provider_usage=_provider_usage_payload(usage),
                 )
 
         except _anthropic.AuthenticationError as e:
@@ -437,6 +451,7 @@ class OpenAIClient(LLMClient):
                         output_tokens=getattr(usage, "output_tokens", 0) or 0,
                         cache_read=cache_read,
                         cache_creation=0,
+                        provider_usage=_provider_usage_payload(usage),
                     )
 
         except _openai.AuthenticationError as e:
@@ -554,6 +569,7 @@ class OpenAICompatClient(LLMClient):
                             output_tokens=chunk.usage.completion_tokens or 0,
                             cache_read=cache_read,
                             cache_creation=0,
+                            provider_usage=_provider_usage_payload(chunk.usage),
                         )
                     continue
 

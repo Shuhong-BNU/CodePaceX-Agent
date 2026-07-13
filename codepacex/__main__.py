@@ -312,6 +312,11 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
                     "type": "usage",
                     "input_tokens": event.input_tokens,
                     "output_tokens": event.output_tokens,
+                    "request_input_tokens": event.request_input_tokens,
+                    "request_output_tokens": event.request_output_tokens,
+                    "provider_usage": event.provider_usage,
+                    "provider": event.provider,
+                    "model_id": event.model_id,
                 })
 
         elif isinstance(event, TurnComplete):

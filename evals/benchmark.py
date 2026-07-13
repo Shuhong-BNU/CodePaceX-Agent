@@ -256,6 +256,47 @@ class RunRecorder:
             "schema_version": SCHEMA_VERSION, "timestamp": time.time(), **value,
         })
 
+    def _optional_records(self, name: str) -> list[dict[str, Any]]:
+        path = self.path / name
+        if not path.exists():
+            return []
+        records: list[dict[str, Any]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                decoded = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(decoded, dict):
+                records.append(decoded)
+        return records
+
+    def capture_event(self, event: dict[str, Any]) -> None:
+        """Persist one real runner event and derive optional files when applicable.
+
+        ``provider_usage`` is deliberately retained as supplied by the provider:
+        this recorder does not manufacture cache, reasoning, or completion fields.
+        """
+        event_type = event.get("type")
+        if not isinstance(event_type, str):
+            raise ValueError("captured event requires a string type")
+        payload = {key: value for key, value in event.items() if key != "type"}
+        if event_type == "permission_decision":
+            tool_id = payload.get("tool_id")
+            if not isinstance(tool_id, str) or not tool_id:
+                raise ValueError("permission decision requires tool_id")
+            previous = self._optional_records("permission-events.jsonl")
+            if any(item.get("tool_id") == tool_id for item in previous):
+                raise ValueError(f"duplicate permission decision for tool ID: {tool_id}")
+        self.event(event_type, payload)
+        if event_type == "usage":
+            requests = self._optional_records("usage.json")
+            requests.append(payload)
+            self.write_optional_json("usage.json", {"requests": requests})
+        elif event_type == "permission_decision":
+            self.optional_event("permission-events.jsonl", payload)
+        elif event_type == "compression":
+            self.optional_event("compression-events.jsonl", payload)
+
     def write_artifact(self, name: str, content: str | bytes) -> Path:
         if name not in ALLOWED_ARTIFACTS or Path(name).name != name:
             raise ValueError("unsupported artifact name")
