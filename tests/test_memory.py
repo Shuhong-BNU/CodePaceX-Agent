@@ -9,6 +9,7 @@ import json
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -791,6 +792,16 @@ class TestConversationInjection:
 # =========================================================================
 
 class TestMemoryExtraction:
+    class _Client:
+        def __init__(self, outputs: list[str]) -> None:
+            self.outputs = iter(outputs)
+
+        async def stream(self, conversation, system=""):
+            from codepacex.tools.base import StreamEnd, TextDelta
+
+            yield TextDelta(next(self.outputs))
+            yield StreamEnd("end_turn")
+
     def test_memory_types_aligned_with_go(self, tmp_path: Path) -> None:
         """验证四种记忆类型保持既定行为一致。"""
         from codepacex.memory.auto_memory import VALID_TYPES, _USER_LEVEL_TYPES, _PROJECT_LEVEL_TYPES
@@ -798,3 +809,180 @@ class TestMemoryExtraction:
         assert VALID_TYPES == {"user", "feedback", "project", "reference"}
         assert _USER_LEVEL_TYPES == {"user", "feedback"}
         assert _PROJECT_LEVEL_TYPES == {"project", "reference"}
+
+    @pytest.mark.asyncio
+    async def test_extract_persists_validated_memories_by_scope(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        home = tmp_path / "home"
+        project = tmp_path / "project"
+        home.mkdir()
+        project.mkdir()
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        manager = MemoryManager(str(project))
+        conversation = ConversationManager()
+        conversation.add_user_message("Remember my style and this project decision")
+        payload = json.dumps(
+            {
+                "memories": [
+                    {
+                        "name": "Coding style",
+                        "description": "Prefers small focused commits",
+                        "type": "user",
+                        "content": "The user prefers small focused commits.",
+                    },
+                    {
+                        "name": "Database choice",
+                        "description": "The project uses PostgreSQL",
+                        "type": "project",
+                        "content": "Use PostgreSQL for durable storage.",
+                    },
+                ]
+            }
+        )
+
+        await manager.extract(self._Client([payload]), conversation, "openai")
+
+        user_files = list(manager.user_mem_dir.glob("*.md"))
+        project_files = list(manager.project_mem_dir.glob("*.md"))
+        assert any(path.name != "MEMORY.md" for path in user_files)
+        assert any(path.name != "MEMORY.md" for path in project_files)
+        assert "Coding style" in manager.user_path.read_text(encoding="utf-8")
+        assert "Database choice" in manager.project_path.read_text(encoding="utf-8")
+        assert manager._last_extraction_msg_count == len(conversation.history)
+
+    @pytest.mark.asyncio
+    async def test_extract_rejects_invalid_json_without_advancing_cursor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        home = tmp_path / "home"
+        project = tmp_path / "project"
+        home.mkdir()
+        project.mkdir()
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        manager = MemoryManager(str(project))
+        conversation = ConversationManager()
+        conversation.add_user_message("Remember this")
+
+        await manager.extract(self._Client(["not-json"]), conversation, "openai")
+
+        assert manager._last_extraction_msg_count == 0
+        assert not manager.user_path.exists()
+        assert not manager.project_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_extract_write_failure_does_not_advance_cursor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        home = tmp_path / "home"
+        project = tmp_path / "project"
+        home.mkdir()
+        project.mkdir()
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        manager = MemoryManager(str(project))
+        conversation = ConversationManager()
+        conversation.add_user_message("Remember this project")
+        payload = json.dumps(
+            {
+                "memories": [
+                    {
+                        "name": "Decision",
+                        "description": "A durable project decision",
+                        "type": "project",
+                        "content": "Keep the evaluator frozen.",
+                    }
+                ]
+            }
+        )
+
+        with patch(
+            "codepacex.memory.auto_memory._atomic_write_text",
+            side_effect=OSError("injected write failure"),
+        ):
+            await manager.extract(self._Client([payload]), conversation, "openai")
+
+        assert manager._last_extraction_msg_count == 0
+
+    @pytest.mark.asyncio
+    async def test_extract_updates_duplicate_memory_and_keeps_one_index_entry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        home = tmp_path / "home"
+        project = tmp_path / "project"
+        home.mkdir()
+        project.mkdir()
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        manager = MemoryManager(str(project))
+        conversation = ConversationManager()
+        first = json.dumps(
+            {
+                "memories": [
+                    {
+                        "name": "Pilot policy",
+                        "description": "Pilot execution policy",
+                        "type": "project",
+                        "content": "Dry-run first.",
+                    }
+                ]
+            }
+        )
+        second = json.dumps(
+            {
+                "memories": [
+                    {
+                        "name": "Pilot policy",
+                        "description": "Updated pilot execution policy",
+                        "type": "project",
+                        "content": "Dry-run first and require paid-run confirmation.",
+                    }
+                ]
+            }
+        )
+        client = self._Client([first, second])
+        conversation.add_user_message("Remember the pilot policy")
+        await manager.extract(client, conversation, "openai")
+        conversation.add_user_message("Update that policy")
+        await manager.extract(client, conversation, "openai")
+
+        memory_files = [
+            path for path in manager.project_mem_dir.glob("*.md")
+            if path.name != "MEMORY.md"
+        ]
+        assert len(memory_files) == 1
+        assert "paid-run confirmation" in memory_files[0].read_text(encoding="utf-8")
+        assert manager.project_path.read_text(encoding="utf-8").count("Pilot policy") == 1
+
+    @pytest.mark.asyncio
+    async def test_extract_sanitizes_generated_filename(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        home = tmp_path / "home"
+        project = tmp_path / "project"
+        home.mkdir()
+        project.mkdir()
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        manager = MemoryManager(str(project))
+        conversation = ConversationManager()
+        conversation.add_user_message("Remember this")
+        payload = json.dumps(
+            {
+                "memories": [
+                    {
+                        "name": "../../outside",
+                        "description": "Must remain in the memory directory",
+                        "type": "project",
+                        "content": "Safe content.",
+                    }
+                ]
+            }
+        )
+
+        await manager.extract(self._Client([payload]), conversation, "openai")
+
+        memory_files = [
+            path for path in manager.project_mem_dir.glob("*.md")
+            if path.name != "MEMORY.md"
+        ]
+        assert len(memory_files) == 1
+        assert memory_files[0].parent == manager.project_mem_dir
+        assert not (project.parent / "outside.md").exists()
