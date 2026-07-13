@@ -24,7 +24,7 @@ class BwrapSandbox(Sandbox):
             args.extend(["--bind", resolved, resolved])
         for path in config.deny_write:
             resolved = str(Path(path).resolve())
-            args.extend(["--ro-bind", resolved, resolved])
+            args.extend(["--ro-bind-try", resolved, resolved])
         if not config.network_enabled:
             args.append("--unshare-net")
         args.extend(["--proc", "/proc", "--dev", "/dev", "--", "bash", "-c", command])
