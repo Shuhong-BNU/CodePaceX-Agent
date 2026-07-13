@@ -5,8 +5,8 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from codepacex.permissions.dangerous import DangerousCommandDetector, is_safe_command
@@ -147,15 +147,17 @@ class PermissionChecker:
         except Exception as exc:
             assessment.add("ask", f"强制授权检查失败: {exc}")
 
-        if assessment.explicit_effect is None:
-            try:
-                rule_result = self.rule_engine.evaluate(tool.name, content)
-            except Exception as exc:
-                assessment.add("ask", f"权限规则检查失败: {exc}")
-            else:
-                if rule_result is not None:
+        try:
+            rule_result = self.rule_engine.evaluate(tool.name, content)
+        except Exception as exc:
+            assessment.add("ask", f"权限规则检查失败: {exc}")
+        else:
+            if rule_result is not None:
+                if assessment.explicit_effect is None:
                     assessment.explicit_effect = rule_result
                     assessment.explicit_reason = f"权限规则: {rule_result}"
+                else:
+                    assessment.add(rule_result, f"权限规则: {rule_result}")
         return assessment
 
     def finalize(
@@ -207,14 +209,21 @@ class PermissionChecker:
 
     def _is_plan_file(self, target_path: str) -> bool:
         if not self.plan_file_path or not target_path:
-            return ".codepacex/plans/" in target_path
+            return False
         try:
-            abs_target = os.path.abspath(target_path)
-            abs_plan = os.path.abspath(self.plan_file_path)
-            if abs_target == abs_plan:
-                return True
-        except Exception:
-            pass
-        if os.path.basename(target_path) == os.path.basename(self.plan_file_path):
-            return True
-        return ".codepacex/plans/" in target_path
+            root = self.sandbox.project_root.resolve()
+            plans_root = (root / ".codepacex" / "plans").resolve()
+
+            target = Path(target_path).expanduser()
+            if not target.is_absolute():
+                target = root / target
+            plan = Path(self.plan_file_path).expanduser()
+            if not plan.is_absolute():
+                plan = root / plan
+
+            resolved_target = target.resolve()
+            resolved_plan = plan.resolve()
+            resolved_plan.relative_to(plans_root)
+            return resolved_target == resolved_plan
+        except (OSError, RuntimeError, ValueError):
+            return False
