@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -16,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from statistics import median
 from typing import Any, Iterable
-from urllib.parse import urlsplit
+from urllib.parse import quote, quote_plus, unquote, urlsplit
 
 SCHEMA_VERSION = 1
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -49,7 +50,40 @@ def _normalized_key(key: object) -> str:
 
 class SecretRedactor:
     def __init__(self, secrets: Iterable[str] = ()) -> None:
-        self._secrets = sorted({item for item in secrets if item}, key=len, reverse=True)
+        variants: set[str] = set()
+        for secret in secrets:
+            if not secret:
+                continue
+            variants.update(self._variants(secret))
+            parsed = urlsplit(secret)
+            if parsed.username:
+                variants.update(self._variants(parsed.username))
+            if parsed.password:
+                variants.update(self._variants(parsed.password))
+            # Some proxy settings arrive as practical (not fully RFC-escaped)
+            # URLs.  Parse only the userinfo fragment as a redaction aid; it is
+            # never persisted and does not validate the proxy configuration.
+            if "://" in secret and "@" in secret:
+                userinfo = secret.split("://", 1)[1].rsplit("@", 1)[0]
+                user, separator, password = userinfo.partition(":")
+                if user:
+                    variants.update(self._variants(unquote(user)))
+                if separator and password:
+                    variants.update(self._variants(unquote(password)))
+        self._secrets = sorted(variants, key=len, reverse=True)
+
+    @staticmethod
+    def _variants(value: str) -> set[str]:
+        """Return in-memory-only representations likely to reach run artifacts."""
+        json_escaped = json.dumps(value, ensure_ascii=True)[1:-1]
+        return {
+            value,
+            quote(value, safe=""),
+            quote_plus(value, safe=""),
+            json_escaped,
+            shlex.quote(value),
+            f"Bearer {value}",
+        }
 
     def redact(self, value: Any) -> Any:
         if isinstance(value, dict):
@@ -69,6 +103,9 @@ class SecretRedactor:
                 text = pattern.sub("[REDACTED]", text)
             return text
         return value
+
+    def contains_secret(self, value: str) -> bool:
+        return self.redact(value) != value
 
 
 def sanitize_origin(url: str) -> str | None:
@@ -389,6 +426,28 @@ class RunRecorder:
         self._atomic_write(target, self.redactor.redact(safe).encode())
         return target
 
+    def _sanitize_run_files(self) -> bool:
+        """Redact every final artifact and report an unredactable secret leak.
+
+        Recorder writes are redacted at their source, but this final pass covers
+        every optional or registered artifact as a defense in depth measure.
+        It intentionally operates only inside this Run directory.
+        """
+        failed = False
+        for candidate in self.path.rglob("*"):
+            if not candidate.is_file():
+                continue
+            try:
+                original = candidate.read_text(encoding="utf-8", errors="replace")
+                sanitized = self.redactor.redact(original)
+                if sanitized != original:
+                    self._atomic_write(candidate, sanitized.encode())
+                if self.redactor.contains_secret(sanitized):
+                    failed = True
+            except OSError:
+                failed = True
+        return failed
+
     def completed_trials(self) -> set[tuple[str, str]]:
         completed: set[tuple[str, str]] = set()
         for line in (self.path / "events.jsonl").read_text(encoding="utf-8").splitlines():
@@ -444,6 +503,9 @@ class RunRecorder:
         unscorable = sum(
             1 for event in completed if event.get("status") not in SCORABLE_STATUSES
         )
+        if self._sanitize_run_files():
+            status = "infrastructure_error"
+            errors["secret_redaction_failure"] = errors.get("secret_redaction_failure", 0) + 1
         payload = {
             "schema_version": SCHEMA_VERSION,
             **result,
@@ -461,6 +523,20 @@ class RunRecorder:
             if key not in {"schema_version", "status"}:
                 lines.append(f"- {key}: {value}")
         self._atomic_write(self.path / "report.md", ("\n".join(lines) + "\n").encode())
+        if self._sanitize_run_files():
+            payload["status"] = "infrastructure_error"
+            payload["scorable"] = False
+            payload["error_category_summary"] = {
+                **payload["error_category_summary"],
+                "secret_redaction_failure": payload["error_category_summary"].get("secret_redaction_failure", 0) + 1,
+            }
+            self.write_json("result.json", payload)
+            redacted = self.redactor.redact(payload)
+            lines = ["# Benchmark Run", "", f"- Run ID: `{self.run_id}`", "- Status: `infrastructure_error`"]
+            for key, value in sorted(redacted.items()):
+                if key not in {"schema_version", "status"}:
+                    lines.append(f"- {key}: {value}")
+            self._atomic_write(self.path / "report.md", ("\n".join(lines) + "\n").encode())
 
 
 def percentile(values: Iterable[float], fraction: float) -> float | None:

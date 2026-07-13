@@ -716,6 +716,7 @@ async def auto_compact(
     tool_schemas: list[Mapping[str, Any]] | None = None,
     transcript_path: str = "",
     runtime_event_sink: Callable[[Any], None] | None = None,
+    usage_event_sink: Callable[[Any, Any], None] | None = None,
 ) -> CompactEvent | str | None:
     # 以真实 API 用量为锚点做阈值判断：current_tokens() 返回上次计费基准
     # （input + cache_read + cache_creation + output）加上锚点之后新增消息的
@@ -785,14 +786,17 @@ async def auto_compact(
             from codepacex.tools.base import RuntimeManifestEvent, StreamEnd, TextDelta
 
             collected_text = ""
+            runtime_event: RuntimeManifestEvent | None = None
             async for event in client.stream(summary_conv, system=SUMMARY_PROMPT):
                 if isinstance(event, TextDelta):
                     collected_text += event.text
                 elif isinstance(event, RuntimeManifestEvent):
+                    runtime_event = event
                     if runtime_event_sink is not None:
                         runtime_event_sink(event)
                 elif isinstance(event, StreamEnd):
-                    pass
+                    if runtime_event is not None and usage_event_sink is not None:
+                        usage_event_sink(runtime_event, event)
             llm_output = collected_text
             break
 

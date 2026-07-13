@@ -523,6 +523,37 @@ class Agent:
             "error_category": event.error_category,
         }
 
+    def _usage_from_stream_end(
+        self, runtime_event: RuntimeManifestEvent, stream_end: StreamEnd,
+    ) -> UsageEvent:
+        """Account for a completed SDK request without inventing provider fields."""
+        self.total_input_tokens += stream_end.input_tokens
+        self.total_output_tokens += stream_end.output_tokens
+        return UsageEvent(
+            input_tokens=self.total_input_tokens,
+            output_tokens=self.total_output_tokens,
+            request_input_tokens=stream_end.input_tokens,
+            request_output_tokens=stream_end.output_tokens,
+            provider_usage=stream_end.provider_usage,
+            provider=runtime_event.provider,
+            model_id=runtime_event.model_id,
+            request_index=runtime_event.request_index,
+        )
+
+    @staticmethod
+    def _usage_event_payload(event: UsageEvent) -> dict[str, Any]:
+        return {
+            "type": "usage",
+            "input_tokens": event.input_tokens,
+            "output_tokens": event.output_tokens,
+            "request_input_tokens": event.request_input_tokens,
+            "request_output_tokens": event.request_output_tokens,
+            "provider_usage": event.provider_usage,
+            "provider": event.provider,
+            "model_id": event.model_id,
+            "request_index": event.request_index,
+        }
+
     @property
     def plan_mode(self) -> bool:
         return self.permission_mode == PermissionMode.PLAN
@@ -603,6 +634,13 @@ class Agent:
     ) -> tuple[ConversationManager | None, list[dict[str, Any]], list[AgentEvent], str]:
         events: list[AgentEvent] = []
         runtime_events: list[RuntimeManifestEvent] = []
+        compression_usage: list[UsageEvent] = []
+
+        def on_runtime(event: RuntimeManifestEvent) -> None:
+            runtime_events.append(self._index_runtime_event(event))
+
+        def on_usage(event: RuntimeManifestEvent, stream_end: StreamEnd) -> None:
+            compression_usage.append(self._usage_from_stream_end(event, stream_end))
         tokens_before = conversation.current_tokens()
         compact_result = await auto_compact(
             conversation,
@@ -614,9 +652,11 @@ class Agent:
             recovery=self.recovery_state,
             tool_schemas=self.registry.get_all_schemas(runtime.protocol),
             transcript_path=self._transcript_path,
-            runtime_event_sink=runtime_events.append,
+            runtime_event_sink=on_runtime,
+            usage_event_sink=on_usage,
         )
-        events.extend(self._index_runtime_event(event) for event in runtime_events)
+        events.extend(runtime_events)
+        events.extend(compression_usage)
         if isinstance(compact_result, CompactEvent):
             events.append(CompressionEvent(
                 trigger="automatic", success=True,
@@ -1607,12 +1647,23 @@ class Agent:
                 await self._extract_memories(conversation)
 
     async def manual_compact(
-        self, conversation: ConversationManager
+        self,
+        conversation: ConversationManager,
+        event_callback: Callable[[AgentEvent], None] | None = None,
     ) -> CompactNotification | ErrorEvent:
         # auto_compact 会用摘要替换 conversation.history，所有 tool-result 内容
         # （原始或已替换的）都将被丢弃。这里跳过 apply_tool_result_budget —
         # 它在主循环中的唯一目的是为 LLM 调用生成 api_conv，而本路径不需要
         # 发起看到替换结果的 LLM 调用（auto_compact 内部的摘要调用操作的是原始对话）。
+        runtime_events: list[RuntimeManifestEvent] = []
+        usage_events: list[UsageEvent] = []
+
+        def on_runtime(event: RuntimeManifestEvent) -> None:
+            runtime_events.append(self._index_runtime_event(event))
+
+        def on_usage(event: RuntimeManifestEvent, stream_end: StreamEnd) -> None:
+            usage_events.append(self._usage_from_stream_end(event, stream_end))
+
         result = await auto_compact(
             conversation,
             self.client,
@@ -1624,8 +1675,17 @@ class Agent:
             recovery=self.recovery_state,
             tool_schemas=self.registry.get_all_schemas(self.protocol),
             transcript_path=self._transcript_path,
+            runtime_event_sink=on_runtime,
+            usage_event_sink=on_usage,
         )
+        if event_callback is not None:
+            for event in [*runtime_events, *usage_events]:
+                event_callback(event)
         if isinstance(result, CompactEvent):
+            if event_callback is not None:
+                event_callback(CompressionEvent(
+                    trigger="manual", success=True, tokens_before=result.before_tokens,
+                ))
             env_context = build_environment_context(
             self.work_dir, self.active_skills, self._skill_catalog, self._agent_catalog
         )
@@ -1639,6 +1699,12 @@ class Agent:
                 message=f"上下文已压缩（压缩前 {result.before_tokens:,} tokens）",
                 boundary=result.boundary,
             )
+        if event_callback is not None and isinstance(result, str):
+            event_callback(CompressionEvent(
+                trigger="manual", success=False,
+                tokens_before=conversation.current_tokens(),
+                error_category="compression_error",
+            ))
         return ErrorEvent(message=result or "压缩失败：对话历史为空或未达到压缩条件")
 
     async def run_to_completion(
@@ -1695,6 +1761,14 @@ class Agent:
                     conversation.add_system_reminder(note)
 
             compact_runtime_events: list[RuntimeManifestEvent] = []
+            compact_usage_events: list[UsageEvent] = []
+
+            def on_compact_runtime(event: RuntimeManifestEvent) -> None:
+                compact_runtime_events.append(self._index_runtime_event(event))
+
+            def on_compact_usage(event: RuntimeManifestEvent, stream_end: StreamEnd) -> None:
+                compact_usage_events.append(self._usage_from_stream_end(event, stream_end))
+
             compact_tokens_before = conversation.current_tokens()
             compact_result = await auto_compact(
                 conversation,
@@ -1706,13 +1780,14 @@ class Agent:
                 recovery=self.recovery_state,
                 tool_schemas=self.registry.get_all_schemas(self.protocol),
                 transcript_path=self._transcript_path,
-                runtime_event_sink=compact_runtime_events.append,
+                runtime_event_sink=on_compact_runtime,
+                usage_event_sink=on_compact_usage,
             )
             if event_callback:
                 for runtime_event in compact_runtime_events:
-                    event_callback(self._runtime_event_payload(
-                        self._index_runtime_event(runtime_event)
-                    ))
+                    event_callback(self._runtime_event_payload(runtime_event))
+                for usage_event in compact_usage_events:
+                    event_callback(self._usage_event_payload(usage_event))
             if isinstance(compact_result, CompactEvent):
                 if event_callback:
                     event_callback(self._compression_event_payload(CompressionEvent(

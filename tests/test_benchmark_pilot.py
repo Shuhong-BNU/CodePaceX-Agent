@@ -65,6 +65,42 @@ def test_redaction_preserves_usage_tokens_and_removes_secret_values(tmp_path: Pa
     assert SecretRedactor().redact({"access_token": "value"})["access_token"] == "[REDACTED]"
 
 
+def test_redactor_covers_encoded_json_shell_and_proxy_credentials(tmp_path: Path) -> None:
+    key = 'pilot key/+/"quoted"'
+    proxy = "https://proxy-user:proxy pass/@proxy.example:8443"
+    redactor = SecretRedactor([key, proxy])
+    forms = [
+        key,
+        "pilot%20key%2F%2B%2F%22quoted%22",
+        "pilot+key%2F%2B%2F%22quoted%22",
+        'pilot key/+/\\"quoted\\"',
+        "'pilot key/+/\"quoted\"'",
+        "Bearer " + key,
+        proxy,
+        "proxy+pass%2F",
+    ]
+    recorder = RunRecorder(tmp_path, _manifest(), run_id="encoded-secrets", secrets=[key, proxy])
+    for index, value in enumerate(forms):
+        recorder.event("trace", {"index": index, "value": value})
+    recorder.write_artifact("stdout.txt", "\n".join(forms))
+    recorder.finalize({"status": "success"})
+    all_output = "\n".join(
+        item.read_text(encoding="utf-8") for item in recorder.path.rglob("*") if item.is_file()
+    )
+    assert all(form not in all_output for form in forms)
+    assert json.loads((recorder.path / "result.json").read_text())["status"] == "success"
+
+
+def test_unredactable_final_scan_makes_run_infrastructure_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = RunRecorder(tmp_path, _manifest(), run_id="scan-failure", secrets=["secret"])
+    monkeypatch.setattr(recorder.redactor, "contains_secret", lambda _: True)
+    recorder.finalize({"status": "success"})
+    result = json.loads((recorder.path / "result.json").read_text())
+    assert result["status"] == "infrastructure_error"
+    assert result["scorable"] is False
+    assert result["error_category_summary"]["secret_redaction_failure"] >= 1
+
+
 def test_resume_requires_matching_identity_and_resumable_status(tmp_path: Path) -> None:
     recorder = RunRecorder(tmp_path, _manifest(), run_id="resume")
     recorder.event("trial_completed", {"task_id": "one", "repetition_id": "1"})

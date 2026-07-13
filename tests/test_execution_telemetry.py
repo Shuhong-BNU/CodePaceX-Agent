@@ -11,6 +11,7 @@ from codepacex.agent import (
     PermissionDecisionEvent,
     PermissionRequest,
     PermissionResponse,
+    UsageEvent,
 )
 from codepacex.context import CompactEvent
 from codepacex.conversation import ConversationManager
@@ -23,7 +24,7 @@ from codepacex.permissions import (
     RuleEngine,
 )
 from codepacex.tools import create_default_registry
-from codepacex.tools.base import StreamEnd, TextDelta, Tool, ToolCallComplete, ToolResult
+from codepacex.tools.base import RuntimeManifestEvent, StreamEnd, TextDelta, Tool, ToolCallComplete, ToolResult
 
 
 class EmptyParams(BaseModel):
@@ -250,3 +251,64 @@ async def test_compression_emits_structured_terminal_event(
     assert compression[0].tokens_after is None
     assert compression[0].attachment_count is None
     assert compression[0].error_category == (None if success else "compression_error")
+
+
+@pytest.mark.asyncio
+async def test_manual_compact_emits_runtime_usage_and_terminal_compression(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_compact(*args, **kwargs):
+        runtime = RuntimeManifestEvent("provider", "openai-compat", "model", "s", "t", "m")
+        kwargs["runtime_event_sink"](runtime)
+        kwargs["usage_event_sink"](runtime, StreamEnd(
+            "end_turn", input_tokens=9, output_tokens=4,
+            provider_usage={"prompt_tokens": 9, "completion_tokens": 4},
+        ))
+        return CompactEvent(123)
+
+    monkeypatch.setattr("codepacex.agent.auto_compact", fake_compact)
+    agent = Agent(
+        ScriptedClient([]), create_default_registry(), "openai-compat", work_dir=str(tmp_path),
+    )
+    events: list[Any] = []
+    result = await agent.manual_compact(ConversationManager(), event_callback=events.append)
+    assert not isinstance(result, Exception)
+    runtime = [item for item in events if isinstance(item, RuntimeManifestEvent)]
+    usage = [item for item in events if isinstance(item, UsageEvent)]
+    compression = [item for item in events if isinstance(item, CompressionEvent)]
+    assert len(runtime) == len(usage) == len(compression) == 1
+    assert runtime[0].request_index == usage[0].request_index == 1
+    assert usage[0].provider_usage == {"prompt_tokens": 9, "completion_tokens": 4}
+    assert compression[0].trigger == "manual" and compression[0].success is True
+
+
+@pytest.mark.asyncio
+async def test_automatic_compact_pairs_runtime_and_usage_once(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    async def fake_compact(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            return None
+        runtime = RuntimeManifestEvent("provider", "openai-compat", "summary", "s", "t", "m")
+        kwargs["runtime_event_sink"](runtime)
+        kwargs["usage_event_sink"](runtime, StreamEnd(
+            "end_turn", input_tokens=8, output_tokens=3,
+            provider_usage={"prompt_tokens": 8, "completion_tokens": 3},
+        ))
+        return CompactEvent(123)
+
+    monkeypatch.setattr("codepacex.agent.auto_compact", fake_compact)
+    agent = Agent(
+        ScriptedClient([[TextDelta("done"), StreamEnd("end_turn")]]),
+        create_default_registry(), "openai-compat", work_dir=str(tmp_path),
+    )
+    events = await _run(agent)
+    runtime = [item for item in events if isinstance(item, RuntimeManifestEvent)]
+    usage = [item for item in events if isinstance(item, UsageEvent)]
+    assert runtime[0].request_index == usage[0].request_index == 1
+    assert usage[0].provider_usage == {"prompt_tokens": 8, "completion_tokens": 3}
+    assert agent.total_input_tokens >= 8 and agent.total_output_tokens >= 3
