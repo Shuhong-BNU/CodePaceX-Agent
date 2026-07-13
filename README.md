@@ -172,9 +172,9 @@ Agent：总结主调用链
 
 Eval 产物默认写入 `evals/.runs/`，该目录是本地 artifact 并被 Git 忽略。Baseline v1 已在正常 Mac Terminal 中完成完整 suite：6/6 PASS，0 FAIL，0 ERROR，0 WARNING，Task Success Rate 100%。详细任务、状态分类和边界见 [`evals/README.md`](evals/README.md) / [`evals/README.en.md`](evals/README.en.md)。
 
-除既有 deterministic Eval 外，`evals/pilot.py` 还提供冻结 Qwen 配置的可复现 Benchmark Pilot dry-run、Run manifest 和 Claims 溯源。它不会在 CI 或 dry-run 中访问模型；真实 paid run、SWE-bench-Live 和长会话实验均尚未执行。复现命令与限制见 [`evals/README.md`](evals/README.md)。
+除既有 deterministic Eval 外，Goal 2 已加入冻结 Qwen Pilot、真实 runtime-mapped `ExperimentProfile`、预算 reservation/ledger、MCP/Retention/Permission/Multi-Agent/Hook/长会话研究 runner、Microsoft SWE-bench-Live `python-only` 官方适配，以及从真实 Artifact 自动生成 Claims 的路径。CI 与 dry-run 不访问模型；真实 paid Pilot、SWE-bench-Live、正式 A/B 和长会话仍尚未执行。完整顺序、预算风险和发布边界见 [`evals/GOAL2_RUNBOOK.md`](evals/GOAL2_RUNBOOK.md)。
 
-当前工程基线来自已合并的 PR #13（`e44f3a1`）。后续 correctness closure 修复了 Plan 精确授权与 deny 优先级、Permission Git 集成测试的 cwd 依赖、未实现 Agent Hook 的误报成功，以及自动记忆的结构化持久化闭环。该基线只包含本地测试、fixture、合成测量和 Pilot dry-run；尚未运行真实付费 Pilot、SWE-bench、AgentRouter、正式 A/B 或长会话实验。
+当前工程基线来自已合并的 PR #13（`e44f3a1`）及其 correctness closure。Goal 2 分支在该稳定基线上构建可验证实验设施，但当前仍只有本地测试、受控 fixture、确定性 Hook 测量和 dry-run；尚未运行真实付费 Pilot、SWE-bench、AgentRouter、正式 A/B 或长会话实验。
 
 ## 🧰 环境要求
 
@@ -612,7 +612,7 @@ Roadmap：
 
 - TUI、Remote 和 `-p` 当前共享 provider/client、核心 ToolRegistry、权限检查、项目指令、`ToolSearch`、`InstallSkill`、Agent loop 与上下文遥测。TUI/Remote 额外具有会话、记忆、Skill loader/`LoadSkill` 和 MCP 生命周期；TUI 还装配文件历史、交互提问、Plan 退出及 worktree/team UI；TUI 与 `-p` 都装配子 Agent、worktree-backed delegation 和 Team 工具，而 Remote 当前没有；`-p` 保持非交互输出和拒绝式审批。下一阶段将以显式 capability profile 和共享 RuntimeBuilder 收口公共装配，并用入口级测试锁定合理差异。由于这会同时改变同步和异步入口的创建/清理生命周期，本轮不做局部伪统一。
 - Worktree inspect → approve → integrate 属于后续新功能：先输出分支、commit、diffstat 和冲突预检，再由用户显式选择集成或保留；不得自动覆盖脏主工作区。
-- Pilot feature flag 到 runtime 的映射延期到独立实验 Goal。首选 `deferred_tools`，必须贯通子进程配置、ToolRegistry 行为、有效配置证据和 Claims，并用测试证明初始可见 Schema/工具哈希真实变化；当前仍拒绝未注册或未映射 flag。
-- 建立 MCP Schema、长会话和多 Agent 的真实 benchmark。
+- Goal 2 已用 `ExperimentProfile` 实现 eager/deferred tools、compression、permission strategy 与 single/multi-agent 的真实 runtime mapping，并记录 effective profile、Runtime hash 与工具 Schema 字节数；legacy `feature_flags` 仍拒绝进入 live Run，避免只改标签的伪实验。
+- MCP、Retention、Permission、Multi-Agent、Hook、长会话和 SWE-bench-Live 的 runner 已就绪，但真实指标仍以 [`evals/GOAL2_RUNBOOK.md`](evals/GOAL2_RUNBOOK.md) 中的预算、官方依赖和 Artifact 闸门为准。
 
 详细修改建议见 [`CODE_CHANGE_PROPOSALS.md`](CODE_CHANGE_PROPOSALS.md)。

@@ -59,19 +59,20 @@
 - 安全约束：不得自动覆盖脏主工作区，不得把无冲突预检等同于可安全集成，用户拒绝必须保持零主工作区修改。
 - 后续测试：无改动、未提交改动、已有提交、冲突、脏主工作区、用户拒绝和中途失败恢复。
 
-## 7. Feature Flag runtime mapping 与真实基准 — 延期到实验 Goal
+## 7. 实验 Runtime mapping 与真实基准 — Goal 2 工程闭环完成，真实运行待授权
 
-当前 Pilot 与 Claims 会拒绝所有未注册或未映射的 feature flag。这是刻意的 fail-closed 行为：仅把 flag 写入 manifest 标签而不改变运行时，不允许作为 A/B 证据。
+Goal 2 没有复用只改变 manifest 标签的 legacy feature flag，而是引入受约束的 `ExperimentProfile`。`tool_loading`、`compression_profile`、`permission_strategy` 和 `agent_mode` 会传入真实子进程并改变 ToolRegistry、压缩恢复附件、权限装配与子 Agent 工具；effective profile、profile hash、runtime contract hash、Provider payload hash 和工具 Schema 字节数都会进入 Artifact。未知或 non-empty legacy `feature_flags` 继续 fail-closed。
 
-首选最小实验为 `deferred_tools`，但真实闭环需要同时修改 Pilot 子进程配置、核心 ToolRegistry、三个入口的装配、有效运行时证据和 Claims 兼容规则，已经超出本轮小范围修复。后续方案：
+已完成的工程资产包括：
 
-1. 冻结 flag 语义：`true` 使用当前 deferred/discovery 行为，`false` 在首个模型请求前使同一工具集合的 Schema 全部可见。
-2. 把 flag 写入子进程可读取的冻结配置，并由 RuntimeBuilder 应用；禁止仅在 manifest 中记标签。
-3. 在 run event/manifest 中记录应用后的 effective flag、初始 Schema 哈希、可见工具名哈希和 CodePaceX commit。
-4. 单元测试证明同一 registry 在 flag 两侧产生不同的初始 Schema/哈希，同时工具执行语义不变；集成测试证明 Pilot 记录值与子进程应用值一致。
-5. 只有上述证据通过后，Claims 才允许以该 flag 作为唯一实验差异；未知 flag 继续拒绝。
+1. 30-task controlled MCP corpus，eager/deferred 各 5 次；
+2. 10×2 Retention、10×5×4 Permission、5×5×2 Multi-Agent；
+3. 100-case deterministic Hook study；
+4. 1×2h + 3×8h hash-chained long-session supervisor；
+5. Microsoft SWE-bench-Live `python-only` 的 3 Pilot + 20 formal + 5×2 repeat 冻结与官方 evaluator adapter；
+6. clean-commit 预算授权、worst-next-trial reservation、真实 Usage 结算和 Goal 2 Claims 自动生成。
 
-本轮没有运行真实模型、真实网络实验或付费调用，也没有运行真实 Pilot、SWE-bench、AgentRouter、正式 A/B 或长会话。fixture、mock、合成 Schema 和 dry-run 不能被表述为这些真实实验。
+截至 2026-07-13，上述工程资产已完成，但仍没有运行真实模型、真实网络实验或付费调用，也没有运行真实 Pilot、SWE-bench、AgentRouter、正式 A/B 或长会话。官方 SWE 隔离依赖安装和总预算仍需用户授权；fixture、mock、合成负载和 dry-run 不能被表述为真实效果。执行与证据边界见 `evals/GOAL2_RUNBOOK.md`。
 
 ## 8. Permission Git 集成测试 cwd 依赖 — 已完成
 

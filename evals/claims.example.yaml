@@ -21,7 +21,8 @@ claims:
       timeout_seconds: null
       retry_budget: 0
       fallback_enabled: false
-      task_ids: []
+      task_ids:
+        - codepacex_001_config_bugfix
       repetitions: 1
       feature_flags: {}
       experiment_profile:
