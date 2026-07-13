@@ -47,6 +47,8 @@ def test_frozen_config_validates_and_hash_changes(tmp_path: Path) -> None:
     assert config.provider == pilot.FROZEN_PROVIDER
     assert config.schema_version == 2
     assert config.model_parameters.max_output_tokens == 8192
+    assert config.task_ids == ["codepacex_001_config_bugfix"]
+    assert config.repetitions == 1
     manifest = pilot.build_manifest(config, Path.cwd())
     assert manifest.benchmark_asset_hash == pilot.benchmark_asset_hash(Path.cwd())
     assert len(manifest.benchmark_asset_hash or "") == 64

@@ -43,6 +43,19 @@ REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 MAXIMUM_REQUESTS_PER_INSTANCE = 50
 MAXIMUM_INPUT_TOKENS_PER_REQUEST = 128_000
 MAXIMUM_OUTPUT_TOKENS_PER_REQUEST = 8192
+DEFAULT_OFFICIAL_ENVIRONMENT = Path("evals/goal2/swe_official_environment.json")
+OFFICIAL_ENVIRONMENT = {
+    "schema_version": 1,
+    "repository": "https://github.com/microsoft/SWE-bench-Live",
+    "branch": "python-only",
+    "commit": "ad79b850f15e33992e96f03f6e97f05ddf9aa0be",
+    "dataset": "SWE-bench-Live/SWE-bench-Live",
+    "split": "lite",
+    "evaluator_namespace": "starryzhang",
+    "installation": "isolated-editable-checkout",
+    "docker_required": True,
+    "arm64_support_is_experimental": True,
+}
 
 
 def frozen_profile() -> ExperimentProfile:
@@ -119,17 +132,57 @@ def stage_instance_ids(
     return ids
 
 
-def official_evaluator_preflight() -> dict[str, Any]:
+def load_official_environment(path: Path = DEFAULT_OFFICIAL_ENVIRONMENT) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("official SWE environment must be a JSON object")
+    for key, value in OFFICIAL_ENVIRONMENT.items():
+        if payload.get(key) != value:
+            raise ValueError(f"official SWE environment changed: {key}")
+    notes = payload.get("notes")
+    if not isinstance(notes, list) or not all(isinstance(item, str) for item in notes):
+        raise ValueError("official SWE environment notes must be strings")
+    if set(payload) != {*OFFICIAL_ENVIRONMENT, "notes"}:
+        raise ValueError("official SWE environment has unknown fields")
+    return payload
+
+
+def _installed_evaluator_commit(module_origin: str | None) -> str | None:
+    if not module_origin:
+        return None
+    origin = Path(module_origin).resolve()
+    for checkout in (origin.parent, *origin.parents):
+        if (checkout / ".git").exists():
+            revision = subprocess.run(
+                ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+                text=True, capture_output=True, timeout=20, check=False,
+            )
+            return revision.stdout.strip() if revision.returncode == 0 else None
+    return None
+
+
+def official_evaluator_preflight(
+    environment_path: Path = DEFAULT_OFFICIAL_ENVIRONMENT,
+) -> dict[str, Any]:
+    environment = load_official_environment(environment_path)
     try:
-        module_available = importlib.util.find_spec("swebench.harness.run_evaluation") is not None
+        module = importlib.util.find_spec("swebench.harness.run_evaluation")
     except ModuleNotFoundError:
-        module_available = False
+        module = None
+    installed_commit = _installed_evaluator_commit(
+        str(module.origin) if module is not None and module.origin else None,
+    )
+    revision_matches = installed_commit == environment["commit"]
     docker = subprocess.run(
         ["docker", "info", "--format", "{{.ServerVersion}}"],
         text=True, capture_output=True, timeout=20, check=False,
     )
     return {
-        "official_evaluator_available": module_available,
+        "official_evaluator_module_available": module is not None,
+        "expected_evaluator_commit": environment["commit"],
+        "installed_evaluator_commit": installed_commit,
+        "evaluator_revision_matches": revision_matches,
+        "official_evaluator_available": module is not None and revision_matches,
         "docker_daemon_available": docker.returncode == 0,
         "docker_server_version": docker.stdout.strip() if docker.returncode == 0 else None,
         "architecture": platform.machine(),

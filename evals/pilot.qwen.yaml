@@ -12,7 +12,8 @@ model_parameters:
   max_output_tokens: 8192
 timeout_seconds: null
 retry_budget: 0
-task_ids: []
+task_ids:
+  - codepacex_001_config_bugfix
 repetitions: 1
 feature_flags: {}
 experiment_profile:

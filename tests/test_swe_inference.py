@@ -1,5 +1,7 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -8,8 +10,13 @@ from evals.swe_inference import (
     collect_official_outcomes,
     freeze_matrix,
     load_validated_matrix,
+    load_official_environment,
+    official_evaluator_preflight,
     stage_instance_ids,
 )
+
+
+OFFICIAL_ENVIRONMENT = Path("evals/goal2/swe_official_environment.json")
 
 
 def _patch(count: int) -> str:
@@ -76,3 +83,29 @@ def test_selection_helpers_used_by_freezer_remain_disjoint() -> None:
     repeated = select_repeated_subset(formal)
     assert not {item["instance_id"] for item in pilot} & {item["instance_id"] for item in formal}
     assert {item["instance_id"] for item in repeated} <= {item["instance_id"] for item in formal}
+
+
+def test_official_environment_freezes_exact_python_only_revision() -> None:
+    environment = load_official_environment(OFFICIAL_ENVIRONMENT)
+    assert environment["repository"] == "https://github.com/microsoft/SWE-bench-Live"
+    assert environment["branch"] == "python-only"
+    assert environment["commit"] == "ad79b850f15e33992e96f03f6e97f05ddf9aa0be"
+    assert environment["evaluator_namespace"] == "starryzhang"
+    assert environment["split"] == "lite"
+
+
+def test_preflight_rejects_wrong_installed_official_revision(tmp_path: Path) -> None:
+    package = tmp_path / "checkout" / "swebench" / "__init__.py"
+    package.parent.mkdir(parents=True)
+    package.write_text("", encoding="utf-8")
+    (tmp_path / "checkout" / ".git").mkdir()
+    docker = SimpleNamespace(returncode=0, stdout="29.6.1\n")
+    git = SimpleNamespace(returncode=0, stdout="wrong-revision\n")
+    with patch(
+        "evals.swe_inference.importlib.util.find_spec",
+        return_value=SimpleNamespace(origin=str(package)),
+    ), patch("evals.swe_inference.subprocess.run", side_effect=[git, docker]):
+        result = official_evaluator_preflight(OFFICIAL_ENVIRONMENT)
+    assert result["official_evaluator_module_available"] is True
+    assert result["evaluator_revision_matches"] is False
+    assert result["official_evaluator_available"] is False
