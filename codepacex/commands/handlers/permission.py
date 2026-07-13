@@ -96,8 +96,8 @@ async def handle_permission(ctx: CommandContext) -> None:
         checker = ctx.agent.permission_checker
         if checker and checker.rule_engine and checker.rule_engine._local_path:
             path = checker.rule_engine._local_path
-            if path.exists():
-                path.write_text("", encoding="utf-8")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("[]\n", encoding="utf-8")
             ctx.ui.add_system_message("本地规则已清空")
         else:
             ctx.ui.add_system_message("无本地规则文件")
@@ -115,4 +115,3 @@ PERMISSION_COMMAND = Command(
     type=CommandType.LOCAL,
     handler=handle_permission,
 )
-

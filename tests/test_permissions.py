@@ -239,6 +239,20 @@ class TestRuleEngine:
         )
         assert engine.evaluate("Bash", "anything") is None
 
+    @pytest.mark.parametrize("content", ["", "# comment only\n", "[]\n", "null\n"])
+    def test_empty_rule_documents_are_no_rules(self, tmp_path: Path, content: str) -> None:
+        rules_file = tmp_path / "rules.yaml"
+        rules_file.write_text(content, encoding="utf-8")
+        engine = RuleEngine(project_rules_path=rules_file)
+        assert engine.evaluate("ReadFile", "README.md") is None
+
+    def test_non_list_rule_document_remains_invalid(self, tmp_path: Path) -> None:
+        rules_file = tmp_path / "rules.yaml"
+        rules_file.write_text("rule: Bash(git status)\neffect: allow\n", encoding="utf-8")
+        engine = RuleEngine(project_rules_path=rules_file)
+        with pytest.raises(ValueError, match="必须是列表"):
+            engine.evaluate("Bash", "git status")
+
     def test_append_local_rule(self) -> None:
         tmpdir = Path(tempfile.mkdtemp())
         local_path = tmpdir / ".codepacex" / "permissions.local.yaml"
@@ -246,6 +260,13 @@ class TestRuleEngine:
         engine.append_local_rule(Rule(tool_name="Bash", pattern="git commit *", effect="allow"))
         assert local_path.exists()
         assert engine.evaluate("Bash", "git commit -m test") == "allow"
+
+    def test_append_local_rule_after_empty_document(self, tmp_path: Path) -> None:
+        local_path = tmp_path / "permissions.local.yaml"
+        local_path.write_text("# reset\n", encoding="utf-8")
+        engine = RuleEngine(local_rules_path=local_path)
+        engine.append_local_rule(Rule(tool_name="Bash", pattern="git status", effect="allow"))
+        assert engine.evaluate("Bash", "git status") == "allow"
 
 # ===========================================================================
 # 第四层：PermissionMode（权限模式）
