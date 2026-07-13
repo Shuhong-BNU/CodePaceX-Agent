@@ -1,6 +1,6 @@
 # Goal 2：真实实验、正式 Benchmark 与证据闭环运行手册
 
-本手册是 Goal 2 的唯一执行顺序。它冻结实验设计和 Run ID，但不伪造结果。当前仓库只完成了实验基础设施、离线测试和 dry-run；截至 2026-07-13，尚未执行任何 Goal 2 付费模型调用、真实 SWE-bench-Live、正式 A/B、2/8 小时长会话或 AgentRouter 实验。
+本手册是 Goal 2 的唯一执行顺序。它冻结实验设计和 Run ID，但不伪造结果。当前仓库已完成实验基础设施、离线测试、dry-run 与正式确定性 Hook 研究；截至 2026-07-13，尚未执行任何 Goal 2 付费模型调用、真实 SWE-bench-Live、正式付费 A/B、2/8 小时长会话或 AgentRouter 实验。
 
 ## 1. 冻结身份与不可变边界
 
@@ -158,7 +158,7 @@ Claims 只接受同一个 frozen commit 的完整 Run；样本数必须精确相
 | Retention | 未运行 | 两组各 10 会话、每会话 12 canaries、至少 3 次真实压缩 |
 | Permission | 未运行 | 四策略各 50 trials、HITL 分布和危险操作拦截率 |
 | Multi-Agent | 未运行 | 两组各 25 trials、并发度/成功率/耗时/Token/成本/冲突 |
-| Hook | 仅离线实现，正式 Artifact 尚未冻结 | 100/100、零模型、零网络、零拒绝副作用 |
+| Hook | 已完成 100/100，正式本地 Artifact 绑定 clean HEAD | 零模型、零网络、零拒绝副作用；最终报告引用 Artifact hash |
 | 长会话 | 未运行 | 1×2h + 3×8h、4 次 planned restart recovery |
 
 简历候选 bullet 必须等 compiled Claims 全部为 `verified` 后，从绝对值、绝对差、相对变化、样本量、commit 和限制自动填充。当前唯一合规表述是：“构建了 fail-closed、预算约束、可恢复且 Artifact 可追溯的 Agent Benchmark 基础设施”；不能声称任何尚未产生的 Token 节省率、SWE 成绩、长会话稳定性或显著性。

@@ -163,7 +163,7 @@ Artifacts are written to `evals/.runs/`, which is a local artifact directory ign
 
 Goal 2 adds a frozen Qwen Pilot, runtime-mapped `ExperimentProfile` variants, fail-closed budget reservation and accounting, MCP/retention/permission/multi-agent/Hook/long-session runners, an adapter for Microsoft's official SWE-bench-Live `python-only` workflow, and automatic Claims generation from measured Artifacts. CI and dry-run never call a model; no paid Pilot, real SWE-bench-Live, formal A/B, or long-session experiment has been run yet. See [`evals/GOAL2_RUNBOOK.md`](evals/GOAL2_RUNBOOK.md) for the execution order, cost risk, and publication boundaries.
 
-The engineering baseline starts from merged PR #13 (`e44f3a1`) and its correctness closure. The Goal 2 branch builds verifiable experiment infrastructure on that stable baseline, but currently contains only local tests, controlled fixtures, deterministic Hook measurements, and dry-runs; no paid Pilot, real SWE-bench, AgentRouter, formal A/B, or long-session experiment has been run.
+The engineering baseline starts from merged PR #13 (`e44f3a1`) and its correctness closure. The Goal 2 branch builds verifiable experiment infrastructure on that stable baseline; it now has local tests, controlled fixtures, a formal 100-case deterministic Hook study, and dry-runs, but no paid Pilot, real SWE-bench, AgentRouter, formal paid A/B, or long-session experiment has been run.
 
 ## 🧰 Requirements
 

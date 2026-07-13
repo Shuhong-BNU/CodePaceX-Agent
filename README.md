@@ -174,7 +174,7 @@ Eval 产物默认写入 `evals/.runs/`，该目录是本地 artifact 并被 Git 
 
 除既有 deterministic Eval 外，Goal 2 已加入冻结 Qwen Pilot、真实 runtime-mapped `ExperimentProfile`、预算 reservation/ledger、MCP/Retention/Permission/Multi-Agent/Hook/长会话研究 runner、Microsoft SWE-bench-Live `python-only` 官方适配，以及从真实 Artifact 自动生成 Claims 的路径。CI 与 dry-run 不访问模型；真实 paid Pilot、SWE-bench-Live、正式 A/B 和长会话仍尚未执行。完整顺序、预算风险和发布边界见 [`evals/GOAL2_RUNBOOK.md`](evals/GOAL2_RUNBOOK.md)。
 
-当前工程基线来自已合并的 PR #13（`e44f3a1`）及其 correctness closure。Goal 2 分支在该稳定基线上构建可验证实验设施，但当前仍只有本地测试、受控 fixture、确定性 Hook 测量和 dry-run；尚未运行真实付费 Pilot、SWE-bench、AgentRouter、正式 A/B 或长会话实验。
+当前工程基线来自已合并的 PR #13（`e44f3a1`）及其 correctness closure。Goal 2 分支在该稳定基线上构建可验证实验设施；当前已有本地测试、受控 fixture、正式 100-case 确定性 Hook 测量和 dry-run，但尚未运行真实付费 Pilot、SWE-bench、AgentRouter、正式付费 A/B 或长会话实验。
 
 ## 🧰 环境要求
 
