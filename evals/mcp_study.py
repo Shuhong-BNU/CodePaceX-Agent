@@ -5,16 +5,19 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
+import tempfile
 from collections import Counter
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codepacex.experiments import ExperimentProfile, ToolLoading
+from codepacex.config import load_config as load_codepacex_config
 from evals.benchmark import (
     RunManifest,
     RunRecorder,
@@ -22,7 +25,13 @@ from evals.benchmark import (
     current_git_commit,
     sanitize_origin,
 )
-from evals.pilot import load_config as load_pilot_config
+from evals.pilot import (
+    _child_environment,
+    _ingest_trace,
+    _provider_payload,
+    _runtime_secrets,
+    load_config as load_pilot_config,
+)
 
 
 class MCPTask(BaseModel):
@@ -71,6 +80,7 @@ class MCPStudyConfig(BaseModel):
     task_manifest: Path
     fixture_server: Path
     repetitions: Literal[5] = 5
+    timeout_seconds: Literal[420] = 420
     arms: list[ToolLoading]
     controlled_corpus_only: Literal[True] = True
 
@@ -195,12 +205,174 @@ def dry_run(
     return recorders
 
 
+def grade_trace(task: MCPTask, trace_text: str) -> tuple[bool, dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for line in trace_text.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    observed_mcp = [
+        str(event.get("tool_name")) for event in events
+        if event.get("type") == "tool_use"
+        and str(event.get("tool_name", "")).startswith("mcp_fixture_tool_")
+    ]
+    results = [event for event in events if event.get("type") == "result"]
+    answer = str(results[-1].get("result", "")) if results else ""
+    required_answers = task.expected_answer.split("|")
+    tools_match = set(observed_mcp) == set(task.expected_tools)
+    answer_match = (
+        answer.strip() == task.expected_answer
+        if task.category == "no_mcp"
+        else all(value in answer for value in required_answers)
+    )
+    passed = len(results) == 1 and tools_match and answer_match
+    return passed, {
+        "expected_tools": task.expected_tools,
+        "observed_mcp_tools": observed_mcp,
+        "answer_match": answer_match,
+        "result_event_count": len(results),
+    }
+
+
+def _write_child_config(
+    *, pilot: Any, study: MCPStudyConfig, root: Path, home: Path,
+) -> None:
+    payload = _provider_payload(pilot)
+    payload["mcp_servers"] = [{
+        "name": "fixture",
+        "command": sys.executable,
+        "args": [str((root / study.fixture_server).resolve())],
+    }]
+    config_dir = home / ".codepacex"
+    config_dir.mkdir(parents=True)
+    config_path = config_dir / "config.yaml"
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=True), encoding="utf-8")
+    loaded = load_codepacex_config(config_path)
+    if len(loaded.mcp_servers) != 1 or loaded.mcp_servers[0].name != "fixture":
+        raise ValueError("generated MCP child configuration failed validation")
+
+
+def _run_arm(
+    *, root: Path, study: MCPStudyConfig, tasks: MCPTaskManifest,
+    profile: ExperimentProfile, recorder: RunRecorder,
+) -> str:
+    pilot = load_pilot_config(root / "evals" / "pilot.qwen.yaml")
+    statuses: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="codepacex-mcp-home-") as home_text:
+        home = Path(home_text)
+        _write_child_config(pilot=pilot, study=study, root=root, home=home)
+        profile_path = home / "experiment-profile.yaml"
+        profile_path.write_text(
+            yaml.safe_dump(profile.canonical_payload(), sort_keys=True),
+            encoding="utf-8",
+        )
+        environment = _child_environment(pilot, str(home))
+        for repetition in range(1, study.repetitions + 1):
+            for task in tasks.tasks:
+                attempt_id = 1
+                recorder.event("trial_started", {
+                    "task_id": task.id, "repetition_id": str(repetition),
+                    "attempt_id": attempt_id,
+                })
+                with tempfile.TemporaryDirectory(
+                    prefix=f"codepacex-{task.id}-"
+                ) as workspace_text:
+                    command = [
+                        sys.executable, "-m", "codepacex", "-p", task.prompt,
+                        "--output-format", "stream-json",
+                        "--experiment-profile", str(profile_path),
+                    ]
+                    try:
+                        process = subprocess.run(
+                            command, cwd=workspace_text, env=environment,
+                            text=True, capture_output=True,
+                            timeout=study.timeout_seconds, check=False,
+                        )
+                        trace_path = Path(workspace_text) / "trace.ndjson"
+                        trace_path.write_text(process.stdout or "", encoding="utf-8")
+                        _ingest_trace(
+                            recorder, trace_path, task.id, str(repetition), attempt_id,
+                        )
+                        passed, grade = grade_trace(task, process.stdout or "")
+                        status = (
+                            "success" if process.returncode == 0 and passed
+                            else "task_failure" if process.returncode == 0
+                            else "infrastructure_error"
+                        )
+                    except subprocess.TimeoutExpired:
+                        status, grade = "timeout", {
+                            "expected_tools": task.expected_tools,
+                            "observed_mcp_tools": [], "answer_match": False,
+                            "result_event_count": 0,
+                        }
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        status, grade = "infrastructure_error", {
+                            "expected_tools": task.expected_tools,
+                            "observed_mcp_tools": [], "answer_match": False,
+                            "result_event_count": 0,
+                        }
+                statuses.append(status)
+                recorder.event("trial_completed", {
+                    "task_id": task.id, "repetition_id": str(repetition),
+                    "attempt_id": attempt_id, "status": status,
+                    "numerator": int(status == "success"), "denominator": 1,
+                    "grade": grade,
+                })
+    if all(status == "success" for status in statuses):
+        return "success"
+    for failure in ("infrastructure_error", "timeout", "task_failure"):
+        if failure in statuses:
+            return failure
+    return "infrastructure_error"
+
+
+def execute(
+    *, root: Path, study_path: Path, runs_dir: Path, run_prefix: str,
+    pricing_snapshot: Path, confirmed: bool,
+) -> list[RunRecorder]:
+    study, tasks = load_study(study_path)
+    pilot = load_pilot_config(root / "evals" / "pilot.qwen.yaml")
+    if not confirmed or not os.environ.get(pilot.api_key_env):
+        raise ValueError("execute requires --confirm-paid-run and the configured API key")
+    if _git_dirty(root) is not False:
+        raise ValueError("paid MCP study requires a clean frozen Git worktree")
+    pricing_hash = hashlib.sha256(pricing_snapshot.read_bytes()).hexdigest()
+    recorders: list[RunRecorder] = []
+    for profile in profiles(study):
+        manifest = build_arm_manifest(
+            root=root, study_path=study_path, study=study,
+            tasks=tasks, profile=profile,
+        )
+        manifest.pricing_snapshot_hash = pricing_hash
+        recorder = RunRecorder(
+            runs_dir, manifest,
+            run_id=f"{run_prefix}-{profile.tool_loading.value}",
+            repo_root=root, secrets=_runtime_secrets(pilot),
+        )
+        status = _run_arm(
+            root=root, study=study, tasks=tasks,
+            profile=profile, recorder=recorder,
+        )
+        recorder.finalize({
+            "status": status, "execution_mode": "live",
+            "arm": profile.tool_loading.value,
+            "controlled_corpus_only": True,
+        })
+        recorders.append(recorder)
+    return recorders
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Controlled Goal 2 MCP study")
-    parser.add_argument("command", choices=["validate", "dry-run"])
+    parser.add_argument("command", choices=["validate", "dry-run", "execute"])
     parser.add_argument("--study", type=Path, default=Path("evals/goal2/mcp_study.yaml"))
     parser.add_argument("--runs-dir", type=Path, default=Path("evals/.runs/goal2-mcp"))
     parser.add_argument("--run-prefix", default="mcp-dry")
+    parser.add_argument("--pricing-snapshot", type=Path)
+    parser.add_argument("--confirm-paid-run", action="store_true")
     args = parser.parse_args(argv)
     try:
         root = Path.cwd()
@@ -217,6 +389,15 @@ def main(argv: list[str] | None = None) -> int:
             payload["run_paths"] = [str(recorder.path) for recorder in dry_run(
                 root=root, study_path=args.study, runs_dir=args.runs_dir,
                 run_prefix=args.run_prefix,
+            )]
+        elif args.command == "execute":
+            if args.pricing_snapshot is None:
+                raise ValueError("execute requires --pricing-snapshot")
+            payload["run_paths"] = [str(recorder.path) for recorder in execute(
+                root=root, study_path=args.study, runs_dir=args.runs_dir,
+                run_prefix=args.run_prefix,
+                pricing_snapshot=args.pricing_snapshot,
+                confirmed=args.confirm_paid_run,
             )]
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         return 0

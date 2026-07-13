@@ -3,6 +3,7 @@ study_id: goal2-mcp-tool-loading
 task_manifest: evals/goal2/mcp_tasks.yaml
 fixture_server: evals/fixtures/mcp_protocol_server.py
 repetitions: 5
+timeout_seconds: 420
 arms:
   - eager
   - deferred

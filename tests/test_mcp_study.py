@@ -8,6 +8,8 @@ from codepacex.mcp.client import MCPClient
 
 from evals.mcp_study import (
     dry_run,
+    execute,
+    grade_trace,
     load_study,
     profiles,
     study_asset_hash,
@@ -72,3 +74,34 @@ def test_mcp_dry_run_creates_two_unscorable_v2_arm_manifests(tmp_path: Path) -> 
         assert manifest["schema_version"] == 2
         assert manifest["benchmark_asset_hash"]
         assert result["status"] == "dry_run" and result["scorable"] is False
+
+
+def test_trace_grader_requires_exact_mcp_tool_set_and_answer() -> None:
+    _, manifest = load_study(STUDY)
+    task = next(task for task in manifest.tasks if task.id == "mcp_one_01")
+    valid = "\n".join([
+        '{"type":"tool_use","tool_name":"ToolSearch"}',
+        '{"type":"tool_use","tool_name":"mcp_fixture_tool_01"}',
+        '{"type":"result","result":"tool_01:one-01"}',
+    ])
+    passed, grade = grade_trace(task, valid)
+    assert passed and grade["answer_match"] is True
+
+    unexpected = valid.replace(
+        '{"type":"result"',
+        '{"type":"tool_use","tool_name":"mcp_fixture_tool_02"}\n{"type":"result"',
+    )
+    assert grade_trace(task, unexpected)[0] is False
+
+
+def test_paid_execute_is_blocked_without_confirmation_or_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("BAILIAN_API_KEY", raising=False)
+    pricing = tmp_path / "pricing.json"
+    pricing.write_text("{}")
+    with pytest.raises(ValueError, match="confirm-paid-run"):
+        execute(
+            root=Path.cwd(), study_path=STUDY, runs_dir=tmp_path / "runs",
+            run_prefix="blocked", pricing_snapshot=pricing, confirmed=False,
+        )
