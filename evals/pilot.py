@@ -440,7 +440,7 @@ def _run_trials(
                 ]
                 started = time.monotonic()
                 reservation = gate.reserve(
-                    f"pilot/{task_id}/{repetition}/{attempt_id}",
+                    f"pilot/{recorder.run_id}/{task_id}/{repetition}/{attempt_id}",
                     maximum_requests=config.max_iterations,
                     maximum_input_tokens_per_request=128_000,
                     maximum_output_tokens_per_request=(

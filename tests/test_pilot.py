@@ -16,11 +16,15 @@ from codepacex.experiments import combined_runtime_hash
 
 
 class _TestGate:
+    def __init__(self):
+        self.last_trial_id: str | None = None
+
     @contextmanager
     def locked(self):
         yield
 
-    def reserve(self, *args, **kwargs):
+    def reserve(self, trial_id, *args, **kwargs):
+        self.last_trial_id = trial_id
         return SimpleNamespace(reservation_id="test-reservation")
 
     def settle(self, *args, **kwargs):
@@ -196,6 +200,9 @@ def test_live_execute_is_mockable_and_child_env_excludes_other_provider_keys(tmp
     assert "proxy-password" not in all_output
     result = json.loads((recorder.path / "result.json").read_text())
     assert result["model_called"] is result["network_called"] is True
+    assert TEST_GATE.last_trial_id == (
+        f"pilot/{recorder.run_id}/codepacex_001_config_bugfix/1/1"
+    )
     assert result["attempted_trial_count"] == 1
     assert result["completed_trial_count"] == 1
     assert result["unscorable_trial_count"] == 0
