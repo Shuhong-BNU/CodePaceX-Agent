@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
+import platform
+import subprocess
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -26,6 +29,7 @@ from codepacex.permissions import (
 )
 from codepacex.tools import ToolRegistry
 from codepacex.tools.base import StreamEnd, TextDelta, Tool, ToolCallComplete, ToolResult
+from evals.benchmark import current_git_commit
 
 
 PathName = Literal["sequential", "parallel", "streaming", "no_checker"]
@@ -46,9 +50,21 @@ class CountingTool(Tool):
         self.is_concurrency_safe = concurrent
         self.category = category
         self.count = 0
+        self.probe_path: Path | None = None
+        self.subprocess_count = 0
+        self.network_attempt_count = 0
 
     async def execute(self, params: EmptyParams) -> ToolResult:
         self.count += 1
+        if self.probe_path is not None:
+            with self.probe_path.open("a", encoding="utf-8") as handle:
+                handle.write(f"{self.name}:{self.count}\n")
+            completed = subprocess.run(
+                ["printf", "target-side-effect-probe"],
+                text=True, capture_output=True, check=False,
+            )
+            if completed.returncode == 0:
+                self.subprocess_count += 1
         return ToolResult("ok")
 
 
@@ -83,6 +99,9 @@ class CaseResult:
     observed_paths: list[str]
     hook_success_count: int
     target_execution_count: int
+    target_sentinel_exists: bool
+    target_subprocess_count: int
+    target_network_attempt_count: int
     passed: bool
 
 
@@ -134,6 +153,8 @@ async def run_case(path: PathName, index: int) -> CaseResult:
         expected_path = "sequential"
 
     with tempfile.TemporaryDirectory(prefix="codepacex-hook-study-") as work_dir:
+        probe_path = Path(work_dir) / "TARGET_EXECUTED"
+        target.probe_path = probe_path
         checker = None if path == "no_checker" else _checker(work_dir)
         agent = Agent(
             ScriptedClient(calls), registry, "anthropic", work_dir=work_dir,
@@ -142,6 +163,7 @@ async def run_case(path: PathName, index: int) -> CaseResult:
         conversation = ConversationManager()
         conversation.add_user_message("run deterministic hook case")
         events = [item async for item in agent.run(conversation)]
+        sentinel_exists = probe_path.exists()
 
     decisions = [
         item for item in events
@@ -159,6 +181,9 @@ async def run_case(path: PathName, index: int) -> CaseResult:
         and all(item.execution_path == expected_path for item in decisions)
         and len(hook_events) == expected_target_decisions
         and target.count == expected_executions
+        and target.subprocess_count == expected_executions
+        and target.network_attempt_count == 0
+        and sentinel_exists is (expected_executions > 0)
     )
     return CaseResult(
         case_id=f"{path}-{index:02d}", path=path,
@@ -167,6 +192,9 @@ async def run_case(path: PathName, index: int) -> CaseResult:
         observed_paths=[item.execution_path for item in decisions],
         hook_success_count=len(hook_events),
         target_execution_count=target.count,
+        target_sentinel_exists=sentinel_exists,
+        target_subprocess_count=target.subprocess_count,
+        target_network_attempt_count=target.network_attempt_count,
         passed=passed,
     )
 
@@ -177,12 +205,27 @@ async def run_study() -> dict[str, Any]:
         for path in PATHS for index in range(1, CASES_PER_PATH + 1)
     ]
     passed = sum(case.passed for case in cases)
+    root = Path.cwd()
+    git_status = subprocess.run(
+        ["git", "-C", str(root), "status", "--porcelain"],
+        text=True, capture_output=True, check=False,
+    )
     return {
         "schema_version": 2,
         "study_id": "goal2-hook-consistency",
         "model_called": False,
         "network_called": False,
-        "side_effect_policy": "command hooks use printf only; tools are in-memory",
+        "git_commit": current_git_commit(root),
+        "dirty_worktree": git_status.returncode != 0 or bool(git_status.stdout),
+        "benchmark_asset_hash": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "environment": {
+            "python": platform.python_version(), "system": platform.system(),
+            "machine": platform.machine(),
+        },
+        "side_effect_policy": (
+            "command hooks and target subprocess probes use printf only; "
+            "denied targets must create no sentinel and no target subprocess"
+        ),
         "case_count": len(cases),
         "passed_case_count": passed,
         "numerator": passed,
