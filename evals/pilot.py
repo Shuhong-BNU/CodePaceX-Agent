@@ -20,6 +20,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codepacex.experiments import ExperimentProfile
 from evals.benchmark import RunManifest, RunRecorder, canonical_hash, current_git_commit, sanitize_origin
+from evals.costing import load_pricing
+from evals.paid_gate import PaidRunGate
 
 FROZEN_PROVIDER = "bailian-qwen37-max"
 FROZEN_PROTOCOL = "openai-compat"
@@ -275,18 +277,28 @@ def _suite_status(report_dir: Path, task_id: str, returncode: int) -> str:
 def _ingest_trace(
     recorder: RunRecorder, trace_path: Path, task_id: str, repetition_id: str,
     attempt_id: int,
-) -> None:
+) -> tuple[int, int, int]:
     """Derive only events actually emitted by the existing stream-json runner."""
     try:
         lines = trace_path.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return
+        return 0, 0, 0
+    requests = 0
+    input_tokens = 0
+    output_tokens = 0
     for line in lines:
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
         if event.get("type") == "usage":
+            requests += 1
+            input_tokens += int(
+                event.get("request_input_tokens") or event.get("input_tokens") or 0
+            )
+            output_tokens += int(
+                event.get("request_output_tokens") or event.get("output_tokens") or 0
+            )
             recorder.capture_event({
                 "type": "usage",
                 "request_index": event.get("request_index"),
@@ -343,9 +355,12 @@ def _ingest_trace(
                 "task_id": task_id, "repetition_id": repetition_id,
                 "attempt_id": attempt_id,
             })
+    return requests, input_tokens, output_tokens
 
 
-def _run_trials(config: PilotConfig, root: Path, recorder: RunRecorder) -> list[str]:
+def _run_trials(
+    config: PilotConfig, root: Path, recorder: RunRecorder, gate: PaidRunGate,
+) -> list[str]:
     """Run only incomplete trials; callers must have performed paid-run checks."""
     statuses: list[str] = []
     stdout_chunks: list[str | bytes] = []
@@ -385,17 +400,34 @@ def _run_trials(config: PilotConfig, root: Path, recorder: RunRecorder) -> list[
                     "--experiment-profile", str(profile_path),
                 ]
                 started = time.monotonic()
+                reservation = gate.reserve(
+                    f"pilot/{task_id}/{repetition}/{attempt_id}",
+                    maximum_requests=config.max_iterations,
+                    maximum_input_tokens_per_request=128_000,
+                    maximum_output_tokens_per_request=(
+                        config.model_parameters.max_output_tokens or 8192
+                    ),
+                )
                 recorder.event("trial_started", {
                     "task_id": task_id, "repetition_id": str(repetition),
                     "attempt_id": attempt_id,
+                    "budget_reservation_id": reservation.reservation_id,
                 })
+                requests = 0
+                input_tokens = 0
+                output_tokens = 0
                 try:
                     process = subprocess.run(command, cwd=root, env=env, text=True, capture_output=True, timeout=config.timeout_seconds)
                     status = _suite_status(report_dir, task_id, process.returncode)
                     stdout_chunks.append(process.stdout or "")
                     stderr_chunks.append(process.stderr or "")
                     for trace_path in report_dir.glob("*/**/trace.ndjson"):
-                        _ingest_trace(recorder, trace_path, task_id, str(repetition), attempt_id)
+                        usage = _ingest_trace(
+                            recorder, trace_path, task_id, str(repetition), attempt_id,
+                        )
+                        requests += usage[0]
+                        input_tokens += usage[1]
+                        output_tokens += usage[2]
                 except subprocess.TimeoutExpired as exc:
                     status = "timeout"
                     stdout_chunks.append(exc.stdout or "")
@@ -406,6 +438,20 @@ def _run_trials(config: PilotConfig, root: Path, recorder: RunRecorder) -> list[
                 except (ValueError, json.JSONDecodeError) as exc:
                     status = "infrastructure_error"
                     stderr_chunks.append(f"trace ingestion failed: {exc}")
+                if requests == 0:
+                    ambiguous_status = status if status == "timeout" else "infrastructure_error"
+                    recorder.event("trial_completed", {
+                        "task_id": task_id, "repetition_id": str(repetition),
+                        "attempt_id": attempt_id, "status": ambiguous_status,
+                        "duration_seconds": time.monotonic() - started,
+                        "budget_reconciliation_required": True,
+                    })
+                    statuses.append(ambiguous_status)
+                    break
+                settlement = gate.settle(
+                    reservation, requests=requests,
+                    input_tokens=input_tokens, output_tokens=output_tokens,
+                )
                 statuses.append(status)
                 recorder.event("trial_completed", {
                     "task_id": task_id,
@@ -413,7 +459,10 @@ def _run_trials(config: PilotConfig, root: Path, recorder: RunRecorder) -> list[
                     "attempt_id": attempt_id,
                     "status": status,
                     "duration_seconds": time.monotonic() - started,
+                    "actual_cny": str(settlement.actual_cny),
                 })
+            if statuses and statuses[-1] in {"infrastructure_error", "timeout"}:
+                break
     if stdout_chunks:
         recorder.write_artifact("stdout.txt", "\n".join(_as_text(item) for item in stdout_chunks))
     if stderr_chunks:
@@ -426,9 +475,13 @@ def _as_text(value: str | bytes) -> str:
 
 
 def execute(
-    config: PilotConfig, root: Path, runs_dir: Path, *, confirmed: bool, run_id: str | None = None,
+    config: PilotConfig, root: Path, runs_dir: Path, *, confirmed: bool,
+    gate: PaidRunGate | None = None, run_id: str | None = None,
 ) -> RunRecorder:
-    if not confirmed or not config.task_ids or not os.environ.get(config.api_key_env):
+    if (
+        not confirmed or not config.task_ids or not os.environ.get(config.api_key_env)
+        or gate is None
+    ):
         return _configuration_error(config, root, runs_dir, run_id)
     recorder = RunRecorder(
         runs_dir, build_manifest(config, root, run_id=run_id or ""), run_id=run_id,
@@ -437,7 +490,8 @@ def execute(
     # The only live backend deliberately reuses the deterministic 6-task harness.
     # Tests mock this subprocess; this module never calls it during dry-run or CI.
     try:
-        statuses = _run_trials(config, root, recorder)
+        with gate.locked():
+            statuses = _run_trials(config, root, recorder, gate)
         recorder.finalize({"status": _aggregate_status(statuses), "execution_mode": "live"})
     except asyncio.CancelledError:
         recorder.finalize({"status": "cancelled", "execution_mode": "live"})
@@ -452,15 +506,22 @@ def execute(
 
 def resume(
     config: PilotConfig, root: Path, runs_dir: Path, run_id: str, *, confirmed: bool,
+    gate: PaidRunGate | None = None,
 ) -> RunRecorder:
-    if not confirmed or not config.task_ids or not os.environ.get(config.api_key_env):
-        raise ValueError("resume requires --confirm-paid-run, tasks, and the configured API key")
+    if (
+        not confirmed or not config.task_ids or not os.environ.get(config.api_key_env)
+        or gate is None
+    ):
+        raise ValueError(
+            "resume requires paid confirmation, tasks, API key, and budget authorization"
+        )
     recorder = RunRecorder.resume(
         runs_dir, run_id, build_manifest(config, root, run_id=run_id),
         secrets=_runtime_secrets(config),
     )
     try:
-        statuses = _run_trials(config, root, recorder)
+        with gate.locked():
+            statuses = _run_trials(config, root, recorder, gate)
         status = _aggregate_status(statuses) if statuses else (
             recorder.previous_status or "infrastructure_error"
         )
@@ -483,6 +544,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--runs-dir", type=Path, default=Path("evals/.runs/pilot"))
     parser.add_argument("--run-id")
     parser.add_argument("--confirm-paid-run", action="store_true")
+    parser.add_argument("--pricing-snapshot", type=Path)
+    parser.add_argument("--budget-authorization", type=Path)
+    parser.add_argument("--budget-ledger", type=Path)
     args = parser.parse_args(argv)
     try:
         config = load_config(args.config)
@@ -492,17 +556,31 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "dry-run":
             print(dry_run(config, Path.cwd(), args.runs_dir, args.run_id).path)
             return 0
+        gate = None
+        if args.command in {"execute", "resume"}:
+            required = [
+                args.pricing_snapshot, args.budget_authorization, args.budget_ledger,
+            ]
+            if any(item is None for item in required):
+                raise ValueError(
+                    "live Pilot requires pricing, budget authorization, and ledger paths"
+                )
+            gate = PaidRunGate(
+                root=Path.cwd(), authorization_path=args.budget_authorization,
+                ledger_path=args.budget_ledger,
+                pricing=load_pricing(args.pricing_snapshot),
+            )
         if args.command == "resume":
             if not args.run_id:
                 raise ValueError("resume requires --run-id")
             recorder = resume(
                 config, Path.cwd(), args.runs_dir, args.run_id,
-                confirmed=args.confirm_paid_run,
+                confirmed=args.confirm_paid_run, gate=gate,
             )
         else:
             recorder = execute(
                 config, Path.cwd(), args.runs_dir, confirmed=args.confirm_paid_run,
-                run_id=args.run_id,
+                gate=gate, run_id=args.run_id,
             )
         print(recorder.path)
         result = json.loads((recorder.path / "result.json").read_text(encoding="utf-8"))

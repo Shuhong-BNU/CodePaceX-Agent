@@ -26,6 +26,7 @@ from evals.benchmark import (
     sanitize_origin,
 )
 from evals.costing import load_pricing, pricing_snapshot_hash
+from evals.paid_gate import PaidRunGate
 from evals.pilot import (
     _child_environment,
     _ingest_trace,
@@ -258,7 +259,7 @@ def _write_child_config(
 
 def _run_arm(
     *, root: Path, study: MCPStudyConfig, tasks: MCPTaskManifest,
-    profile: ExperimentProfile, recorder: RunRecorder,
+    profile: ExperimentProfile, recorder: RunRecorder, gate: PaidRunGate,
 ) -> str:
     pilot = load_pilot_config(root / "evals" / "pilot.qwen.yaml")
     statuses: list[str] = []
@@ -274,9 +275,16 @@ def _run_arm(
         for repetition in range(1, study.repetitions + 1):
             for task in tasks.tasks:
                 attempt_id = 1
+                reservation = gate.reserve(
+                    f"mcp/{profile.tool_loading.value}/{task.id}/{repetition}",
+                    maximum_requests=50,
+                    maximum_input_tokens_per_request=128_000,
+                    maximum_output_tokens_per_request=8192,
+                )
                 recorder.event("trial_started", {
                     "task_id": task.id, "repetition_id": str(repetition),
                     "attempt_id": attempt_id,
+                    "budget_reservation_id": reservation.reservation_id,
                 })
                 with tempfile.TemporaryDirectory(
                     prefix=f"codepacex-{task.id}-"
@@ -294,9 +302,10 @@ def _run_arm(
                         )
                         trace_path = Path(workspace_text) / "trace.ndjson"
                         trace_path.write_text(process.stdout or "", encoding="utf-8")
-                        _ingest_trace(
+                        usage = _ingest_trace(
                             recorder, trace_path, task.id, str(repetition), attempt_id,
                         )
+                        requests, input_tokens, output_tokens = usage
                         passed, grade = grade_trace(task, process.stdout or "")
                         status = (
                             "success" if process.returncode == 0 and passed
@@ -309,18 +318,42 @@ def _run_arm(
                             "observed_mcp_tools": [], "answer_match": False,
                             "result_event_count": 0,
                         }
+                        recorder.event("trial_completed", {
+                            "task_id": task.id, "repetition_id": str(repetition),
+                            "attempt_id": attempt_id, "status": status,
+                            "budget_reconciliation_required": True, "grade": grade,
+                        })
+                        return status
                     except (OSError, ValueError, json.JSONDecodeError):
                         status, grade = "infrastructure_error", {
                             "expected_tools": task.expected_tools,
                             "observed_mcp_tools": [], "answer_match": False,
                             "result_event_count": 0,
                         }
+                        recorder.event("trial_completed", {
+                            "task_id": task.id, "repetition_id": str(repetition),
+                            "attempt_id": attempt_id, "status": status,
+                            "budget_reconciliation_required": True, "grade": grade,
+                        })
+                        return status
+                if requests == 0:
+                    recorder.event("trial_completed", {
+                        "task_id": task.id, "repetition_id": str(repetition),
+                        "attempt_id": attempt_id, "status": "infrastructure_error",
+                        "budget_reconciliation_required": True, "grade": grade,
+                    })
+                    return "infrastructure_error"
+                settlement = gate.settle(
+                    reservation, requests=requests,
+                    input_tokens=input_tokens, output_tokens=output_tokens,
+                )
                 statuses.append(status)
                 recorder.event("trial_completed", {
                     "task_id": task.id, "repetition_id": str(repetition),
                     "attempt_id": attempt_id, "status": status,
                     "numerator": int(status == "success"), "denominator": 1,
                     "grade": grade,
+                    "actual_cny": str(settlement.actual_cny),
                 })
     if all(status == "success" for status in statuses):
         return "success"
@@ -333,36 +366,46 @@ def _run_arm(
 def execute(
     *, root: Path, study_path: Path, runs_dir: Path, run_prefix: str,
     pricing_snapshot: Path, confirmed: bool,
+    budget_authorization: Path | None = None,
+    budget_ledger: Path | None = None,
 ) -> list[RunRecorder]:
     study, tasks = load_study(study_path)
     pilot = load_pilot_config(root / "evals" / "pilot.qwen.yaml")
     if not confirmed or not os.environ.get(pilot.api_key_env):
         raise ValueError("execute requires --confirm-paid-run and the configured API key")
-    if _git_dirty(root) is not False:
-        raise ValueError("paid MCP study requires a clean frozen Git worktree")
-    pricing_hash = pricing_snapshot_hash(load_pricing(pricing_snapshot))
+    if budget_authorization is None or budget_ledger is None:
+        raise ValueError("execute requires budget authorization and ledger paths")
+    pricing = load_pricing(pricing_snapshot)
+    pricing_hash = pricing_snapshot_hash(pricing)
+    gate = PaidRunGate(
+        root=root, authorization_path=budget_authorization,
+        ledger_path=budget_ledger, pricing=pricing,
+    )
     recorders: list[RunRecorder] = []
-    for profile in profiles(study):
-        manifest = build_arm_manifest(
-            root=root, study_path=study_path, study=study,
-            tasks=tasks, profile=profile,
-        )
-        manifest.pricing_snapshot_hash = pricing_hash
-        recorder = RunRecorder(
-            runs_dir, manifest,
-            run_id=f"{run_prefix}-{profile.tool_loading.value}",
-            repo_root=root, secrets=_runtime_secrets(pilot),
-        )
-        status = _run_arm(
-            root=root, study=study, tasks=tasks,
-            profile=profile, recorder=recorder,
-        )
-        recorder.finalize({
-            "status": status, "execution_mode": "live",
-            "arm": profile.tool_loading.value,
-            "controlled_corpus_only": True,
-        })
-        recorders.append(recorder)
+    with gate.locked():
+        for profile in profiles(study):
+            manifest = build_arm_manifest(
+                root=root, study_path=study_path, study=study,
+                tasks=tasks, profile=profile,
+            )
+            manifest.pricing_snapshot_hash = pricing_hash
+            recorder = RunRecorder(
+                runs_dir, manifest,
+                run_id=f"{run_prefix}-{profile.tool_loading.value}",
+                repo_root=root, secrets=_runtime_secrets(pilot),
+            )
+            status = _run_arm(
+                root=root, study=study, tasks=tasks,
+                profile=profile, recorder=recorder, gate=gate,
+            )
+            recorder.finalize({
+                "status": status, "execution_mode": "live",
+                "arm": profile.tool_loading.value,
+                "controlled_corpus_only": True,
+            })
+            recorders.append(recorder)
+            if status in {"timeout", "infrastructure_error"}:
+                break
     return recorders
 
 
@@ -374,6 +417,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-prefix", default="mcp-dry")
     parser.add_argument("--pricing-snapshot", type=Path)
     parser.add_argument("--confirm-paid-run", action="store_true")
+    parser.add_argument("--budget-authorization", type=Path)
+    parser.add_argument("--budget-ledger", type=Path)
     args = parser.parse_args(argv)
     try:
         root = Path.cwd()
@@ -399,6 +444,8 @@ def main(argv: list[str] | None = None) -> int:
                 run_prefix=args.run_prefix,
                 pricing_snapshot=args.pricing_snapshot,
                 confirmed=args.confirm_paid_run,
+                budget_authorization=args.budget_authorization,
+                budget_ledger=args.budget_ledger,
             )]
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         return 0
