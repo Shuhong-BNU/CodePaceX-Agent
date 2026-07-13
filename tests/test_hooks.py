@@ -286,13 +286,13 @@ class TestHttpExecutor:
 
 class TestAgentExecutor:
     @pytest.mark.asyncio
-    async def test_stub(self):
+    async def test_stub_fails_closed(self):
         from codepacex.hooks.executors import execute_agent
 
         action = Action(type="agent", prompt="Check $FILE_PATH")
         ctx = HookContext(file_path="test.py")
         result = await execute_agent(action, ctx)
-        assert result.success is True
+        assert result.success is False
         assert "not yet implemented" in result.output
 
 class TestExecuteAction:
@@ -353,6 +353,17 @@ class TestLoadHooks:
         with pytest.raises(HookConfigError, match="invalid action type"):
             load_hooks([{"event": "startup", "action": {"type": "bad"}}])
 
+    def test_unimplemented_agent_action_is_rejected(self):
+        with pytest.raises(HookConfigError, match="invalid action type"):
+            load_hooks(
+                [
+                    {
+                        "event": "startup",
+                        "action": {"type": "agent", "prompt": "inspect"},
+                    }
+                ]
+            )
+
     def test_reject_on_non_pre_tool_use(self):
         with pytest.raises(HookConfigError, match="reject.*pre_tool_use"):
             load_hooks([{
@@ -378,9 +389,6 @@ class TestLoadHooks:
 
         with pytest.raises(HookConfigError, match="requires.*message"):
             load_hooks([{"event": "startup", "action": {"type": "prompt"}}])
-
-        with pytest.raises(HookConfigError, match="requires.*prompt"):
-            load_hooks([{"event": "startup", "action": {"type": "agent"}}])
 
 # ---------------------------------------------------------------------------
 # HookEngine

@@ -163,6 +163,8 @@ Artifacts are written to `evals/.runs/`, which is a local artifact directory ign
 
 `evals/pilot.py` additionally provides a reproducible Benchmark Pilot dry-run, versioned Run manifests, provider-aware event capture, and Claims traceability for a frozen Qwen configuration. CI and dry-run never call a model; no paid Pilot, real SWE-bench-Live, token-reduction, or long-session experiment has been run in this work. See the Eval documentation for commands and limits.
 
+The current engineering baseline starts from merged PR #13 (`e44f3a1`). The subsequent correctness closure fixes exact Plan authorization and deny precedence, removes the Permission Git integration test's cwd dependency, rejects the unimplemented Agent Hook action, and closes automatic memory's validated persistence loop. This baseline contains only local tests, fixtures, synthetic measurements, and Pilot dry-runs; no paid Pilot, real SWE-bench, AgentRouter, formal A/B, or long-session experiment has been run.
+
 ## 🧰 Requirements
 
 - macOS or Linux
@@ -394,7 +396,7 @@ Review public API changes, compatibility risks, and missing tests.
 - Resume attachments retain a limited snapshot of recently read files and enabled skills.
 - User-level and project-level memory live under `~/.codepacex/memory/` and `.codepacex/memory/`.
 
-Context summaries are lossy; full session logs remain available for later inspection. Reliable structured persistence for automatic memory extraction is still in progress; see `CODE_CHANGE_PROPOSALS.md`.
+Context summaries are lossy; full session logs remain available for later inspection. Automatic memory extraction requires constrained JSON, validates it structurally, atomically writes the memory in the user or project scope, and rebuilds the index. Invalid output or a write failure does not advance the extraction cursor, while a repeated name updates the existing memory instead of duplicating the index entry.
 
 ## 🔐 Permissions And Safety Boundaries
 
@@ -407,7 +409,9 @@ Permission checks combine dangerous command detection, path boundaries, permissi
 | `plan` | allow | ask | ask |
 | `bypassPermissions` | allow | allow | allow |
 
-Plan Mode additionally allows plan-file writes and a small set of planning tools. Safe read-only commands may be allowed automatically. Dangerous Bash commands are denied directly when they hit the blacklist. File paths outside the project root or system temporary directories trigger confirmation outside `bypassPermissions`. User, project, local permission rules, and session allow-always records can further override mode fallbacks.
+Plan Mode additionally allows the current session's unique plan file and a small set of planning tools. The plan must resolve to the configured exact target under the current project's `.codepacex/plans/`; same-name files, look-alike directories, and path aliases are not allowed. Dangerous deletion and device operations form a non-overridable safety layer. Path decisions, explicit rules, and hooks aggregate as `deny > ask > allow`, so an explicit deny also overrides Plan allow. `bypassPermissions` only skips ordinary mode fallbacks and cannot override mandatory safety decisions.
+
+Hook configuration currently supports only `command`, `prompt`, and `http` actions. The `agent` action is not implemented, so configuration loading rejects it; a defensive direct invocation also fails instead of reporting false success.
 
 Safety boundaries:
 
@@ -424,7 +428,7 @@ uv run pytest -q
 uv run python -m compileall -q codepacex tests
 ```
 
-The current local environment uses uv 0.11.23 and CPython 3.12.13. On 2026-06-21, the full test suite collected and ran 560 tests in an initialized Git repository; all 560 passed in 5.68 seconds.
+PR #13 is merged into `origin/main` at `e44f3a1`. Test claims are tied to reproducible command output for the corresponding commit; skipped system-capability smoke checks must be reported separately and never counted as passes.
 
 ## 📊 Performance Notes
 
@@ -446,12 +450,9 @@ Known limits:
 
 Roadmap:
 
-- Complete structured output and atomic persistence for automatic memory extraction.
-- Adjust the permission pipeline toward explicit deny-first semantics.
-- Tighten exact path validation for plan files.
-- Align runtime assembly across TUI, remote, and `-p` modes.
-- Implement or remove the unfinished Agent Hook executor.
-- Add explicit diff, approval, and integration flow for worktrees.
+- TUI, Remote, and `-p` currently share provider/client setup, the core ToolRegistry, permission checks, project instructions, `ToolSearch`, `InstallSkill`, the Agent loop, and context telemetry. TUI/Remote additionally own session, memory, Skill loader/`LoadSkill`, and MCP lifecycles; TUI also assembles file history, interactive questions, Plan exit, and worktree/team UI. TUI and `-p` both assemble sub-agents, worktree-backed delegation, and Team tools, while Remote currently does not; `-p` retains non-interactive output and deny-style approval. A later phase will introduce explicit capability profiles and a shared RuntimeBuilder, with entrypoint tests preserving intentional differences. Because this changes both synchronous and asynchronous creation/cleanup lifecycles, this closure does not attempt a partial pseudo-unification.
+- Worktree inspect → approve → integrate is a future feature: report branch, commit, diffstat, and conflict preflight first, then require an explicit choice to integrate or preserve; never overwrite a dirty main workspace automatically.
+- Pilot feature-flag-to-runtime mapping is deferred to a dedicated experiment Goal. The preferred first flag is `deferred_tools`; it must propagate through child configuration, ToolRegistry behavior, effective-runtime evidence, and Claims, with tests proving a real initial-schema/tool-hash difference. Unknown or unmapped flags remain rejected.
 - Establish real benchmarks for MCP schemas, long sessions, and multi-agent workflows.
 
 See [`CODE_CHANGE_PROPOSALS.md`](CODE_CHANGE_PROPOSALS.md) for detailed change proposals.

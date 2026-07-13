@@ -4,11 +4,16 @@
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
+import secrets
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from codepacex.conversation import ConversationManager, Message
 
@@ -32,6 +37,29 @@ MAX_ENTRYPOINT_BYTES = 25_000
 
 # frontmatter 正则
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+_FILENAME_PART_RE = re.compile(r"[^\w.-]+", re.UNICODE)
+
+
+class _ExtractedMemory(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(min_length=1, max_length=200)
+    type: Literal["user", "feedback", "project", "reference"]
+    content: str = Field(min_length=1, max_length=50_000)
+
+    @field_validator("name", "description")
+    @classmethod
+    def require_single_line_metadata(cls, value: str) -> str:
+        if "\n" in value or "\r" in value:
+            raise ValueError("memory metadata must be a single line")
+        return value
+
+
+class _ExtractionEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    memories: list[_ExtractedMemory] = Field(max_length=20)
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +209,75 @@ def _format_size(byte_count: int) -> str:
         return f"{byte_count / (1024 * 1024):.1f}MB"
 
 
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Atomically replace one UTF-8 text file without leaving staging files."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staging = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    try:
+        staging.write_text(content, encoding="utf-8")
+        staging.replace(path)
+    finally:
+        staging.unlink(missing_ok=True)
+
+
+def _parse_extraction(raw: str) -> _ExtractionEnvelope:
+    decoded = json.loads(raw.strip())
+    return _ExtractionEnvelope.model_validate(decoded)
+
+
+def _memory_filename(memory: _ExtractedMemory) -> str:
+    slug = _FILENAME_PART_RE.sub("-", memory.name.casefold()).strip("._-")[:64]
+    if not slug:
+        slug = "memory"
+    return f"{memory.type}-{slug}.md"
+
+
+def _render_memory(memory: _ExtractedMemory) -> str:
+    return (
+        "---\n"
+        f"name: {memory.name}\n"
+        f"description: {memory.description}\n"
+        f"type: {memory.type}\n"
+        "---\n\n"
+        f"{memory.content.rstrip()}\n"
+    )
+
+
+def _find_memory_target(directory: Path, memory: _ExtractedMemory) -> Path:
+    for existing in _load_dir(str(directory)):
+        if existing.name.casefold() == memory.name.casefold():
+            return Path(existing.path)
+
+    target = directory / _memory_filename(memory)
+    if not target.exists():
+        return target
+
+    existing = parse_frontmatter(target.read_text(encoding="utf-8"))
+    if existing.name.casefold() == memory.name.casefold():
+        return target
+    suffix = hashlib.sha256(
+        f"{memory.type}:{memory.name}".encode("utf-8")
+    ).hexdigest()[:8]
+    return target.with_name(f"{target.stem}-{suffix}.md")
+
+
+def _rebuild_memory_index(directory: Path) -> None:
+    entries: dict[str, str] = {}
+    for memory in _load_dir(str(directory)):
+        path = Path(memory.path)
+        title = memory.name.strip() or path.stem
+        description = memory.description.strip() or path.stem
+        entries.setdefault(
+            title.casefold(),
+            f"- [{title}]({path.name}) — {description}",
+        )
+    lines = sorted(entries.values(), key=str.casefold)[:MAX_ENTRYPOINT_LINES]
+    _atomic_write_text(
+        directory / ENTRYPOINT_NAME,
+        "\n".join(lines) + ("\n" if lines else ""),
+    )
+
+
 # ---------------------------------------------------------------------------
 # 构建记忆系统提示（BuildMemoryPrompt）
 # ---------------------------------------------------------------------------
@@ -292,8 +389,7 @@ class MemoryManager:
     """管理双路径自动记忆目录（用户级 + 项目级）。
 
      memory.Manager：使用独立 .md 文件 + frontmatter + MEMORY.md 索引。
-    实际的写入/读取通过 agent 的 Write/Read 工具完成（参考架构），
-    此类提供系统提示构建和 /memory 斜杠命令支持。
+    此类负责系统提示构建、结构化自动提取、原子持久化和 /memory 命令支持。
     """
 
     def __init__(self, project_root: str) -> None:
@@ -402,7 +498,8 @@ class MemoryManager:
         if not conv_lines:
             return
 
-        # 构建提取提示，引导 LLM 输出独立 .md 文件
+        # 构建提取提示，引导 LLM 返回受约束的结构化数据；文件写入由
+        # MemoryManager 完成，模型本身不能直接写入记忆目录。
         prompt = (
             "你是一个记忆提取助手。分析下面的对话，提取值得长期记忆的信息。\n\n"
             "记忆类型规则：\n"
@@ -410,17 +507,15 @@ class MemoryManager:
             "- **feedback**: 用户的纠正和确认 → 写到用户级目录\n"
             "- **project**: 项目知识、决策、进展 → 写到项目级目录\n"
             "- **reference**: 外部资源链接 → 写到项目级目录\n\n"
-            f"用户级目录: {self._user_mem_dir}\n"
-            f"项目级目录: {self._mem_dir}\n\n"
-            "每条记忆用独立 .md 文件保存，文件头使用 frontmatter 格式：\n"
-            "```\n---\nname: 记忆名称\ndescription: 一行描述\ntype: user|feedback|project|reference\n---\n\n记忆内容\n```\n\n"
-            f"保存后在同目录的 {ENTRYPOINT_NAME} 中添加索引行：\n"
-            "`- [标题](文件名.md) — 一行描述`\n\n"
+            "只返回一个 JSON 对象，不要使用 Markdown 代码块，不要调用工具。格式必须为：\n"
+            '{"memories":[{"name":"名称","description":"单行描述",'
+            '"type":"user|feedback|project|reference","content":"正文"}]}\n\n'
+            "name 和 description 必须是非空单行文本；content 必须非空。"
+            "如果没有值得记忆的内容，返回 {\"memories\":[]}。\n\n"
             f"当前 {ENTRYPOINT_NAME} 索引内容：\n"
             f"{current_memories if current_memories.strip() else '(空)'}\n\n"
             f"最近对话：\n{chr(10).join(conv_lines)}\n\n"
-            "不要输出任何其他内容，不要调用任何工具。"
-            "如果没有值得记忆的内容，回复「无需记忆」。"
+            "不要输出任何其他内容。"
         )
 
         extract_conv = ConversationManager()
@@ -436,6 +531,27 @@ class MemoryManager:
                 elif isinstance(event, StreamEnd):
                     pass
         except Exception:
+            return
+
+        try:
+            extraction = _parse_extraction(collected)
+        except (json.JSONDecodeError, ValidationError, TypeError, ValueError):
+            return
+
+        touched_directories: set[Path] = set()
+        try:
+            for memory in extraction.memories:
+                directory = (
+                    self.user_mem_dir
+                    if memory.type in _USER_LEVEL_TYPES
+                    else self.project_mem_dir
+                )
+                target = _find_memory_target(directory, memory)
+                _atomic_write_text(target, _render_memory(memory))
+                touched_directories.add(directory)
+            for directory in sorted(touched_directories, key=str):
+                _rebuild_memory_index(directory)
+        except (OSError, RuntimeError, ValueError):
             return
 
         self._last_extraction_msg_count = len(conversation.history)

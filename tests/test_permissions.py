@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -357,6 +358,61 @@ class TestPermissionChecker:
         d = self.checker.check(tool, {"file_path": str(self.tmpdir / "x.txt"), "content": "hi"})
         assert d.effect == "ask"
 
+    def test_plan_mode_only_allows_exact_resolved_plan_path(self) -> None:
+        from codepacex.tools.write_file import WriteFile
+
+        plan_path = self.tmpdir / ".codepacex" / "plans" / "plan.md"
+        plan_path.parent.mkdir(parents=True)
+        plan_path.write_text("# Plan\n", encoding="utf-8")
+        self.checker.mode = PermissionMode.PLAN
+        self.checker.plan_file_path = str(plan_path)
+
+        exact = self.checker.check(
+            WriteFile(),
+            {"file_path": ".codepacex/plans/plan.md", "content": "updated"},
+        )
+        same_basename = self.checker.check(
+            WriteFile(),
+            {"file_path": str(self.tmpdir / "src" / "plan.md"), "content": "x"},
+        )
+        nested_plans = self.checker.check(
+            WriteFile(),
+            {
+                "file_path": str(
+                    self.tmpdir / "other" / ".codepacex" / "plans" / "other.md"
+                ),
+                "content": "x",
+            },
+        )
+
+        assert exact.effect == "allow"
+        assert same_basename.effect == "ask"
+        assert nested_plans.effect == "ask"
+
+    def test_explicit_deny_overrides_plan_file_allow(self) -> None:
+        from codepacex.tools.write_file import WriteFile
+
+        plan_path = self.tmpdir / ".codepacex" / "plans" / "plan.md"
+        rules_file = self.tmpdir / "rules.yaml"
+        rules_file.write_text(
+            yaml.safe_dump([{"rule": "WriteFile(*)", "effect": "deny"}]),
+            encoding="utf-8",
+        )
+        checker = PermissionChecker(
+            detector=DangerousCommandDetector(),
+            sandbox=PathSandbox(str(self.tmpdir)),
+            rule_engine=RuleEngine(project_rules_path=rules_file),
+            mode=PermissionMode.PLAN,
+        )
+        checker.plan_file_path = str(plan_path)
+
+        decision = checker.check(
+            WriteFile(),
+            {"file_path": str(plan_path), "content": "updated"},
+        )
+
+        assert decision.effect == "deny"
+
     def test_bypass_mode_allows_all(self) -> None:
         from codepacex.tools.bash import Bash
         self.checker.mode = PermissionMode.BYPASS
@@ -512,9 +568,19 @@ async def test_e2e_sandbox_outside_path_asks():
     assert c["tool_result"][0].is_error
 
 @pytest.mark.asyncio
-async def test_e2e_rule_allows_git():
+async def test_e2e_rule_allows_git(tmp_path: Path):
     """放行 git 命令的规则可以让其无需人工介入（HITL）直接通过。"""
-    tmpdir = Path(tempfile.mkdtemp())
+    from codepacex.sandbox import configure_bash_sandbox
+
+    tmpdir = tmp_path / "repo"
+    tmpdir.mkdir()
+    subprocess.run(
+        ["git", "init", "-q"],
+        cwd=tmpdir,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     rules_file = tmpdir / ".codepacex" / "permissions.yaml"
     rules_file.parent.mkdir(parents=True)
     rules_file.write_text(yaml.dump([{"rule": "Bash(git *)", "effect": "allow"}]))
@@ -530,6 +596,12 @@ async def test_e2e_rule_allows_git():
         ],
     ])
     registry = create_default_registry()
+    configure_bash_sandbox(
+        registry,
+        enabled=False,
+        network_enabled=False,
+        work_dir=str(tmpdir),
+    )
     checker = PermissionChecker(
         detector=DangerousCommandDetector(),
         sandbox=PathSandbox(str(tmpdir)),
