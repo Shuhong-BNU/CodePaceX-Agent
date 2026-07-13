@@ -865,19 +865,19 @@ class Agent:
                         if isinstance(event, ToolUseEvent) and streaming_prefix_open:
                             tc = collector.response.tool_calls[-1]
                             tool = self.registry.get(tc.tool_name)
-                            # Hook-enabled turns remain on the normal path so that
-                            # pre/post Hook events can be yielded in order. For the
-                            # fast path, only pre-approved read-only tools are run.
+                            # Pre Hooks are assessed before dispatch. Hook events
+                            # and post Hooks are emitted after ordered result
+                            # collection, preserving audit order without disabling
+                            # the read-only streaming fast path.
                             if (
-                                self.hook_engine is None
-                                and tool is not None
+                                tool is not None
                                 and tool.is_read_only
                                 and tool.is_concurrency_safe
                                 and self.registry.is_enabled(tc.tool_name)
                             ):
                                 decision = await self._assess_tool(tc)
                                 streaming_decisions[tc.tool_id] = decision
-                                if decision.decision.effect == "allow":
+                                if decision.decision.effect in {"allow", "deny"}:
                                     streaming_executor.submit(
                                         self._execute_single_tool_direct(
                                             tc, decision, execution_path="streaming",
@@ -1157,7 +1157,21 @@ class Agent:
                     consecutive_unknown = 0
                 content = self._maybe_persist_or_truncate(br.tool_id, br.result.output)
                 tool_results.append(ToolResultBlock(tool_use_id=br.tool_id, content=content, is_error=br.result.is_error))
+                for he in self._drain_hook_events():
+                    yield he
                 yield self._permission_decision_event(br)
+                if self.hook_engine and br.executed:
+                    source_call = next(
+                        tc for tc in response.tool_calls if tc.tool_id == br.tool_id
+                    )
+                    hook_ctx = self._build_hook_context(
+                        "post_tool_use", tool_name=br.tool_name,
+                        tool_args=source_call.arguments,
+                        file_path=self._infer_file_path(source_call.arguments),
+                    )
+                    await self.hook_engine.run_hooks("post_tool_use", hook_ctx)
+                    for he in self._drain_hook_events():
+                        yield he
                 yield ToolResultEvent(tool_id=br.tool_id, tool_name=br.tool_name, output=br.result.output, is_error=br.result.is_error, elapsed=br.elapsed)
             active_executor[0] = None
 
@@ -1168,13 +1182,13 @@ class Agent:
                     tc.tool_id: streaming_decisions[tc.tool_id]
                     for tc in batch.calls if tc.tool_id in streaming_decisions
                 }
-                can_run_direct = batch.concurrent and len(batch.calls) > 1 and self.hook_engine is None
+                can_run_direct = batch.concurrent and len(batch.calls) > 1
                 if can_run_direct:
                     for tc in batch.calls:
                         if tc.tool_id not in predecisions:
                             predecisions[tc.tool_id] = await self._assess_tool(tc)
                     can_run_direct = can_run_direct and all(
-                        decision.decision.effect == "allow"
+                        decision.decision.effect in {"allow", "deny"}
                         for decision in predecisions.values()
                     )
                 if can_run_direct:
@@ -1197,6 +1211,18 @@ class Agent:
                             )
                         )
                         yield self._permission_decision_event(br)
+                        if self.hook_engine and br.executed:
+                            source_call = next(
+                                tc for tc in batch.calls if tc.tool_id == br.tool_id
+                            )
+                            hook_ctx = self._build_hook_context(
+                                "post_tool_use", tool_name=br.tool_name,
+                                tool_args=source_call.arguments,
+                                file_path=self._infer_file_path(source_call.arguments),
+                            )
+                            await self.hook_engine.run_hooks("post_tool_use", hook_ctx)
+                            for he in self._drain_hook_events():
+                                yield he
                         yield ToolResultEvent(
                             tool_id=br.tool_id,
                             tool_name=br.tool_name,
