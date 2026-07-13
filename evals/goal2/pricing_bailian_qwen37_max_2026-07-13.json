@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "retrieved_at": "2026-07-13T00:00:00+08:00",
+  "source_url": "https://help.aliyun.com/en/model-studio/model-pricing",
+  "rate_limit_source_url": "https://help.aliyun.com/en/model-studio/rate-limit",
+  "provider": "bailian-qwen37-max",
+  "model_id": "qwen3.7-max-2026-06-08",
+  "deployment_scope": "Chinese mainland",
+  "region": "China (Beijing)",
+  "currency": "CNY",
+  "token_range": "0<Token<=1M",
+  "unit_tokens": 1000000,
+  "input_price": 12.0,
+  "output_price": 36.0,
+  "requests_per_minute": 600,
+  "tokens_per_minute": 1000000,
+  "assumptions": [
+    "Use standard real-time pay-as-you-go prices.",
+    "Do not assume free quota, Token Plan credits, batch discounts, or context-cache discounts.",
+    "Actual billing remains authoritative."
+  ]
+}

@@ -45,6 +45,8 @@ hook:
   paid_runs: 0
 long_session:
   checkpoint_interval_minutes: 30
+  workload_interval_minutes: 15
+  maximum_provider_requests_per_cycle: 10
   maximum_concurrent_paid_sessions: 1
   pilot: {count: 1, duration_hours: 2, planned_restart_minutes: 60}
   formal: {count: 3, duration_hours: 8, planned_restart_hours: 4}

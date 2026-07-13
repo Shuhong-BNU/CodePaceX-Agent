@@ -25,6 +25,7 @@ from evals.benchmark import (
     current_git_commit,
     sanitize_origin,
 )
+from evals.costing import load_pricing, pricing_snapshot_hash
 from evals.pilot import (
     _child_environment,
     _ingest_trace,
@@ -339,7 +340,7 @@ def execute(
         raise ValueError("execute requires --confirm-paid-run and the configured API key")
     if _git_dirty(root) is not False:
         raise ValueError("paid MCP study requires a clean frozen Git worktree")
-    pricing_hash = hashlib.sha256(pricing_snapshot.read_bytes()).hexdigest()
+    pricing_hash = pricing_snapshot_hash(load_pricing(pricing_snapshot))
     recorders: list[RunRecorder] = []
     for profile in profiles(study):
         manifest = build_arm_manifest(

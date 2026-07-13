@@ -100,9 +100,18 @@ class LongFormal(StrictModel):
 
 class LongSessionStudy(StrictModel):
     checkpoint_interval_minutes: Literal[30]
+    workload_interval_minutes: Literal[15]
+    maximum_provider_requests_per_cycle: Literal[10]
     maximum_concurrent_paid_sessions: Literal[1]
     pilot: LongPilot
     formal: LongFormal
+
+    def workload_cycle_count(self) -> int:
+        hours = (
+            self.pilot.count * self.pilot.duration_hours
+            + self.formal.count * self.formal.duration_hours
+        )
+        return hours * 60 // self.workload_interval_minutes
 
 
 class SWEBenchStudy(StrictModel):
