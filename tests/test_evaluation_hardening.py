@@ -39,6 +39,16 @@ def test_empty_instance_ids_omit_argument(tmp_path: Path) -> None:
     assert "--instance_ids" not in _command(tmp_path, [])
 
 
+def test_arm64_local_build_namespace_and_report_dir_are_supported(tmp_path: Path) -> None:
+    command = build_evaluator_command(
+        dataset_name="org/live", split="lite",
+        predictions_path=tmp_path / "predictions.json", instance_ids=["one"],
+        max_workers=1, run_id="arm", namespace="", report_dir=tmp_path / "reports",
+    )
+    assert command[command.index("--namespace") + 1] == ""
+    assert command[command.index("--report_dir") + 1] == str(tmp_path / "reports")
+
+
 def test_selection_is_stable_and_optionally_filters_language() -> None:
     items = [
         {"instance_id": "b", "repo": "repo", "platform": "linux", "language": "python"},

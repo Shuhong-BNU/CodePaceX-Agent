@@ -3,8 +3,10 @@ from __future__ import annotations
 import pytest
 
 from evals.swe_bench_live import (
+    instance_payload_hash,
     patch_file_count,
     select_formal_instances,
+    select_pilot_instances,
     select_repeated_subset,
     size_bucket,
     validate_predictions,
@@ -58,6 +60,15 @@ def test_formal_selection_excludes_pilot_and_freezes_8_8_4_plus_repeat_2_2_1() -
     )] == [2, 2, 1]
 
 
+def test_pilot_selection_freezes_one_instance_per_size_bucket() -> None:
+    pilot = select_pilot_instances(_instances())
+    assert len(pilot) == 3
+    assert {size_bucket(item) for item in pilot} == {
+        "one_file", "two_to_four_files", "five_plus_files",
+    }
+    assert len({item["repo"] for item in pilot}) == 3
+
+
 def test_empty_or_off_manifest_predictions_fail_closed() -> None:
     with pytest.raises(ValueError, match="empty model patch"):
         validate_predictions(
@@ -88,6 +99,9 @@ def test_goal2_manifest_records_revision_buckets_and_disjoint_pilot(tmp_path) ->
     assert payload["split"] == "lite"
     assert payload["dataset_revision"] == "dataset-sha"
     assert len(payload["formal_instances"]) == 20
+    assert payload["source_repository"] == "https://github.com/microsoft/SWE-bench-Live"
+    assert len(payload["instance_payload_hashes"]) == 23
+    assert payload["instance_payload_hashes"]["pilot-0"] == instance_payload_hash(pilot[0])
     with pytest.raises(ValueError, match="exactly match"):
         validate_predictions(
             [{"instance_id": "other", "model_patch": _patch(1)}],

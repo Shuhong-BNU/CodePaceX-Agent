@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import re
@@ -18,6 +19,7 @@ SELECTION_ALGORITHM_VERSION = "linux-per-repo-v1"
 FORMAL_SELECTION_ALGORITHM_VERSION = "python-lite-size-stratified-v1"
 FORMAL_SIZE_TARGETS = {"one_file": 8, "two_to_four_files": 8, "five_plus_files": 4}
 REPEAT_SIZE_TARGETS = {"one_file": 2, "two_to_four_files": 2, "five_plus_files": 1}
+PILOT_SIZE_TARGETS = {"one_file": 1, "two_to_four_files": 1, "five_plus_files": 1}
 
 
 def patch_file_count(patch: str) -> int:
@@ -67,6 +69,44 @@ def select_formal_instances(
             f"dataset cannot satisfy frozen formal size buckets: {dict(counts)}"
         )
     return selected
+
+
+def select_pilot_instances(instances: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Select one deterministic smoke instance from each gold patch-size bucket."""
+    selected: list[dict[str, Any]] = []
+    counts: dict[str, int] = defaultdict(int)
+    repositories: set[str] = set()
+    for instance in sorted(instances, key=lambda item: str(item.get("instance_id", ""))):
+        instance_id = str(instance.get("instance_id", ""))
+        repo = str(instance.get("repo", ""))
+        if not instance_id or not repo or repo in repositories:
+            continue
+        if instance.get("platform", "linux") != "linux":
+            continue
+        bucket = size_bucket(instance)
+        if counts[bucket] >= PILOT_SIZE_TARGETS[bucket]:
+            continue
+        selected.append(instance)
+        counts[bucket] += 1
+        repositories.add(repo)
+    if counts != PILOT_SIZE_TARGETS:
+        raise ValueError(f"dataset cannot satisfy frozen pilot size buckets: {dict(counts)}")
+    return selected
+
+
+def instance_payload_hash(instance: dict[str, Any]) -> str:
+    """Bind selection to the exact official task payload used for inference."""
+    fields = {
+        key: instance.get(key)
+        for key in (
+            "instance_id", "repo", "base_commit", "problem_statement",
+            "patch", "test_patch", "version", "environment_setup_commit",
+        )
+    }
+    encoded = json.dumps(
+        fields, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def select_repeated_subset(
@@ -140,7 +180,7 @@ def write_goal2_manifest(
     formal_instances: list[dict[str, Any]],
     repeated_instances: list[dict[str, Any]], path: Path,
     dataset_name: str, revision: str, codepacex_commit: str,
-    model: str, provider: str,
+    model: str, provider: str, dataset_jsonl_sha256: str = "",
 ) -> None:
     pilot_ids = {str(item.get("instance_id", "")) for item in pilot_instances}
     formal_ids = {str(item.get("instance_id", "")) for item in formal_instances}
@@ -159,6 +199,8 @@ def write_goal2_manifest(
         "codepacex_commit": codepacex_commit,
         "model": model,
         "provider": provider,
+        "source_repository": "https://github.com/microsoft/SWE-bench-Live",
+        "dataset_jsonl_sha256": dataset_jsonl_sha256,
         "pilot_instances": sorted(pilot_ids),
         "formal_instances": [{
             "instance_id": item.get("instance_id"),
@@ -167,6 +209,10 @@ def write_goal2_manifest(
             "size_bucket": size_bucket(item),
         } for item in formal_instances],
         "repeated_instances": sorted(repeated_ids),
+        "instance_payload_hashes": {
+            str(item.get("instance_id")): instance_payload_hash(item)
+            for item in [*pilot_instances, *formal_instances]
+        },
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -174,14 +220,16 @@ def write_goal2_manifest(
 def build_evaluator_command(
     *, dataset_name: str, split: str, predictions_path: Path,
     instance_ids: list[str], max_workers: int, run_id: str, namespace: str,
-    python_executable: str = sys.executable,
+    python_executable: str = sys.executable, report_dir: Path | None = None,
 ) -> list[str]:
-    if not dataset_name or not run_id or not namespace or max_workers < 1:
-        raise ValueError("dataset_name, run_id, namespace and positive max_workers are required")
+    if not dataset_name or not run_id or max_workers < 1:
+        raise ValueError("dataset_name, run_id and positive max_workers are required")
     command = [python_executable, "-m", "swebench.harness.run_evaluation",
         "--dataset_name", dataset_name, "--split", split,
         "--predictions_path", str(predictions_path), "--max_workers", str(max_workers),
         "--run_id", run_id, "--namespace", namespace]
+    if report_dir is not None:
+        command.extend(["--report_dir", str(report_dir)])
     if instance_ids:
         command.extend(["--instance_ids", *instance_ids])
     return command
