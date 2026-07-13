@@ -19,7 +19,7 @@ from statistics import median
 from typing import Any, Iterable
 from urllib.parse import quote, quote_plus, unquote, urlsplit
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 RESULT_STATUSES = {
     "success", "task_failure", "timeout", "provider_error",
@@ -150,6 +150,11 @@ class RunManifest:
     system_prompt_hash: str | None = None
     tool_schema_hash: str | None = None
     feature_flags: dict[str, Any] = field(default_factory=dict)
+    experiment_profile: dict[str, Any] = field(default_factory=dict)
+    experiment_profile_hash: str | None = None
+    runtime_contract_hash: str | None = None
+    benchmark_asset_hash: str | None = None
+    pricing_snapshot_hash: str | None = None
     task_ids: list[str] = field(default_factory=list)
     repetitions: int = 1
     model_parameters: dict[str, Any] = field(default_factory=dict)
@@ -158,6 +163,7 @@ class RunManifest:
     timeout_seconds: int | None = None
     retry_budget: int | None = None
     fallback_enabled: bool = False
+    max_iterations: int | None = None
     operating_system: str = field(default_factory=platform.system)
     python_version: str = field(default_factory=platform.python_version)
     dependency_snapshot_hash: str | None = None
@@ -387,6 +393,18 @@ class RunRecorder:
                 for item in previous
             ):
                 raise ValueError(f"duplicate runtime request index: {request_index}")
+            if self.manifest.experiment_profile_hash is not None:
+                if payload.get("experiment_profile_hash") != self.manifest.experiment_profile_hash:
+                    raise ValueError("runtime experiment profile hash does not match manifest")
+                if payload.get("runtime_contract_hash") != self.manifest.runtime_contract_hash:
+                    raise ValueError("runtime contract hash does not match manifest")
+                expected_runtime_hash = canonical_hash({
+                    "experiment_profile_hash": self.manifest.experiment_profile_hash,
+                    "system_sha256": payload.get("system_sha256"),
+                    "tools_sha256": payload.get("tools_sha256"),
+                })
+                if payload.get("combined_runtime_hash") != expected_runtime_hash:
+                    raise ValueError("combined runtime hash does not match effective request")
         elif event_type == "usage":
             request_index = payload.get("request_index")
             trial_scoped = {"task_id", "repetition_id", "attempt_id"}.issubset(payload)

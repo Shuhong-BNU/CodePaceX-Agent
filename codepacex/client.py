@@ -173,7 +173,9 @@ def _supports_adaptive_thinking(model: str) -> bool:
 
 
 class AnthropicClient(LLMClient):
-    def __init__(self, config: ProviderConfig) -> None:
+    def __init__(
+        self, config: ProviderConfig, *, max_retries: int | None = None,
+    ) -> None:
         self.provider = config.name
         self.protocol = config.protocol
         self.model = config.model
@@ -184,7 +186,10 @@ class AnthropicClient(LLMClient):
             raise AuthenticationError(
                 _missing_api_key_message("Anthropic", "ANTHROPIC_API_KEY")
             )
-        self._client = AsyncAnthropic(api_key=api_key, base_url=config.base_url)
+        kwargs: dict[str, Any] = {"api_key": api_key, "base_url": config.base_url}
+        if max_retries is not None:
+            kwargs["max_retries"] = max_retries
+        self._client = AsyncAnthropic(**kwargs)
 
     def set_max_output_tokens(self, tokens: int) -> None:
         self.max_output_tokens = tokens
@@ -376,7 +381,9 @@ class AnthropicClient(LLMClient):
 
 
 class OpenAIClient(LLMClient):
-    def __init__(self, config: ProviderConfig) -> None:
+    def __init__(
+        self, config: ProviderConfig, *, max_retries: int | None = None,
+    ) -> None:
         self.provider = config.name
         self.protocol = config.protocol
         self.model = config.model
@@ -386,7 +393,10 @@ class OpenAIClient(LLMClient):
             raise AuthenticationError(
                 _missing_api_key_message("OpenAI", "OPENAI_API_KEY")
             )
-        self._client = AsyncOpenAI(api_key=api_key, base_url=config.base_url)
+        kwargs: dict[str, Any] = {"api_key": api_key, "base_url": config.base_url}
+        if max_retries is not None:
+            kwargs["max_retries"] = max_retries
+        self._client = AsyncOpenAI(**kwargs)
 
     def set_max_output_tokens(self, tokens: int) -> None:
         self.max_output_tokens = tokens
@@ -516,7 +526,9 @@ class OpenAICompatClient(LLMClient):
     Together、Azure OpenAI 等）。
     """
 
-    def __init__(self, config: ProviderConfig) -> None:
+    def __init__(
+        self, config: ProviderConfig, *, max_retries: int | None = None,
+    ) -> None:
         self.provider = config.name
         self.protocol = config.protocol
         self.model = config.model
@@ -526,7 +538,10 @@ class OpenAICompatClient(LLMClient):
             raise AuthenticationError(
                 _missing_api_key_message("OpenAI-compatible", "OPENAI_API_KEY")
             )
-        self._client = AsyncOpenAI(api_key=api_key, base_url=config.base_url)
+        kwargs: dict[str, Any] = {"api_key": api_key, "base_url": config.base_url}
+        if max_retries is not None:
+            kwargs["max_retries"] = max_retries
+        self._client = AsyncOpenAI(**kwargs)
 
     def set_max_output_tokens(self, tokens: int) -> None:
         self.max_output_tokens = tokens
@@ -688,13 +703,15 @@ class OpenAICompatClient(LLMClient):
             raise LLMError(f"API error ({e.status_code}): {e.message}") from e
 
 
-def create_client(config: ProviderConfig) -> LLMClient:
+def create_client(
+    config: ProviderConfig, *, max_retries: int | None = None,
+) -> LLMClient:
     if config.protocol == "anthropic":
-        return AnthropicClient(config)
+        return AnthropicClient(config, max_retries=max_retries)
     elif config.protocol == "openai":
-        return OpenAIClient(config)
+        return OpenAIClient(config, max_retries=max_retries)
     elif config.protocol == "openai-compat":
-        return OpenAICompatClient(config)
+        return OpenAICompatClient(config, max_retries=max_retries)
     raise ValueError(f"Unknown protocol: {config.protocol}")
 
 

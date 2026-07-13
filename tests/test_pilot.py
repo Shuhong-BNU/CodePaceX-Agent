@@ -11,6 +11,7 @@ import pytest
 
 from evals import pilot
 from evals.benchmark import RunRecorder
+from codepacex.experiments import combined_runtime_hash
 
 
 def config_file(tmp_path: Path, **changes: object) -> Path:
@@ -28,6 +29,11 @@ def config_file(tmp_path: Path, **changes: object) -> Path:
 def test_frozen_config_validates_and_hash_changes(tmp_path: Path) -> None:
     config = pilot.load_config(config_file(tmp_path))
     assert config.provider == pilot.FROZEN_PROVIDER
+    assert config.schema_version == 2
+    assert config.model_parameters.max_output_tokens == 8192
+    manifest = pilot.build_manifest(config, Path.cwd())
+    assert manifest.benchmark_asset_hash == pilot.benchmark_asset_hash(Path.cwd())
+    assert len(manifest.benchmark_asset_hash or "") == 64
     with pytest.raises(ValueError, match="feature_flags"):
         pilot.load_config(config_file(tmp_path, feature_flags={"deferred": True}))
 
@@ -103,6 +109,7 @@ def test_live_execute_is_mockable_and_child_env_excludes_other_provider_keys(tmp
         recorder = pilot.execute(config, Path.cwd(), tmp_path / "runs", confirmed=True)
     assert json.loads((recorder.path / "result.json").read_text())["status"] == "success"
     assert captured["command"][0] == pilot.sys.executable
+    assert "--experiment-profile" in captured["command"]
     assert "AGENTROUTER_API_KEY" not in captured["env"]
     assert "AWS_SECRET_ACCESS_KEY" not in captured["env"]
     assert "GITHUB_TOKEN" not in captured["env"]
@@ -129,12 +136,12 @@ def test_resume_requires_a_resumable_matching_run(tmp_path: Path, monkeypatch: p
         pilot.resume(config, Path.cwd(), tmp_path / "runs", initial.run_id, confirmed=True)
 
 
-def test_generated_provider_config_omits_none_and_uses_real_loader(tmp_path: Path) -> None:
+def test_generated_provider_config_freezes_output_limit_and_uses_real_loader(tmp_path: Path) -> None:
     config = pilot.load_config(config_file(tmp_path))
     path = tmp_path / "config.yaml"
     pilot._write_validated_provider_config(config, path)
     raw = __import__("yaml").safe_load(path.read_text())
-    assert "max_output_tokens" not in raw["providers"][0]
+    assert raw["providers"][0]["max_output_tokens"] == 8192
 
 
 def test_unknown_and_unsafe_task_ids_are_rejected(tmp_path: Path) -> None:
@@ -196,6 +203,18 @@ def _mock_trial_process(task_status: str = "PASS", duplicate_runtime: bool = Fal
                 "provider": "bailian-qwen37-max", "protocol": "openai-compat",
                 "model_id": "qwen3.7-max-2026-06-08", "system_sha256": "s",
                 "tools_sha256": "t", "messages_sha256": "m",
+                "experiment_profile_hash": pilot.load_config(
+                    Path("evals/pilot.qwen.yaml")
+                ).experiment_profile.profile_hash(),
+                "runtime_contract_hash": pilot.load_config(
+                    Path("evals/pilot.qwen.yaml")
+                ).experiment_profile.runtime_contract_hash(),
+                "combined_runtime_hash": combined_runtime_hash(
+                    profile_hash=pilot.load_config(
+                        Path("evals/pilot.qwen.yaml")
+                    ).experiment_profile.profile_hash(),
+                    system_sha256="s", tools_sha256="t",
+                ),
             },
             {
                 "type": "usage", "request_index": 1,

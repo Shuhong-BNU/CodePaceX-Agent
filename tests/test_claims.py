@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from evals.benchmark import RunManifest, RunRecorder
+from codepacex.experiments import ExperimentProfile, combined_runtime_hash
 from evals.claims import (
     ClaimDocument,
     claims_schema,
@@ -16,6 +17,7 @@ from evals.claims import (
 
 
 def _conditions(**changes: object) -> dict[str, object]:
+    profile = _profile()
     conditions: dict[str, object] = {
         "provider": "p", "protocol": "openai-compat", "model_id": "m",
         "base_url_origin": "https://provider.example", "git_commit": "abc",
@@ -23,10 +25,24 @@ def _conditions(**changes: object) -> dict[str, object]:
         "timeout_seconds": 60, "retry_budget": 0, "fallback_enabled": False,
         "task_ids": ["task"], "repetitions": 1,
         "feature_flags": {},
+        "experiment_profile": profile.canonical_payload(),
+        "experiment_profile_hash": profile.profile_hash(),
+        "runtime_contract_hash": profile.runtime_contract_hash(),
+        "benchmark_asset_hash": "assets",
+        "max_iterations": 50,
         "allowed_differences": [],
     }
     conditions.update(changes)
     return conditions
+
+
+def _profile() -> ExperimentProfile:
+    return ExperimentProfile.model_validate({
+        "tool_loading": "deferred",
+        "compression_profile": "recovery_v1",
+        "permission_strategy": "default",
+        "agent_mode": "single",
+    })
 
 
 def _document(**changes: object) -> ClaimDocument:
@@ -58,6 +74,7 @@ def _successful_run(
     numerator: int | None = None,
     denominator: int | None = None,
 ) -> None:
+    profile = _profile()
     recorder = RunRecorder(root, RunManifest(
         provider=provider, protocol="openai-compat", model_id="m",
         base_url_origin="https://provider.example/v1", git_commit="abc",
@@ -65,6 +82,10 @@ def _successful_run(
         timeout_seconds=60, retry_budget=0, fallback_enabled=False,
         task_ids=["task"], repetitions=1,
         feature_flags=feature_flags or {},
+        experiment_profile=profile.canonical_payload(),
+        experiment_profile_hash=profile.profile_hash(),
+        runtime_contract_hash=profile.runtime_contract_hash(),
+        benchmark_asset_hash="assets", max_iterations=50,
     ), run_id=run_id)
     recorder.event("trial_started", {
         "task_id": task_id, "repetition_id": repetition_id,
@@ -75,6 +96,12 @@ def _successful_run(
         "system_sha256": "system", "tools_sha256": runtime_tools,
         "messages_sha256": "messages", "task_id": task_id,
         "repetition_id": repetition_id,
+        "experiment_profile_hash": profile.profile_hash(),
+        "runtime_contract_hash": profile.runtime_contract_hash(),
+        "combined_runtime_hash": combined_runtime_hash(
+            profile_hash=profile.profile_hash(), system_sha256="system",
+            tools_sha256=runtime_tools,
+        ),
     })
     recorder.capture_event({
         "type": "usage", "request_index": 1,
@@ -133,6 +160,18 @@ def test_nonempty_feature_flags_are_not_eligible_for_claims(tmp_path: Path) -> N
         _document(experiment_conditions=_conditions(
             allowed_differences=["manifest.feature_flags.study_feature"],
         ))
+
+
+def test_v1_run_is_inspection_only_for_goal2_claims(tmp_path: Path) -> None:
+    _successful_run(tmp_path, "run")
+    for name in ("manifest.json", "result.json"):
+        path = tmp_path / "run" / name
+        payload = json.loads(path.read_text())
+        payload["schema_version"] = 1
+        path.write_text(json.dumps(payload))
+    claim = compile_claims(_document(), tmp_path)["claims"][0]
+    assert claim["status"] == "insufficient-data"
+    assert any("inspection-only" in item for item in claim["limitations"])
 
 
 def test_provider_or_runtime_identity_difference_blocks_claim(tmp_path: Path) -> None:
@@ -202,7 +241,9 @@ def test_ab_requires_exact_pairs_and_explicit_runtime_difference(tmp_path: Path)
     assert blocked["status"] == "insufficient-data"
     assert any("runtime.tools_sha256" in item for item in blocked["limitations"])
 
-    base_conditions["allowed_differences"] = ["runtime.tools_sha256"]
+    base_conditions["allowed_differences"] = [
+        "runtime.tools_sha256", "runtime.combined_runtime_hash",
+    ]
     verified = compile_claims(_document(
         metric_name="ab_reduction_percent", aggregation="mean", unit="percent",
         source_run_ids=["base", "improved"],

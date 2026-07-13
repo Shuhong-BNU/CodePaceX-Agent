@@ -3,54 +3,105 @@
     "Claim": {
       "additionalProperties": false,
       "properties": {
+        "claim_id": {
+          "title": "Claim Id",
+          "type": "string"
+        },
+        "description_zh": {
+          "title": "Description Zh",
+          "type": "string"
+        },
+        "description_en": {
+          "title": "Description En",
+          "type": "string"
+        },
+        "metric_name": {
+          "title": "Metric Name",
+          "type": "string"
+        },
         "aggregation": {
           "description": "Aggregation over measured trials or pairs. p95 uses nearest-rank: sorted_values[ceil(0.95 * n) - 1].",
-          "enum": ["sum", "mean", "median", "p95", "pooled_rate"],
+          "enum": [
+            "sum",
+            "mean",
+            "median",
+            "p95",
+            "pooled_rate"
+          ],
           "title": "Aggregation",
           "type": "string"
         },
-        "claim_id": {"title": "Claim Id", "type": "string"},
-        "description_en": {"title": "Description En", "type": "string"},
-        "description_zh": {"title": "Description Zh", "type": "string"},
-        "experiment_conditions": {"$ref": "#/$defs/ExperimentConditions"},
-        "generated_value": {
-          "anyOf": [{"type": "number"}, {"type": "null"}],
-          "default": null,
-          "title": "Generated Value"
+        "unit": {
+          "title": "Unit",
+          "type": "string"
         },
-        "generation_command": {
-          "anyOf": [{"type": "string"}, {"type": "null"}],
-          "default": null,
-          "title": "Generation Command"
-        },
-        "limitations": {
-          "items": {"type": "string"},
-          "title": "Limitations",
-          "type": "array"
-        },
-        "metric_name": {"title": "Metric Name", "type": "string"},
         "sample_size": {
           "exclusiveMinimum": 0,
           "title": "Sample Size",
           "type": "integer"
         },
+        "experiment_conditions": {
+          "$ref": "#/$defs/ExperimentConditions"
+        },
         "source_run_ids": {
-          "items": {"type": "string"},
+          "items": {
+            "type": "string"
+          },
           "minItems": 1,
           "title": "Source Run Ids",
           "type": "array"
         },
+        "generated_value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Generated Value"
+        },
+        "generation_command": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Generation Command"
+        },
         "status": {
           "default": "draft",
-          "enum": ["draft", "verified", "insufficient-data"],
+          "enum": [
+            "draft",
+            "verified",
+            "insufficient-data"
+          ],
           "title": "Status",
           "type": "string"
         },
-        "unit": {"title": "Unit", "type": "string"}
+        "limitations": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Limitations",
+          "type": "array"
+        }
       },
       "required": [
-        "claim_id", "description_zh", "description_en", "metric_name",
-        "aggregation", "unit", "sample_size", "experiment_conditions",
+        "claim_id",
+        "description_zh",
+        "description_en",
+        "metric_name",
+        "aggregation",
+        "unit",
+        "sample_size",
+        "experiment_conditions",
         "source_run_ids"
       ],
       "title": "Claim",
@@ -59,83 +110,175 @@
     "ExperimentConditions": {
       "additionalProperties": false,
       "properties": {
-        "allowed_differences": {
-          "description": "Exact registered identity paths allowed to differ; no wildcards.",
-          "items": {"type": "string"},
-          "title": "Allowed Differences",
-          "type": "array"
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "protocol": {
+          "title": "Protocol",
+          "type": "string"
+        },
+        "model_id": {
+          "title": "Model Id",
+          "type": "string"
         },
         "base_url_origin": {
-          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "title": "Base Url Origin"
         },
-        "baseline_run_ids": {
-          "items": {"type": "string"},
-          "title": "Baseline Run Ids",
-          "type": "array"
+        "git_commit": {
+          "title": "Git Commit",
+          "type": "string"
         },
-        "fallback_enabled": {"title": "Fallback Enabled", "type": "boolean"},
-        "feature_flags": {
-          "additionalProperties": true,
-          "title": "Feature Flags",
-          "type": "object"
+        "prompt_version": {
+          "title": "Prompt Version",
+          "type": "string"
         },
-        "git_commit": {"title": "Git Commit", "type": "string"},
-        "improved_run_ids": {
-          "items": {"type": "string"},
-          "title": "Improved Run Ids",
-          "type": "array"
-        },
-        "model_id": {"title": "Model Id", "type": "string"},
         "model_parameters": {
           "additionalProperties": true,
           "title": "Model Parameters",
           "type": "object"
         },
-        "prompt_version": {"title": "Prompt Version", "type": "string"},
-        "protocol": {"title": "Protocol", "type": "string"},
-        "provider": {"title": "Provider", "type": "string"},
-        "repetitions": {"minimum": 1, "title": "Repetitions", "type": "integer"},
+        "timeout_seconds": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Timeout Seconds"
+        },
         "retry_budget": {
-          "anyOf": [{"type": "integer"}, {"type": "null"}],
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "title": "Retry Budget"
         },
+        "fallback_enabled": {
+          "title": "Fallback Enabled",
+          "type": "boolean"
+        },
         "task_ids": {
-          "items": {"type": "string"},
+          "items": {
+            "type": "string"
+          },
           "title": "Task Ids",
           "type": "array"
         },
-        "timeout_seconds": {
-          "anyOf": [{"type": "integer"}, {"type": "null"}],
-          "title": "Timeout Seconds"
+        "repetitions": {
+          "minimum": 1,
+          "title": "Repetitions",
+          "type": "integer"
+        },
+        "feature_flags": {
+          "additionalProperties": true,
+          "title": "Feature Flags",
+          "type": "object"
+        },
+        "experiment_profile": {
+          "additionalProperties": true,
+          "title": "Experiment Profile",
+          "type": "object"
+        },
+        "experiment_profile_hash": {
+          "title": "Experiment Profile Hash",
+          "type": "string"
+        },
+        "runtime_contract_hash": {
+          "title": "Runtime Contract Hash",
+          "type": "string"
+        },
+        "benchmark_asset_hash": {
+          "title": "Benchmark Asset Hash",
+          "type": "string"
+        },
+        "max_iterations": {
+          "exclusiveMinimum": 0,
+          "title": "Max Iterations",
+          "type": "integer"
+        },
+        "allowed_differences": {
+          "description": "Exact registered identity paths allowed to differ; no wildcards.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Differences",
+          "type": "array"
+        },
+        "baseline_run_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Baseline Run Ids",
+          "type": "array"
+        },
+        "improved_run_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Improved Run Ids",
+          "type": "array"
         }
       },
       "required": [
-        "provider", "protocol", "model_id", "base_url_origin", "git_commit",
-        "prompt_version", "model_parameters", "timeout_seconds", "retry_budget",
-        "fallback_enabled", "task_ids", "repetitions", "feature_flags",
+        "provider",
+        "protocol",
+        "model_id",
+        "base_url_origin",
+        "git_commit",
+        "prompt_version",
+        "model_parameters",
+        "timeout_seconds",
+        "retry_budget",
+        "fallback_enabled",
+        "task_ids",
+        "repetitions",
+        "feature_flags",
+        "experiment_profile",
+        "experiment_profile_hash",
+        "runtime_contract_hash",
+        "benchmark_asset_hash",
+        "max_iterations",
         "allowed_differences"
       ],
       "title": "ExperimentConditions",
       "type": "object"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
-    "claims": {
-      "items": {"$ref": "#/$defs/Claim"},
-      "title": "Claims",
-      "type": "array"
-    },
     "schema_version": {
-      "const": 1,
-      "default": 1,
+      "const": 2,
+      "default": 2,
       "title": "Schema Version",
       "type": "integer"
+    },
+    "claims": {
+      "items": {
+        "$ref": "#/$defs/Claim"
+      },
+      "title": "Claims",
+      "type": "array"
     }
   },
-  "required": ["claims"],
+  "required": [
+    "claims"
+  ],
   "title": "ClaimDocument",
-  "type": "object"
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
 }

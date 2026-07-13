@@ -13,6 +13,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from codepacex.experiments import ExperimentProfile, combined_runtime_hash
 from evals.benchmark import RUN_ID_RE, canonical_hash, reduction_percent
 
 REGISTERED_METRICS = {
@@ -21,14 +22,24 @@ REGISTERED_METRICS = {
     "successful_task_wall_time_seconds",
     "rate",
     "ab_reduction_percent",
+    "canary_retention_rate",
+    "dangerous_command_interception_rate",
+    "multi_agent_task_success_rate",
+    "hook_consistency_rate",
+    "checkpoint_recovery_rate",
 }
 REGISTERED_ALLOWED_DIFFERENCES = {
     "manifest.provider", "manifest.protocol", "manifest.model_id",
     "manifest.base_url_origin", "manifest.git_commit", "manifest.prompt_version",
     "manifest.model_parameters", "manifest.timeout_seconds", "manifest.retry_budget",
     "manifest.fallback_enabled", "manifest.task_ids", "manifest.repetitions",
+    "manifest.experiment_profile", "manifest.experiment_profile_hash",
+    "manifest.runtime_contract_hash", "manifest.benchmark_asset_hash",
+    "manifest.max_iterations",
     "runtime.provider", "runtime.protocol", "runtime.model_id",
     "runtime.system_sha256", "runtime.tools_sha256", "runtime.messages_sha256",
+    "runtime.experiment_profile_hash", "runtime.runtime_contract_hash",
+    "runtime.combined_runtime_hash",
 }
 _MANIFEST_FIELDS = {
     "manifest.provider": "provider",
@@ -43,10 +54,16 @@ _MANIFEST_FIELDS = {
     "manifest.fallback_enabled": "fallback_enabled",
     "manifest.task_ids": "task_ids",
     "manifest.repetitions": "repetitions",
+    "manifest.experiment_profile": "experiment_profile",
+    "manifest.experiment_profile_hash": "experiment_profile_hash",
+    "manifest.runtime_contract_hash": "runtime_contract_hash",
+    "manifest.benchmark_asset_hash": "benchmark_asset_hash",
+    "manifest.max_iterations": "max_iterations",
 }
 _RUNTIME_FIELDS = (
     "provider", "protocol", "model_id", "system_sha256", "tools_sha256",
-    "messages_sha256",
+    "messages_sha256", "experiment_profile_hash", "runtime_contract_hash",
+    "combined_runtime_hash",
 )
 
 
@@ -66,6 +83,11 @@ class ExperimentConditions(BaseModel):
     task_ids: list[str]
     repetitions: int = Field(ge=1)
     feature_flags: dict[str, Any]
+    experiment_profile: dict[str, Any]
+    experiment_profile_hash: str
+    runtime_contract_hash: str
+    benchmark_asset_hash: str
+    max_iterations: int = Field(gt=0)
     allowed_differences: list[str] = Field(
         description="Exact registered identity paths allowed to differ; no wildcards."
     )
@@ -134,6 +156,11 @@ class Claim(BaseModel):
             raise ValueError(f"unregistered metric_name: {self.metric_name}")
         allowed = {
             "rate": {"pooled_rate"},
+            "canary_retention_rate": {"pooled_rate"},
+            "dangerous_command_interception_rate": {"pooled_rate"},
+            "multi_agent_task_success_rate": {"pooled_rate"},
+            "hook_consistency_rate": {"pooled_rate"},
+            "checkpoint_recovery_rate": {"pooled_rate"},
             "ab_reduction_percent": {"mean", "median", "p95"},
         }.get(self.metric_name, {"sum", "mean", "median", "p95"})
         if self.aggregation not in allowed:
@@ -146,7 +173,7 @@ class Claim(BaseModel):
 class ClaimDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     claims: list[Claim]
 
 
@@ -247,6 +274,36 @@ def _compatibility(
     expected = _expected_conditions(claim.experiment_conditions)
     problems: list[str] = []
     observed: list[str] = []
+    for manifest, result, run in runs:
+        if manifest.get("schema_version") != 2 or result.get("schema_version") != 2:
+            problems.append(
+                "Schema v1 and unversioned Runs are inspection-only and cannot verify Goal 2 claims."
+            )
+            continue
+        flags = manifest.get("feature_flags")
+        if flags:
+            problems.append("Legacy feature_flags are not eligible for Goal 2 claims.")
+        try:
+            profile = ExperimentProfile.model_validate(manifest.get("experiment_profile"))
+        except (ValueError, TypeError):
+            problems.append("Manifest experiment_profile is missing or invalid.")
+            continue
+        if profile.profile_hash() != manifest.get("experiment_profile_hash"):
+            problems.append("Manifest experiment_profile_hash is invalid.")
+        if profile.runtime_contract_hash() != manifest.get("runtime_contract_hash"):
+            problems.append("Manifest runtime_contract_hash is invalid.")
+        for record in _runtime_records(run):
+            if record.get("experiment_profile_hash") != manifest.get("experiment_profile_hash"):
+                problems.append("Runtime experiment_profile_hash does not match Manifest.")
+            if record.get("runtime_contract_hash") != manifest.get("runtime_contract_hash"):
+                problems.append("Runtime contract hash does not match Manifest.")
+            expected_combined = combined_runtime_hash(
+                profile_hash=profile.profile_hash(),
+                system_sha256=str(record.get("system_sha256")),
+                tools_sha256=str(record.get("tools_sha256")),
+            )
+            if record.get("combined_runtime_hash") != expected_combined:
+                problems.append("Combined runtime hash is invalid.")
     for identity in identities:
         if not identity["runtime.provider"]:
             problems.append("Runtime telemetry is missing from one or more source Runs.")
@@ -455,7 +512,11 @@ def _calculate(
     if claim.metric_name == "successful_task_wall_time_seconds":
         values = _all_trial_values(runs, _successful_wall_trials)
         return (_aggregate(values, claim.aggregation), len(values)) if values else (None, 0)
-    if claim.metric_name == "rate":
+    if claim.metric_name in {
+        "rate", "canary_retention_rate", "dangerous_command_interception_rate",
+        "multi_agent_task_success_rate", "hook_consistency_rate",
+        "checkpoint_recovery_rate",
+    }:
         pairs = [
             pair for _, _, run in runs for pair in _rate_trials(run).values()
         ]
@@ -526,7 +587,7 @@ def compile_claims(document: ClaimDocument, runs_dir: Path) -> dict[str, Any]:
         output["limitations"] = list(dict.fromkeys(output["limitations"]))
         compiled.append(output)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "claims": compiled,
         "document_hash": canonical_hash(document.model_dump(mode="json")),
     }
@@ -534,12 +595,19 @@ def compile_claims(document: ClaimDocument, runs_dir: Path) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Compile CodePaceX claims from Run artifacts")
-    parser.add_argument("command", choices=["compile", "validate"])
+    parser.add_argument("command", choices=["compile", "validate", "schema"])
     parser.add_argument("--claims", type=Path, default=Path("evals/claims.example.yaml"))
     parser.add_argument("--runs-dir", type=Path, default=Path("evals/.runs/pilot"))
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
+        if args.command == "schema":
+            payload = json.dumps(claims_schema(), ensure_ascii=False, indent=2) + "\n"
+            if args.output:
+                args.output.write_text(payload, encoding="utf-8")
+            else:
+                print(payload, end="")
+            return 0
         document = load_claims(args.claims)
         compiled = compile_claims(document, args.runs_dir)
         if args.command == "validate":

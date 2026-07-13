@@ -207,7 +207,9 @@ async def _run_prompt(
         print(json.dumps(obj, ensure_ascii=False), flush=True)
 
     provider = config.providers[0]
-    client = create_client(provider)
+    client = create_client(
+        provider, max_retries=0 if experiment_profile is not None else None,
+    )
     # 第 2 层：尽力从 provider 自动拉取模型的 context window（缓存在 provider 上）。
     # 不会抛异常或阻塞启动；失败则退化到映射表。
     await resolve_context_window(provider)

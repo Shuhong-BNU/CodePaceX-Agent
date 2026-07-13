@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -12,11 +13,12 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from codepacex.experiments import ExperimentProfile
 from evals.benchmark import RunManifest, RunRecorder, canonical_hash, current_git_commit, sanitize_origin
 
 FROZEN_PROVIDER = "bailian-qwen37-max"
@@ -54,7 +56,7 @@ class ModelParameters(BaseModel):
 
 class PilotConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    schema_version: int = 1
+    schema_version: Literal[2] = 2
     experiment_kind: str = "pilot"
     provider: str
     protocol: str
@@ -68,11 +70,13 @@ class PilotConfig(BaseModel):
     task_ids: list[str] = Field(default_factory=list)
     repetitions: int = Field(default=1, ge=1)
     feature_flags: dict[str, Any] = Field(default_factory=dict)
+    experiment_profile: ExperimentProfile
+    max_iterations: Literal[50] = 50
 
     @model_validator(mode="after")
     def validate_frozen_primary(self) -> PilotConfig:
-        if self.schema_version != 1 or self.experiment_kind != "pilot":
-            raise ValueError("only pilot schema version 1 is supported")
+        if self.experiment_kind != "pilot":
+            raise ValueError("only pilot schema version 2 is supported")
         if (self.provider, self.protocol, self.base_url, self.api_key_env, self.model_id) != (
             FROZEN_PROVIDER, FROZEN_PROTOCOL, FROZEN_BASE_URL, FROZEN_KEY_ENV, FROZEN_MODEL,
         ):
@@ -81,6 +85,8 @@ class PilotConfig(BaseModel):
             raise ValueError("frozen Pilot configuration requires fallback=false and retry_budget=0")
         if self.model_parameters.temperature is not None or self.model_parameters.top_p is not None:
             raise ValueError("temperature and top_p remain unset until a real Pilot is frozen")
+        if self.model_parameters.max_output_tokens != 8192:
+            raise ValueError("Pilot v2 freezes max_output_tokens at 8192")
         if self.feature_flags:
             raise ValueError(
                 "Pilot v1 does not map feature_flags to runtime behavior; live runs require {}"
@@ -97,6 +103,22 @@ def load_config(path: Path) -> PilotConfig:
 
 def config_hash(config: PilotConfig) -> str:
     return canonical_hash(config.model_dump(mode="json"))
+
+
+def benchmark_asset_hash(root: Path) -> str:
+    """Hash frozen tasks, fixtures, graders, and the deterministic runner."""
+    evals_root = root / "evals"
+    files = [evals_root / "run_eval.py", evals_root / "graders.py"]
+    files.extend(sorted((evals_root / "tasks").glob("*.yaml")))
+    files.extend(sorted(
+        path for path in (evals_root / "fixtures").rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
+    ))
+    payload = {
+        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in files
+    }
+    return canonical_hash(payload)
 
 
 def _git_dirty(root: Path) -> bool | None:
@@ -136,6 +158,10 @@ def build_manifest(config: PilotConfig, root: Path, *, run_id: str = "") -> RunM
         system_prompt_hash=None,
         tool_schema_hash=None,
         feature_flags=config.feature_flags,
+        experiment_profile=config.experiment_profile.canonical_payload(),
+        experiment_profile_hash=config.experiment_profile.profile_hash(),
+        runtime_contract_hash=config.experiment_profile.runtime_contract_hash(),
+        benchmark_asset_hash=benchmark_asset_hash(root),
         task_ids=config.task_ids,
         repetitions=config.repetitions,
         model_parameters=config.model_parameters.model_dump(mode="json"),
@@ -144,6 +170,7 @@ def build_manifest(config: PilotConfig, root: Path, *, run_id: str = "") -> RunM
         timeout_seconds=config.timeout_seconds,
         retry_budget=config.retry_budget,
         fallback_enabled=config.fallback_enabled,
+        max_iterations=config.max_iterations,
         experiment_config_hash=config_hash(config),
     )
 
@@ -283,6 +310,9 @@ def _ingest_trace(
                 "system_sha256": event.get("system_sha256"),
                 "tools_sha256": event.get("tools_sha256"),
                 "messages_sha256": event.get("messages_sha256"),
+                "experiment_profile_hash": event.get("experiment_profile_hash"),
+                "runtime_contract_hash": event.get("runtime_contract_hash"),
+                "combined_runtime_hash": event.get("combined_runtime_hash"),
                 "task_id": task_id, "repetition_id": repetition_id,
                 "attempt_id": attempt_id,
             })
@@ -332,6 +362,11 @@ def _run_trials(config: PilotConfig, root: Path, recorder: RunRecorder) -> list[
         except (OSError, ValueError) as exc:
             raise PilotConfigurationError(str(exc)) from exc
         env = _child_environment(config, home)
+        profile_path = Path(staging) / "experiment-profile.yaml"
+        profile_path.write_text(
+            yaml.safe_dump(config.experiment_profile.canonical_payload(), sort_keys=True),
+            encoding="utf-8",
+        )
         for repetition in range(1, config.repetitions + 1):
             for task_id in config.task_ids:
                 trial = (task_id, str(repetition))
@@ -344,7 +379,11 @@ def _run_trials(config: PilotConfig, root: Path, recorder: RunRecorder) -> list[
                     continue
                 attempt_id = recorder.next_attempt_id(task_id, str(repetition))
                 report_dir = Path(staging) / f"{task_id}-{repetition}"
-                command = [sys.executable, "evals/run_eval.py", "--task", task_id, "--report-dir", str(report_dir)]
+                command = [
+                    sys.executable, "evals/run_eval.py", "--task", task_id,
+                    "--report-dir", str(report_dir),
+                    "--experiment-profile", str(profile_path),
+                ]
                 started = time.monotonic()
                 recorder.event("trial_started", {
                     "task_id": task_id, "repetition_id": str(repetition),

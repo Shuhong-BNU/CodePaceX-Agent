@@ -11,6 +11,7 @@ from codepacex.client import (
     OpenAICompatClient,
     _canonical_sha256,
     _runtime_manifest_event,
+    create_client,
 )
 from codepacex.config import ProviderConfig
 from codepacex.conversation import ConversationManager
@@ -197,3 +198,15 @@ def test_runtime_hash_components_change_independently() -> None:
         assert [left != right for left, right in zip(baseline_hashes, hashes)] == [
             position == index for position in range(3)
         ]
+
+
+def test_benchmark_client_can_disable_sdk_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_openai(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr("codepacex.client.AsyncOpenAI", fake_openai)
+    create_client(_config("openai-compat"), max_retries=0)
+    assert captured["max_retries"] == 0
