@@ -92,3 +92,20 @@ Official CLI command construction and dry-run compatibility are tested with:
 ```bash
 python -m evals.swe_bench_live --dataset-name org/dataset --predictions-path predictions.json --run-id pilot --namespace codepacex --dry-run
 ```
+
+## Benchmark Pilot Harness
+
+The Pilot harness adds reproducible experiment artifacts and claim traceability on top of the existing deterministic six-task eval; it does not replace that eval.
+
+```bash
+python -m evals.pilot validate
+python -m evals.pilot dry-run
+python -m evals.pilot execute --confirm-paid-run
+python -m evals.claims compile
+```
+
+`validate` creates no Run and initializes no model client. `dry-run` writes a complete, non-scorable Run without network or model access. The live path is guarded by an explicit paid-run confirmation, a non-empty task list, and the configured key being present; CI and this PR's tests use only dry-run or a mocked subprocess.
+
+The frozen configuration is [`pilot.qwen.yaml`](pilot.qwen.yaml): Bailian Qwen through `openai-compat`, model `qwen3.7-max-2026-06-08`, no fallback, and retry budget zero. It names an environment variable only and never stores a credential. Core artifacts are `manifest.json`, `environment.json`, `events.jsonl`, `result.json`, and `report.md`; optional usage, permission, compression, and patch/test artifacts are emitted only when genuinely available. Provider usage is retained as returned, with no invented missing fields.
+
+`.runs/` is a local artifact directory and must not be committed. A claim can be marked verified only when the registered calculator can reproduce it from successful, compatible source Runs. This repository has not run a paid Qwen Pilot, real SWE-bench-Live, token-reduction experiment, or long-session experiment in this work, so none of those has a real result here.

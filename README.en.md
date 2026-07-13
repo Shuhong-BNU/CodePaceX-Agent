@@ -161,6 +161,8 @@ Run the full suite:
 
 Artifacts are written to `evals/.runs/`, which is a local artifact directory ignored by Git. Baseline v1 has been completed from a normal Mac Terminal run: 6/6 PASS, 0 FAIL, 0 ERROR, 0 WARNING, and 100% task success rate. See [`evals/README.md`](evals/README.md) / [`evals/README.en.md`](evals/README.en.md) for task details, status semantics, and boundaries.
 
+`evals/pilot.py` additionally provides a reproducible Benchmark Pilot dry-run, versioned Run manifests, provider-aware event capture, and Claims traceability for a frozen Qwen configuration. CI and dry-run never call a model; no paid Pilot, real SWE-bench-Live, token-reduction, or long-session experiment has been run in this work. See the Eval documentation for commands and limits.
+
 ## 🧰 Requirements
 
 - macOS or Linux

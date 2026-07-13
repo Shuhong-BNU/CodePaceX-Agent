@@ -172,6 +172,8 @@ Agent：总结主调用链
 
 Eval 产物默认写入 `evals/.runs/`，该目录是本地 artifact 并被 Git 忽略。Baseline v1 已在正常 Mac Terminal 中完成完整 suite：6/6 PASS，0 FAIL，0 ERROR，0 WARNING，Task Success Rate 100%。详细任务、状态分类和边界见 [`evals/README.md`](evals/README.md) / [`evals/README.en.md`](evals/README.en.md)。
 
+除既有 deterministic Eval 外，`evals/pilot.py` 还提供冻结 Qwen 配置的可复现 Benchmark Pilot dry-run、Run manifest 和 Claims 溯源。它不会在 CI 或 dry-run 中访问模型；真实 paid run、SWE-bench-Live 和长会话实验均尚未执行。复现命令与限制见 [`evals/README.md`](evals/README.md)。
+
 ## 🧰 环境要求
 
 - macOS 或 Linux
