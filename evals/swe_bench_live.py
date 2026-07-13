@@ -12,7 +12,7 @@ import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 
 SELECTION_ALGORITHM_VERSION = "linux-per-repo-v1"
@@ -222,18 +222,30 @@ def build_evaluator_command(
     *, dataset_name: str, split: str, predictions_path: Path,
     instance_ids: list[str], max_workers: int, run_id: str, namespace: str,
     python_executable: str = sys.executable, report_dir: Path | None = None,
+    evaluator_architecture: Literal["native", "x86_64"] = "native",
 ) -> list[str]:
     if not dataset_name or not run_id or max_workers < 1:
         raise ValueError("dataset_name, run_id and positive max_workers are required")
-    command = [python_executable, "-m", "swebench.harness.run_evaluation",
-        "--dataset_name", dataset_name, "--split", split,
+    arguments = ["--dataset_name", dataset_name, "--split", split,
         "--predictions_path", str(predictions_path), "--max_workers", str(max_workers),
         "--run_id", run_id, "--namespace", namespace]
     if report_dir is not None:
-        command.extend(["--report_dir", str(report_dir)])
+        arguments.extend(["--report_dir", str(report_dir)])
     if instance_ids:
-        command.extend(["--instance_ids", *instance_ids])
-    return command
+        arguments.extend(["--instance_ids", *instance_ids])
+    if evaluator_architecture == "x86_64":
+        command = [
+            python_executable,
+            "-c",
+            (
+                "import platform,runpy;"
+                "platform.machine=lambda:'x86_64';"
+                "runpy.run_module('swebench.harness.run_evaluation',run_name='__main__')"
+            ),
+        ]
+    else:
+        command = [python_executable, "-m", "swebench.harness.run_evaluation"]
+    return [*command, *arguments]
 
 
 def run_official_evaluator(

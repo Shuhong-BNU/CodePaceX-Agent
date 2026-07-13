@@ -26,7 +26,7 @@ from evals.paid_gate import PaidRunGate
 from evals.permission_study import trace_usage
 from evals.pilot import (
     _child_environment, _ingest_trace, _provider_payload, _runtime_secrets,
-    load_config as load_pilot_config,
+    load_config as load_pilot_config, trace_request_usages,
 )
 from evals.swe_bench_live import (
     instance_payload_hash,
@@ -55,7 +55,12 @@ OFFICIAL_ENVIRONMENT = {
     "installation": "isolated-editable-checkout",
     "docker_required": True,
     "arm64_support_is_experimental": True,
+    "arm64_evaluator_architecture": "x86_64",
 }
+
+
+def selected_evaluator_architecture() -> Literal["native", "x86_64"]:
+    return "x86_64" if platform.machine() in {"arm64", "aarch64"} else "native"
 
 
 def frozen_profile() -> ExperimentProfile:
@@ -187,6 +192,7 @@ def official_evaluator_preflight(
         "docker_server_version": docker.stdout.strip() if docker.returncode == 0 else None,
         "architecture": platform.machine(),
         "arm64_support_is_experimental": platform.machine() in {"arm64", "aarch64"},
+        "selected_evaluator_architecture": selected_evaluator_architecture(),
     }
 
 
@@ -211,7 +217,10 @@ def build_manifest(
         base_url_origin=sanitize_origin(pilot.base_url),
         api_key_env=pilot.api_key_env, model_id=pilot.model_id,
         git_commit=current_git_commit(root), dirty_worktree=_git_dirty(root),
-        prompt_version="swe-bench-live-inference-v1", feature_flags={},
+        prompt_version="swe-bench-live-inference-v1",
+        feature_flags={
+            "swe_evaluator_architecture": selected_evaluator_architecture(),
+        },
         experiment_profile=profile.canonical_payload(),
         experiment_profile_hash=profile.profile_hash(),
         runtime_contract_hash=profile.runtime_contract_hash(),
@@ -357,6 +366,7 @@ def execute(
     runs_dir: Path, run_id: str, stage: Literal["pilot", "formal", "repeat"],
     repeat_index: int, pricing_snapshot: Path,
     budget_authorization: Path, budget_ledger: Path, confirmed: bool,
+    budget_stage: Literal["A", "B", "C"] = "C",
 ) -> RunRecorder:
     matrix, by_id = load_validated_matrix(
         matrix_path=matrix_path, dataset_jsonl=dataset_jsonl,
@@ -375,7 +385,7 @@ def execute(
     pricing = load_pricing(pricing_snapshot)
     gate = PaidRunGate(
         root=root, authorization_path=budget_authorization,
-        ledger_path=budget_ledger, pricing=pricing,
+        ledger_path=budget_ledger, pricing=pricing, stage=budget_stage,
     )
     manifest = build_manifest(
         root=root, matrix_path=matrix_path, matrix=matrix,
@@ -434,6 +444,7 @@ def execute(
                     })
                     return recorder
                 requests, input_tokens, output_tokens = trace_usage(process.stdout or "")
+                request_usages = trace_request_usages(process.stdout or "")
                 if requests == 0:
                     recorder.finalize({
                         "status": "infrastructure_error", "execution_mode": "live",
@@ -441,8 +452,7 @@ def execute(
                     })
                     return recorder
                 settlement = gate.settle(
-                    reservation, requests=requests,
-                    input_tokens=input_tokens, output_tokens=output_tokens,
+                    reservation, request_usages=request_usages,
                 )
                 with tempfile.NamedTemporaryFile("w", suffix=".ndjson", encoding="utf-8") as trace:
                     trace.write(process.stdout or "")
@@ -487,6 +497,7 @@ def execute(
             predictions_path=predictions_path, instance_ids=ids, max_workers=1,
             run_id=run_id, namespace=str(matrix["evaluator_namespace"]),
             report_dir=report_dir, cwd=recorder.path,
+            evaluator_architecture=selected_evaluator_architecture(),
         )
         recorder.write_artifact(
             "test-output.txt", (evaluator.stdout or "") + "\n" + (evaluator.stderr or ""),
@@ -518,6 +529,7 @@ def execute(
             "official_evaluator_returncode": 0,
             "resolved_count": resolved_count, "evaluated_count": len(ids),
             "arm64_support_is_experimental": preflight["arm64_support_is_experimental"],
+            "evaluator_architecture": selected_evaluator_architecture(),
         })
     return recorder
 
@@ -536,6 +548,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pricing-snapshot", type=Path)
     parser.add_argument("--budget-authorization", type=Path)
     parser.add_argument("--budget-ledger", type=Path)
+    parser.add_argument("--budget-stage", choices=["A", "B", "C"])
     parser.add_argument("--confirm-paid-run", action="store_true")
     args = parser.parse_args(argv)
     try:
@@ -577,7 +590,7 @@ def main(argv: list[str] | None = None) -> int:
                 repeat_index=args.repeat_index,
             ).path)
         elif args.command == "execute":
-            required = [args.pricing_snapshot, args.budget_authorization, args.budget_ledger]
+            required = [args.pricing_snapshot, args.budget_authorization, args.budget_ledger, args.budget_stage]
             if any(item is None for item in required):
                 raise ValueError("execute requires pricing, budget authorization, and ledger paths")
             payload["run_path"] = str(execute(
@@ -586,6 +599,7 @@ def main(argv: list[str] | None = None) -> int:
                 repeat_index=args.repeat_index, pricing_snapshot=args.pricing_snapshot,
                 budget_authorization=args.budget_authorization,
                 budget_ledger=args.budget_ledger, confirmed=args.confirm_paid_run,
+                budget_stage=args.budget_stage,
             ).path)
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         return 0

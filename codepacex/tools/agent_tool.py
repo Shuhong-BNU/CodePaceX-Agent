@@ -251,11 +251,24 @@ class AgentTool(Tool):
             )
 
         # 前台同步执行
+        request_usages: list[tuple[int, int]] = []
+
+        def capture_usage(event: dict[str, Any]) -> None:
+            if event.get("type") == "usage":
+                request_usages.append((
+                    int(event.get("request_input_tokens") or 0),
+                    int(event.get("request_output_tokens") or 0),
+                ))
+
         try:
             if is_fork:
-                result_text = await sub_agent.run_to_completion("", conversation)
+                result_text = await sub_agent.run_to_completion(
+                    "", conversation, event_callback=capture_usage,
+                )
             else:
-                result_text = await sub_agent.run_to_completion(p.prompt)
+                result_text = await sub_agent.run_to_completion(
+                    p.prompt, event_callback=capture_usage,
+                )
         except Exception as e:
             self._trace_manager.complete(trace_node.agent_id, "failed")
             return ToolResult(
@@ -267,6 +280,7 @@ class AgentTool(Tool):
             input_tokens=sub_agent.total_input_tokens,
             output_tokens=sub_agent.total_output_tokens,
             request_count=sub_agent._runtime_request_index,
+            request_usages=request_usages,
             tool_call_count=sub_agent._loop_count,
         )
         self._trace_manager.complete(trace_node.agent_id, "completed")
@@ -622,8 +636,19 @@ class AgentTool(Tool):
         )
         sub_agent.agent_id = trace_node.agent_id
 
+        request_usages: list[tuple[int, int]] = []
+
+        def capture_usage(event: dict[str, Any]) -> None:
+            if event.get("type") == "usage":
+                request_usages.append((
+                    int(event.get("request_input_tokens") or 0),
+                    int(event.get("request_output_tokens") or 0),
+                ))
+
         try:
-            result_text = await sub_agent.run_to_completion(task)
+            result_text = await sub_agent.run_to_completion(
+                task, event_callback=capture_usage,
+            )
         except Exception as e:
             self._trace_manager.complete(trace_node.agent_id, "failed")
             return ToolResult(
@@ -636,6 +661,7 @@ class AgentTool(Tool):
             input_tokens=sub_agent.total_input_tokens,
             output_tokens=sub_agent.total_output_tokens,
             request_count=sub_agent._runtime_request_index,
+            request_usages=request_usages,
             tool_call_count=sub_agent._loop_count,
         )
         self._trace_manager.complete(trace_node.agent_id, "completed")

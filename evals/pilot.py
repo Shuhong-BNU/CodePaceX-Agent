@@ -358,6 +358,25 @@ def _ingest_trace(
     return requests, input_tokens, output_tokens
 
 
+def trace_request_usages(trace_text: str) -> list[tuple[int, int]]:
+    """Return exact per-request token pairs or fail closed on incomplete usage."""
+    result: list[tuple[int, int]] = []
+    for line in trace_text.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("type") != "usage":
+            continue
+        if "request_input_tokens" not in event or "request_output_tokens" not in event:
+            raise ValueError("provider usage lacks per-request token accounting")
+        result.append((
+            int(event.get("request_input_tokens") or 0),
+            int(event.get("request_output_tokens") or 0),
+        ))
+    return result
+
+
 def _run_trials(
     config: PilotConfig, root: Path, recorder: RunRecorder, gate: PaidRunGate,
 ) -> list[str]:
@@ -416,12 +435,16 @@ def _run_trials(
                 requests = 0
                 input_tokens = 0
                 output_tokens = 0
+                request_usages: list[tuple[int, int]] = []
                 try:
                     process = subprocess.run(command, cwd=root, env=env, text=True, capture_output=True, timeout=config.timeout_seconds)
                     status = _suite_status(report_dir, task_id, process.returncode)
                     stdout_chunks.append(process.stdout or "")
                     stderr_chunks.append(process.stderr or "")
                     for trace_path in report_dir.glob("*/**/trace.ndjson"):
+                        request_usages.extend(trace_request_usages(
+                            trace_path.read_text(encoding="utf-8"),
+                        ))
                         usage = _ingest_trace(
                             recorder, trace_path, task_id, str(repetition), attempt_id,
                         )
@@ -449,8 +472,7 @@ def _run_trials(
                     statuses.append(ambiguous_status)
                     break
                 settlement = gate.settle(
-                    reservation, requests=requests,
-                    input_tokens=input_tokens, output_tokens=output_tokens,
+                    reservation, request_usages=request_usages,
                 )
                 statuses.append(status)
                 recorder.event("trial_completed", {
@@ -547,6 +569,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pricing-snapshot", type=Path)
     parser.add_argument("--budget-authorization", type=Path)
     parser.add_argument("--budget-ledger", type=Path)
+    parser.add_argument("--budget-stage", choices=["A", "B", "C"])
     args = parser.parse_args(argv)
     try:
         config = load_config(args.config)
@@ -560,6 +583,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command in {"execute", "resume"}:
             required = [
                 args.pricing_snapshot, args.budget_authorization, args.budget_ledger,
+                args.budget_stage,
             ]
             if any(item is None for item in required):
                 raise ValueError(
@@ -569,6 +593,7 @@ def main(argv: list[str] | None = None) -> int:
                 root=Path.cwd(), authorization_path=args.budget_authorization,
                 ledger_path=args.budget_ledger,
                 pricing=load_pricing(args.pricing_snapshot),
+                stage=args.budget_stage,
             )
         if args.command == "resume":
             if not args.run_id:

@@ -20,8 +20,14 @@ COMMIT = "a" * 40
 
 def _authorization(path: Path, total: str = "100") -> None:
     pricing = load_pricing(PRICING_PATH)
+    authorized_total = Decimal(total)
     payload = BudgetAuthorization(
-        authorized_total_cny=Decimal(total),
+        authorized_total_cny=authorized_total,
+        stage_limits_cny={
+            "A": min(Decimal("100"), authorized_total),
+            "B": min(Decimal("400"), authorized_total),
+            "C": authorized_total,
+        },
         pricing_snapshot_hash=pricing_snapshot_hash(pricing),
         experiment_commit=COMMIT,
         authorized_at="2026-07-13T00:00:00Z",
@@ -29,7 +35,7 @@ def _authorization(path: Path, total: str = "100") -> None:
     path.write_text(payload.model_dump_json(indent=2), encoding="utf-8")
 
 
-def _gate(tmp_path: Path, total: str = "100") -> PaidRunGate:
+def _gate(tmp_path: Path, total: str = "100", stage: str = "A") -> PaidRunGate:
     authorization = tmp_path / "authorization.json"
     _authorization(authorization, total)
     with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
@@ -38,6 +44,7 @@ def _gate(tmp_path: Path, total: str = "100") -> PaidRunGate:
         return PaidRunGate(
             root=tmp_path, authorization_path=authorization,
             ledger_path=tmp_path / "ledger.json", pricing=load_pricing(PRICING_PATH),
+            stage=stage,
         )
 
 
@@ -61,21 +68,65 @@ def test_gate_reserves_worst_next_trial_and_settles_actual_usage(tmp_path: Path)
             maximum_input_tokens_per_request=1000,
             maximum_output_tokens_per_request=500,
         )
-        settlement = gate.settle(
-            reservation, requests=1, input_tokens=1000, output_tokens=500,
-        )
+        settlement = gate.settle(reservation, request_usages=[(1000, 500)])
     assert settlement.actual_cny == Decimal("0.030000")
     assert gate.summary()["remaining_cny"] == "99.970000"
     ledger = json.loads((tmp_path / "ledger.json").read_text())
     assert ledger["active_reservation"] is None
     assert ledger["settlements"][0]["status"] == "settled"
+    assert ledger["request_charges"] == [{
+        "actual_cny": "0.030000",
+        "input_tokens": 1000,
+        "output_tokens": 500,
+        "recorded_at": ledger["request_charges"][0]["recorded_at"],
+        "request_index": 1,
+        "reservation_id": reservation.reservation_id,
+        "trial_id": "mcp/task/1",
+    }]
+
+
+def test_gate_enforces_stage_limit_before_total_authorization(tmp_path: Path) -> None:
+    gate = _gate(tmp_path, "600", stage="A")
+    ledger = {
+        "schema_version": 2,
+        "currency": "CNY",
+        "authorization_hash": gate._authorization_hash,
+        "spent_cny": "99.980000",
+        "active_reservation": None,
+        "request_charges": [],
+        "settlements": [],
+        "updated_at": "2026-07-13T00:00:00Z",
+    }
+    gate.ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ), gate.locked(), pytest.raises(ValueError, match="stage A budget"):
+        gate.reserve(
+            "stage-a-overflow", maximum_requests=1,
+            maximum_input_tokens_per_request=1000,
+            maximum_output_tokens_per_request=500,
+        )
+
+
+def test_gate_rejects_request_usage_that_exceeds_per_request_ceiling(tmp_path: Path) -> None:
+    gate = _gate(tmp_path)
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ), gate.locked():
+        reservation = gate.reserve(
+            "too-many-tokens", maximum_requests=2,
+            maximum_input_tokens_per_request=1000,
+            maximum_output_tokens_per_request=500,
+        )
+        with pytest.raises(ValueError, match="per-request token ceiling"):
+            gate.settle(reservation, request_usages=[(1001, 1)])
 
 
 def test_gate_fails_closed_when_worst_next_trial_exceeds_remaining_budget(tmp_path: Path) -> None:
     gate = _gate(tmp_path, "0.01")
     with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
         "evals.paid_gate._git_is_clean", return_value=True,
-    ), gate.locked(), pytest.raises(ValueError, match="insufficient authorized budget"):
+    ), gate.locked(), pytest.raises(ValueError, match="insufficient stage A budget"):
         gate.reserve(
             "too-expensive", maximum_requests=2,
             maximum_input_tokens_per_request=1000,
@@ -92,6 +143,7 @@ def test_gate_rejects_dirty_or_wrong_commit_authorization(tmp_path: Path) -> Non
         PaidRunGate(
             root=tmp_path, authorization_path=authorization,
             ledger_path=tmp_path / "ledger.json", pricing=load_pricing(PRICING_PATH),
+            stage="A",
         )
 
 

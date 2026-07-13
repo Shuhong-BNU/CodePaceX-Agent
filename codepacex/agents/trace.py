@@ -21,6 +21,7 @@ class TraceNode:
     output_tokens: int = 0
     tool_call_count: int = 0
     request_count: int = 0
+    request_usages: list[tuple[int, int]] = field(default_factory=list)
     start_time: float = field(default_factory=time.monotonic)
     end_time: float | None = None
     status: str = "running"
@@ -59,7 +60,7 @@ class TraceManager:
             )
         return node
 
-    def update(self, agent_id: str, **kwargs: int | str) -> None:
+    def update(self, agent_id: str, **kwargs: object) -> None:
         node = self._nodes.get(agent_id)
         if node is None:
             return
@@ -111,6 +112,11 @@ class TraceManager:
             "child_input_tokens": sum(node.input_tokens for node in children),
             "child_output_tokens": sum(node.output_tokens for node in children),
             "child_request_count": sum(node.request_count for node in children),
+            "child_request_usages": [
+                {"input_tokens": input_tokens, "output_tokens": output_tokens}
+                for node in children
+                for input_tokens, output_tokens in node.request_usages
+            ],
             "child_tool_call_count": sum(node.tool_call_count for node in children),
             "maximum_parallel_children": self._peak_parallel_by_parent.get(parent_id, 0),
         }

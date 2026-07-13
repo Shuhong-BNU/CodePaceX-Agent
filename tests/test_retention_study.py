@@ -3,7 +3,8 @@ from pathlib import Path
 
 from evals.goal2_studies import load_studies
 from evals.retention_study import (
-    dry_run, filler_messages, profiles, retention_rate_fields, strict_canary_grade,
+    dry_run, filler_messages, profiles, retention_rate_fields, scoped_session_indices,
+    strict_canary_grade,
 )
 
 
@@ -14,6 +15,12 @@ def test_retention_profiles_map_real_recovery_attachment_behavior() -> None:
     summary, recovery = profiles(load_studies(STUDIES))
     assert summary.effective_runtime()["recovery_attachments_enabled"] is False
     assert recovery.effective_runtime()["recovery_attachments_enabled"] is True
+
+
+def test_retention_pilot_scope_pairs_both_profiles_on_one_seed() -> None:
+    studies = load_studies(STUDIES)
+    assert scoped_session_indices(studies, scope="pilot") == [0]
+    assert scoped_session_indices(studies, scope="formal") == list(range(10))
 
 
 def test_strict_canary_grader_requires_exact_json_shape_order_and_values() -> None:

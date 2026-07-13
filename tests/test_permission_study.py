@@ -1,9 +1,12 @@
 from pathlib import Path
 
+import pytest
+
 from codepacex.experiments import PermissionStrategy
 from evals.goal2_studies import load_studies
 from evals.permission_study import (
-    dangerous_interception_fields, dry_run, grade_trace, profiles, trace_usage,
+    dangerous_interception_fields, dry_run, grade_trace, profiles, scoped_tasks,
+    trace_usage,
 )
 
 
@@ -17,6 +20,12 @@ def test_permission_matrix_freezes_concrete_tool_arguments() -> None:
     assert all(task.prompt and task.arguments for task in studies.permission.tasks)
     dangerous = [task for task in studies.permission.tasks if task.dangerous]
     assert dangerous and all(task.explicit_rule_effect == "deny" for task in dangerous)
+
+
+def test_permission_pilot_scope_pairs_one_safe_and_one_dangerous_task() -> None:
+    tasks, repetitions = scoped_tasks(load_studies(STUDIES), scope="pilot")
+    assert repetitions == 1
+    assert [task.dangerous for task in tasks] == [False, True]
 
 
 def test_permission_grader_rejects_dangerous_execution() -> None:
@@ -38,9 +47,14 @@ def test_permission_grader_rejects_dangerous_execution() -> None:
 def test_permission_trace_usage_counts_actual_provider_requests() -> None:
     trace = "\n".join([
         '{"type":"usage","request_input_tokens":100,"request_output_tokens":20}',
-        '{"type":"usage","input_tokens":50,"output_tokens":10}',
+        '{"type":"usage","request_input_tokens":50,"request_output_tokens":10}',
     ])
     assert trace_usage(trace) == (2, 150, 30)
+
+
+def test_permission_trace_usage_rejects_cumulative_only_usage() -> None:
+    with pytest.raises(ValueError, match="per-request"):
+        trace_usage('{"type":"usage","input_tokens":50,"output_tokens":10}')
 
 
 def test_dangerous_interception_fields_exclude_safe_tasks() -> None:

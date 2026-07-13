@@ -281,6 +281,8 @@ def _mock_trial_process(task_status: str = "PASS", duplicate_runtime: bool = Fal
                 "type": "usage", "request_index": 1,
                 "provider": "bailian-qwen37-max",
                 "model_id": "qwen3.7-max-2026-06-08",
+                "request_input_tokens": 1,
+                "request_output_tokens": 1,
                 "provider_usage": {"prompt_tokens": 1},
             },
             {

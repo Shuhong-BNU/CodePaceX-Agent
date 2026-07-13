@@ -12,6 +12,7 @@ from evals.mcp_study import (
     grade_trace,
     load_study,
     profiles,
+    scoped_tasks,
     study_asset_hash,
     top_level_trial_count,
 )
@@ -26,6 +27,14 @@ def test_frozen_mcp_matrix_has_30_independent_tasks_and_300_trials() -> None:
     assert top_level_trial_count(study, tasks) == 300
     assert len(study_asset_hash(STUDY, study)) == 64
     assert study_asset_hash(STUDY, study) == study_asset_hash(STUDY.resolve(), study)
+
+
+def test_mcp_pilot_scope_is_paired_one_task_per_category() -> None:
+    study, tasks = load_study(STUDY)
+    selected, repetitions = scoped_tasks(study, tasks, scope="pilot")
+    assert repetitions == 1
+    assert [task.category for task in selected] == ["no_mcp", "one_mcp", "multi_mcp"]
+    assert len({task.id for task in selected}) == 3
 
 
 def test_mcp_arms_change_effective_tool_loading_not_labels_only() -> None:

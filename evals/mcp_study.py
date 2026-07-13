@@ -33,6 +33,7 @@ from evals.pilot import (
     _provider_payload,
     _runtime_secrets,
     load_config as load_pilot_config,
+    trace_request_usages,
 )
 
 
@@ -123,6 +124,19 @@ def top_level_trial_count(
     return len(study.arms) * study.repetitions * len(tasks.tasks)
 
 
+def scoped_tasks(
+    study: MCPStudyConfig, tasks: MCPTaskManifest, *,
+    scope: Literal["pilot", "formal"],
+) -> tuple[list[MCPTask], int]:
+    if scope == "formal":
+        return list(tasks.tasks), study.repetitions
+    selected = [
+        next(task for task in tasks.tasks if task.category == category)
+        for category in ("no_mcp", "one_mcp", "multi_mcp")
+    ]
+    return selected, 1
+
+
 def study_asset_hash(
     study_path: Path, study: MCPStudyConfig,
 ) -> str:
@@ -148,8 +162,10 @@ def _git_dirty(root: Path) -> bool | None:
 def build_arm_manifest(
     *, root: Path, study_path: Path, study: MCPStudyConfig,
     tasks: MCPTaskManifest, profile: ExperimentProfile,
+    scope: Literal["pilot", "formal"] = "formal",
 ) -> RunManifest:
     pilot = load_pilot_config(root / "evals" / "pilot.qwen.yaml")
+    selected_tasks, repetitions = scoped_tasks(study, tasks, scope=scope)
     return RunManifest(
         experiment_kind=study.study_id,
         provider=pilot.provider,
@@ -165,8 +181,8 @@ def build_arm_manifest(
         experiment_profile_hash=profile.profile_hash(),
         runtime_contract_hash=profile.runtime_contract_hash(),
         benchmark_asset_hash=study_asset_hash(study_path, study),
-        task_ids=[task.id for task in tasks.tasks],
-        repetitions=study.repetitions,
+        task_ids=[task.id for task in selected_tasks],
+        repetitions=repetitions,
         model_parameters=pilot.model_parameters.model_dump(mode="json"),
         max_output_tokens=pilot.model_parameters.max_output_tokens,
         retry_budget=0,
@@ -175,21 +191,24 @@ def build_arm_manifest(
         experiment_config_hash=canonical_hash({
             "study": study.model_dump(mode="json"),
             "profile": profile.canonical_payload(),
+            "scope": scope,
         }),
     )
 
 
 def dry_run(
     *, root: Path, study_path: Path, runs_dir: Path, run_prefix: str,
+    scope: Literal["pilot", "formal"] = "formal",
 ) -> list[RunRecorder]:
     study, tasks = load_study(study_path)
+    selected_tasks, repetitions = scoped_tasks(study, tasks, scope=scope)
     recorders: list[RunRecorder] = []
     for profile in profiles(study):
         recorder = RunRecorder(
             runs_dir,
             build_arm_manifest(
                 root=root, study_path=study_path, study=study,
-                tasks=tasks, profile=profile,
+                tasks=tasks, profile=profile, scope=scope,
             ),
             run_id=f"{run_prefix}-{profile.tool_loading.value}",
             repo_root=root,
@@ -198,7 +217,8 @@ def dry_run(
             "network_called": False,
             "model_called": False,
             "arm": profile.tool_loading.value,
-            "planned_trial_count": len(tasks.tasks) * study.repetitions,
+            "planned_trial_count": len(selected_tasks) * repetitions,
+            "scope": scope,
         })
         recorder.finalize({
             "status": "dry_run", "execution_mode": "dry_run", "scorable": False,
@@ -260,6 +280,7 @@ def _write_child_config(
 def _run_arm(
     *, root: Path, study: MCPStudyConfig, tasks: MCPTaskManifest,
     profile: ExperimentProfile, recorder: RunRecorder, gate: PaidRunGate,
+    scope: Literal["pilot", "formal"],
 ) -> str:
     pilot = load_pilot_config(root / "evals" / "pilot.qwen.yaml")
     statuses: list[str] = []
@@ -272,8 +293,9 @@ def _run_arm(
             encoding="utf-8",
         )
         environment = _child_environment(pilot, str(home))
-        for repetition in range(1, study.repetitions + 1):
-            for task in tasks.tasks:
+        selected_tasks, repetitions = scoped_tasks(study, tasks, scope=scope)
+        for repetition in range(1, repetitions + 1):
+            for task in selected_tasks:
                 attempt_id = 1
                 reservation = gate.reserve(
                     f"mcp/{profile.tool_loading.value}/{task.id}/{repetition}",
@@ -306,6 +328,7 @@ def _run_arm(
                             recorder, trace_path, task.id, str(repetition), attempt_id,
                         )
                         requests, input_tokens, output_tokens = usage
+                        request_usages = trace_request_usages(process.stdout or "")
                         passed, grade = grade_trace(task, process.stdout or "")
                         status = (
                             "success" if process.returncode == 0 and passed
@@ -344,8 +367,7 @@ def _run_arm(
                     })
                     return "infrastructure_error"
                 settlement = gate.settle(
-                    reservation, requests=requests,
-                    input_tokens=input_tokens, output_tokens=output_tokens,
+                    reservation, request_usages=request_usages,
                 )
                 statuses.append(status)
                 recorder.event("trial_completed", {
@@ -368,6 +390,8 @@ def execute(
     pricing_snapshot: Path, confirmed: bool,
     budget_authorization: Path | None = None,
     budget_ledger: Path | None = None,
+    budget_stage: Literal["A", "B", "C"] = "C",
+    scope: Literal["pilot", "formal"] = "formal",
 ) -> list[RunRecorder]:
     study, tasks = load_study(study_path)
     pilot = load_pilot_config(root / "evals" / "pilot.qwen.yaml")
@@ -379,14 +403,14 @@ def execute(
     pricing_hash = pricing_snapshot_hash(pricing)
     gate = PaidRunGate(
         root=root, authorization_path=budget_authorization,
-        ledger_path=budget_ledger, pricing=pricing,
+        ledger_path=budget_ledger, pricing=pricing, stage=budget_stage,
     )
     recorders: list[RunRecorder] = []
     with gate.locked():
         for profile in profiles(study):
             manifest = build_arm_manifest(
                 root=root, study_path=study_path, study=study,
-                tasks=tasks, profile=profile,
+                tasks=tasks, profile=profile, scope=scope,
             )
             manifest.pricing_snapshot_hash = pricing_hash
             recorder = RunRecorder(
@@ -396,7 +420,7 @@ def execute(
             )
             status = _run_arm(
                 root=root, study=study, tasks=tasks,
-                profile=profile, recorder=recorder, gate=gate,
+                profile=profile, recorder=recorder, gate=gate, scope=scope,
             )
             recorder.finalize({
                 "status": status, "execution_mode": "live",
@@ -419,26 +443,34 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--confirm-paid-run", action="store_true")
     parser.add_argument("--budget-authorization", type=Path)
     parser.add_argument("--budget-ledger", type=Path)
+    parser.add_argument("--budget-stage", choices=["A", "B", "C"])
+    parser.add_argument("--scope", choices=["pilot", "formal"])
     args = parser.parse_args(argv)
     try:
         root = Path.cwd()
         study, tasks = load_study(args.study)
+        scope = args.scope or "formal"
+        selected_tasks, repetitions = scoped_tasks(study, tasks, scope=scope)
         payload = {
             "valid": True,
             "study_id": study.study_id,
-            "task_count": len(tasks.tasks),
-            "top_level_trial_count": top_level_trial_count(study, tasks),
+            "scope": scope,
+            "task_count": len(selected_tasks),
+            "top_level_trial_count": len(study.arms) * repetitions * len(selected_tasks),
             "asset_hash": study_asset_hash(args.study, study),
             "controlled_corpus_only": study.controlled_corpus_only,
         }
         if args.command == "dry-run":
             payload["run_paths"] = [str(recorder.path) for recorder in dry_run(
                 root=root, study_path=args.study, runs_dir=args.runs_dir,
-                run_prefix=args.run_prefix,
+                run_prefix=args.run_prefix, scope=scope,
             )]
         elif args.command == "execute":
-            if args.pricing_snapshot is None:
-                raise ValueError("execute requires --pricing-snapshot")
+            if any(item is None for item in [
+                args.pricing_snapshot, args.budget_authorization,
+                args.budget_ledger, args.budget_stage, args.scope,
+            ]):
+                raise ValueError("execute requires pricing, budget authorization, ledger, and stage")
             payload["run_paths"] = [str(recorder.path) for recorder in execute(
                 root=root, study_path=args.study, runs_dir=args.runs_dir,
                 run_prefix=args.run_prefix,
@@ -446,6 +478,8 @@ def main(argv: list[str] | None = None) -> int:
                 confirmed=args.confirm_paid_run,
                 budget_authorization=args.budget_authorization,
                 budget_ledger=args.budget_ledger,
+                budget_stage=args.budget_stage,
+                scope=args.scope,
             )]
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         return 0

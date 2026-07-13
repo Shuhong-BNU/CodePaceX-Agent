@@ -49,6 +49,19 @@ def test_arm64_local_build_namespace_and_report_dir_are_supported(tmp_path: Path
     assert command[command.index("--report_dir") + 1] == str(tmp_path / "reports")
 
 
+def test_x86_64_override_runs_fixed_module_without_editing_evaluator(tmp_path: Path) -> None:
+    command = build_evaluator_command(
+        dataset_name="org/live", split="lite",
+        predictions_path=tmp_path / "predictions.json", instance_ids=["one"],
+        max_workers=1, run_id="amd64", namespace="starryzhang",
+        python_executable="python3", evaluator_architecture="x86_64",
+    )
+    assert command[:2] == ["python3", "-c"]
+    assert "platform.machine=lambda" in command[2]
+    assert "swebench.harness.run_evaluation" in command[2]
+    assert command[command.index("--instance_ids") + 1:] == ["one"]
+
+
 def test_selection_is_stable_and_optionally_filters_language() -> None:
     items = [
         {"instance_id": "b", "repo": "repo", "platform": "linux", "language": "python"},

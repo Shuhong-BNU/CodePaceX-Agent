@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
@@ -42,6 +42,12 @@ def profiles(studies: Goal2Studies) -> list[ExperimentProfile]:
     ) for name in studies.retention.profiles]
 
 
+def scoped_session_indices(
+    studies: Goal2Studies, *, scope: Literal["pilot", "formal"],
+) -> list[int]:
+    return [0] if scope == "pilot" else list(range(len(studies.retention.session_seeds)))
+
+
 def asset_hash(studies_path: Path) -> str:
     return canonical_hash({
         "studies": hashlib.sha256(studies_path.read_bytes()).hexdigest(),
@@ -61,7 +67,7 @@ def _git_dirty(root: Path) -> bool | None:
 
 def build_manifest(
     *, root: Path, studies_path: Path, studies: Goal2Studies,
-    profile: ExperimentProfile,
+    profile: ExperimentProfile, scope: Literal["pilot", "formal"] = "formal",
 ) -> RunManifest:
     pilot = load_pilot_config(root / "evals" / "pilot.qwen.yaml")
     return RunManifest(
@@ -75,7 +81,10 @@ def build_manifest(
         experiment_profile_hash=profile.profile_hash(),
         runtime_contract_hash=profile.runtime_contract_hash(),
         benchmark_asset_hash=asset_hash(studies_path),
-        task_ids=[f"retention-session-{index + 1:02d}" for index in range(10)],
+        task_ids=[
+            f"retention-session-{index + 1:02d}"
+            for index in scoped_session_indices(studies, scope=scope)
+        ],
         repetitions=1,
         model_parameters=pilot.model_parameters.model_dump(mode="json"),
         context_window=studies.retention.context_window,
@@ -85,6 +94,7 @@ def build_manifest(
             "retention": studies.retention.model_dump(mode="json"),
             "profile": profile.canonical_payload(),
             "filler": [FILLER_MESSAGE_COUNT, FILLER_MESSAGE_CHARACTERS],
+            "scope": scope,
         }),
     )
 
@@ -146,6 +156,7 @@ class _Telemetry:
         self.tool_uses: list[dict[str, Any]] = []
         self._cumulative_input = 0
         self._cumulative_output = 0
+        self.request_usages: list[tuple[int, int]] = []
 
     def __call__(self, event: dict[str, Any]) -> None:
         event_type = event.get("type")
@@ -176,6 +187,7 @@ class _Telemetry:
                 request_output = int(event.get("request_output_tokens") or 0)
             self._cumulative_input = max(self._cumulative_input, total_input)
             self._cumulative_output = max(self._cumulative_output, total_output)
+            self.request_usages.append((request_input, request_output))
             self.recorder.capture_event({
                 "type": "usage", "request_index": self.request_count,
                 "input_tokens": total_input, "output_tokens": total_output,
@@ -204,7 +216,7 @@ async def _run_session(
     *, workspace: Path, pilot: Any, profile: ExperimentProfile,
     canaries: list[str], minimum_compactions: int, context_window: int,
     recorder: RunRecorder, task_id: str,
-) -> tuple[str, dict[str, Any], int, int, int]:
+) -> tuple[str, dict[str, Any], list[tuple[int, int]]]:
     canary_path = workspace / "canaries.json"
     canary_path.write_text(json.dumps(canaries), encoding="utf-8")
     provider = _write_provider_config(
@@ -256,14 +268,16 @@ async def _run_session(
         "synthetic_controlled_filler": True,
     })
     status = "success" if passed and read_used and telemetry.compression_count >= minimum_compactions else "task_failure"
+    if len(telemetry.request_usages) != telemetry.request_count:
+        raise ValueError("retention provider request usage is incomplete")
     return (
-        status, grade, telemetry.request_count,
-        agent.total_input_tokens, agent.total_output_tokens,
+        status, grade, telemetry.request_usages,
     )
 
 
 def dry_run(
     *, root: Path, studies_path: Path, runs_dir: Path, run_prefix: str,
+    scope: Literal["pilot", "formal"] = "formal",
 ) -> list[RunRecorder]:
     studies = load_studies(studies_path)
     recorders: list[RunRecorder] = []
@@ -271,13 +285,15 @@ def dry_run(
         recorder = RunRecorder(
             runs_dir,
             build_manifest(
-                root=root, studies_path=studies_path, studies=studies, profile=profile,
+                root=root, studies_path=studies_path, studies=studies,
+                profile=profile, scope=scope,
             ),
             run_id=f"{run_prefix}-{profile.compression_profile.value}", repo_root=root,
         )
         recorder.event("dry_run", {
             "network_called": False, "model_called": False,
-            "session_count": len(studies.retention.session_seeds),
+            "session_count": len(scoped_session_indices(studies, scope=scope)),
+            "scope": scope,
             "canaries_per_session": studies.retention.canaries_per_session,
             "minimum_real_compactions": studies.retention.minimum_real_compactions,
             "context_window": studies.retention.context_window,
@@ -293,7 +309,8 @@ def dry_run(
 def execute(
     *, root: Path, studies_path: Path, runs_dir: Path, run_prefix: str,
     pricing_snapshot: Path, budget_authorization: Path, budget_ledger: Path,
-    confirmed: bool,
+    confirmed: bool, budget_stage: Literal["A", "B", "C"] = "C",
+    scope: Literal["pilot", "formal"] = "formal",
 ) -> list[RunRecorder]:
     studies = load_studies(studies_path)
     pilot = load_pilot_config(root / "evals" / "pilot.qwen.yaml")
@@ -302,13 +319,14 @@ def execute(
     pricing = load_pricing(pricing_snapshot)
     gate = PaidRunGate(
         root=root, authorization_path=budget_authorization,
-        ledger_path=budget_ledger, pricing=pricing,
+        ledger_path=budget_ledger, pricing=pricing, stage=budget_stage,
     )
     recorders: list[RunRecorder] = []
     with gate.locked():
         for profile in profiles(studies):
             manifest = build_manifest(
-                root=root, studies_path=studies_path, studies=studies, profile=profile,
+                root=root, studies_path=studies_path, studies=studies,
+                profile=profile, scope=scope,
             )
             manifest.pricing_snapshot_hash = pricing_snapshot_hash(pricing)
             recorder = RunRecorder(
@@ -317,7 +335,7 @@ def execute(
                 repo_root=root, secrets=_runtime_secrets(pilot),
             )
             statuses: list[str] = []
-            for index, _seed in enumerate(studies.retention.session_seeds):
+            for index in scoped_session_indices(studies, scope=scope):
                 task_id = f"retention-session-{index + 1:02d}"
                 reservation = gate.reserve(
                     f"retention/{profile.compression_profile.value}/{task_id}",
@@ -332,7 +350,7 @@ def execute(
                 started = time.monotonic()
                 try:
                     with tempfile.TemporaryDirectory(prefix=f"codepacex-{task_id}-") as text:
-                        status, grade, requests, input_tokens, output_tokens = asyncio.run(
+                        status, grade, request_usages = asyncio.run(
                             _run_session(
                                 workspace=Path(text), pilot=pilot, profile=profile,
                                 canaries=retention_canaries(studies.retention, index),
@@ -352,8 +370,7 @@ def execute(
                     statuses.append("infrastructure_error")
                     break
                 settlement = gate.settle(
-                    reservation, requests=requests,
-                    input_tokens=input_tokens, output_tokens=output_tokens,
+                    reservation, request_usages=request_usages,
                 )
                 statuses.append(status)
                 recorder.event("trial_completed", {
@@ -387,14 +404,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pricing-snapshot", type=Path)
     parser.add_argument("--budget-authorization", type=Path)
     parser.add_argument("--budget-ledger", type=Path)
+    parser.add_argument("--budget-stage", choices=["A", "B", "C"])
+    parser.add_argument("--scope", choices=["pilot", "formal"])
     parser.add_argument("--confirm-paid-run", action="store_true")
     args = parser.parse_args(argv)
     try:
         root = Path.cwd()
         studies = load_studies(args.studies)
+        scope = args.scope or "formal"
         payload: dict[str, Any] = {
-            "valid": True, "session_count": 20,
-            "canary_count": 120,
+            "valid": True, "scope": scope,
+            "session_count": len(scoped_session_indices(studies, scope=scope)) * len(profiles(studies)),
+            "canary_count": (
+                len(scoped_session_indices(studies, scope=scope))
+                * studies.retention.canaries_per_session
+            ),
             "minimum_real_compactions_per_session": studies.retention.minimum_real_compactions,
             "context_window": studies.retention.context_window,
             "asset_hash": asset_hash(args.studies),
@@ -403,10 +427,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "dry-run":
             payload["run_paths"] = [str(item.path) for item in dry_run(
                 root=root, studies_path=args.studies, runs_dir=args.runs_dir,
-                run_prefix=args.run_prefix,
+                run_prefix=args.run_prefix, scope=scope,
             )]
         elif args.command == "execute":
-            required = [args.pricing_snapshot, args.budget_authorization, args.budget_ledger]
+            required = [args.pricing_snapshot, args.budget_authorization, args.budget_ledger, args.budget_stage, args.scope]
             if any(item is None for item in required):
                 raise ValueError("execute requires pricing, budget authorization, and ledger paths")
             payload["run_paths"] = [str(item.path) for item in execute(
@@ -414,6 +438,8 @@ def main(argv: list[str] | None = None) -> int:
                 run_prefix=args.run_prefix, pricing_snapshot=args.pricing_snapshot,
                 budget_authorization=args.budget_authorization,
                 budget_ledger=args.budget_ledger, confirmed=args.confirm_paid_run,
+                budget_stage=args.budget_stage,
+                scope=args.scope,
             )]
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         return 0

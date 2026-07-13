@@ -12,11 +12,12 @@ from decimal import Decimal, ROUND_UP
 from pathlib import Path
 from typing import Iterator, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from evals.costing import PricingSnapshot, pricing_snapshot_hash
 
 MONEY_QUANTUM = Decimal("0.000001")
+BudgetStage = Literal["A", "B", "C"]
 
 
 def _money(value: Decimal) -> Decimal:
@@ -32,13 +33,27 @@ class BudgetAuthorization(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     currency: Literal["CNY"] = "CNY"
     authorized_total_cny: Decimal = Field(gt=0)
+    stage_limits_cny: dict[BudgetStage, Decimal]
     pricing_snapshot_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     experiment_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
     authorized_at: str
     authorized_by: Literal["user"] = "user"
+
+    @model_validator(mode="after")
+    def validate_stage_limits(self) -> BudgetAuthorization:
+        if set(self.stage_limits_cny) != {"A", "B", "C"}:
+            raise ValueError("budget authorization requires A, B, and C stage limits")
+        stage_a = self.stage_limits_cny["A"]
+        stage_b = self.stage_limits_cny["B"]
+        stage_c = self.stage_limits_cny["C"]
+        if min(stage_a, stage_b, stage_c) <= 0 or not stage_a <= stage_b <= stage_c:
+            raise ValueError("budget stage limits must be positive and monotonic")
+        if stage_c != self.authorized_total_cny:
+            raise ValueError("stage C limit must equal the total authorization")
+        return self
 
 
 class Reservation(BaseModel):
@@ -46,6 +61,7 @@ class Reservation(BaseModel):
 
     reservation_id: str
     trial_id: str
+    stage: BudgetStage
     maximum_requests: int = Field(gt=0)
     maximum_input_tokens_per_request: int = Field(gt=0)
     maximum_output_tokens_per_request: int = Field(gt=0)
@@ -58,6 +74,7 @@ class Settlement(BaseModel):
 
     reservation_id: str
     trial_id: str
+    stage: BudgetStage
     requests: int = Field(ge=0)
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
@@ -66,14 +83,29 @@ class Settlement(BaseModel):
     settled_at: str
 
 
+class RequestCharge(BaseModel):
+    """One auditable provider request recorded before trial settlement."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reservation_id: str
+    trial_id: str
+    request_index: int = Field(gt=0)
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    actual_cny: Decimal = Field(ge=0)
+    recorded_at: str
+
+
 class BudgetLedger(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     currency: Literal["CNY"] = "CNY"
     authorization_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     spent_cny: Decimal = Field(default=Decimal("0"), ge=0)
     active_reservation: Reservation | None = None
+    request_charges: list[RequestCharge] = Field(default_factory=list)
     settlements: list[Settlement] = Field(default_factory=list)
     updated_at: str
 
@@ -158,13 +190,14 @@ class PaidRunGate:
 
     def __init__(
         self, *, root: Path, authorization_path: Path, ledger_path: Path,
-        pricing: PricingSnapshot,
+        pricing: PricingSnapshot, stage: BudgetStage,
     ) -> None:
         self.root = root.resolve()
         self.authorization_path = authorization_path
         self.ledger_path = ledger_path
         self.lock_path = ledger_path.with_suffix(ledger_path.suffix + ".lock")
         self.pricing = pricing
+        self.stage = stage
         self.authorization = load_authorization(authorization_path)
         validate_authorization(self.authorization, root=self.root, pricing=pricing)
         self._authorization_hash = authorization_hash(self.authorization)
@@ -232,14 +265,15 @@ class PaidRunGate:
             maximum_input_tokens_per_request=maximum_input_tokens_per_request,
             maximum_output_tokens_per_request=maximum_output_tokens_per_request,
         )
-        remaining = self.authorization.authorized_total_cny - ledger.spent_cny
+        stage_limit = self.authorization.stage_limits_cny[self.stage]
+        remaining = stage_limit - ledger.spent_cny
         if remaining < amount:
             raise ValueError(
-                f"insufficient authorized budget for worst next trial: "
+                f"insufficient stage {self.stage} budget for worst next trial: "
                 f"remaining={remaining} CNY required={amount} CNY"
             )
         reservation = Reservation(
-            reservation_id=uuid.uuid4().hex, trial_id=trial_id,
+            reservation_id=uuid.uuid4().hex, trial_id=trial_id, stage=self.stage,
             maximum_requests=maximum_requests,
             maximum_input_tokens_per_request=maximum_input_tokens_per_request,
             maximum_output_tokens_per_request=maximum_output_tokens_per_request,
@@ -250,15 +284,39 @@ class PaidRunGate:
         return reservation
 
     def settle(
-        self, reservation: Reservation, *, requests: int,
-        input_tokens: int, output_tokens: int,
+        self, reservation: Reservation, *, request_usages: list[tuple[int, int]],
     ) -> Settlement:
         ledger = self._load_ledger()
         active = ledger.active_reservation
         if active is None or active.reservation_id != reservation.reservation_id:
             raise ValueError("paid trial reservation is not active")
+        requests = len(request_usages)
         if requests > active.maximum_requests:
             raise ValueError("provider request count exceeded the reserved ceiling")
+        if not request_usages:
+            raise ValueError("paid trial settlement requires provider request usage")
+        request_charges: list[RequestCharge] = []
+        for request_index, (input_tokens, output_tokens) in enumerate(request_usages, 1):
+            if input_tokens < 0 or output_tokens < 0:
+                raise ValueError("provider request token usage cannot be negative")
+            if (
+                input_tokens > active.maximum_input_tokens_per_request
+                or output_tokens > active.maximum_output_tokens_per_request
+            ):
+                raise ValueError("provider request exceeded the per-request token ceiling")
+            request_charges.append(RequestCharge(
+                reservation_id=active.reservation_id,
+                trial_id=active.trial_id,
+                request_index=request_index,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                actual_cny=actual_cost(
+                    self.pricing, input_tokens=input_tokens, output_tokens=output_tokens,
+                ),
+                recorded_at=_utc_now(),
+            ))
+        input_tokens = sum(item.input_tokens for item in request_charges)
+        output_tokens = sum(item.output_tokens for item in request_charges)
         cost = actual_cost(
             self.pricing, input_tokens=input_tokens, output_tokens=output_tokens,
         )
@@ -266,11 +324,13 @@ class PaidRunGate:
             raise ValueError("observed token cost exceeded the reserved ceiling")
         settlement = Settlement(
             reservation_id=active.reservation_id, trial_id=active.trial_id,
+            stage=active.stage,
             requests=requests, input_tokens=input_tokens,
             output_tokens=output_tokens, actual_cny=cost,
             status="settled", settled_at=_utc_now(),
         )
         ledger.spent_cny = _money(ledger.spent_cny + cost)
+        ledger.request_charges.extend(request_charges)
         ledger.settlements.append(settlement)
         ledger.active_reservation = None
         self._write_ledger(ledger)
@@ -283,6 +343,7 @@ class PaidRunGate:
             raise ValueError("paid trial reservation is not active")
         settlement = Settlement(
             reservation_id=active.reservation_id, trial_id=active.trial_id,
+            stage=active.stage,
             requests=0, input_tokens=0, output_tokens=0,
             actual_cny=Decimal("0"), status="cancelled", settled_at=_utc_now(),
         )
@@ -296,9 +357,12 @@ class PaidRunGate:
         total = self.authorization.authorized_total_cny
         return {
             "currency": "CNY",
+            "stage": self.stage,
+            "stage_limit_cny": str(self.authorization.stage_limits_cny[self.stage]),
             "authorized_total_cny": str(total),
             "spent_cny": str(ledger.spent_cny),
             "remaining_cny": str(total - ledger.spent_cny),
             "settlement_count": len(ledger.settlements),
+            "request_charge_count": len(ledger.request_charges),
             "active_reservation": ledger.active_reservation is not None,
         }

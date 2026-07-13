@@ -11,7 +11,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
@@ -24,7 +24,7 @@ from evals.goal2_studies import Goal2Studies, PermissionTask, load_studies
 from evals.paid_gate import PaidRunGate
 from evals.pilot import (
     _child_environment, _ingest_trace, _provider_payload, _runtime_secrets,
-    load_config as load_pilot_config,
+    load_config as load_pilot_config, trace_request_usages,
 )
 
 MAXIMUM_REQUESTS_PER_TRIAL = 50
@@ -37,6 +37,16 @@ def profiles(studies: Goal2Studies) -> list[ExperimentProfile]:
         tool_loading="deferred", compression_profile="recovery_v1",
         permission_strategy=strategy, agent_mode="single",
     ) for strategy in studies.permission.strategies]
+
+
+def scoped_tasks(
+    studies: Goal2Studies, *, scope: Literal["pilot", "formal"],
+) -> tuple[list[PermissionTask], int]:
+    if scope == "formal":
+        return list(studies.permission.tasks), studies.permission.repetitions
+    safe = next(task for task in studies.permission.tasks if not task.dangerous)
+    dangerous = next(task for task in studies.permission.tasks if task.dangerous)
+    return [safe, dangerous], 1
 
 
 def asset_hash(studies_path: Path) -> str:
@@ -56,10 +66,10 @@ def _git_dirty(root: Path) -> bool | None:
 
 def build_manifest(
     *, root: Path, studies_path: Path, studies: Goal2Studies,
-    profile: ExperimentProfile,
+    profile: ExperimentProfile, scope: Literal["pilot", "formal"] = "formal",
 ) -> RunManifest:
     pilot = load_pilot_config(root / "evals" / "pilot.qwen.yaml")
-    tasks = studies.permission.tasks
+    tasks, repetitions = scoped_tasks(studies, scope=scope)
     return RunManifest(
         experiment_kind="goal2-permission-strategies",
         provider=pilot.provider, protocol=pilot.protocol,
@@ -72,13 +82,14 @@ def build_manifest(
         runtime_contract_hash=profile.runtime_contract_hash(),
         benchmark_asset_hash=asset_hash(studies_path),
         task_ids=[task.id for task in tasks],
-        repetitions=studies.permission.repetitions,
+        repetitions=repetitions,
         model_parameters=pilot.model_parameters.model_dump(mode="json"),
         max_output_tokens=pilot.model_parameters.max_output_tokens,
         retry_budget=0, fallback_enabled=False, max_iterations=50,
         experiment_config_hash=canonical_hash({
             "permission": studies.permission.model_dump(mode="json"),
             "profile": profile.canonical_payload(),
+            "scope": scope,
         }),
     )
 
@@ -96,11 +107,11 @@ def _parse_events(trace_text: str) -> list[dict[str, Any]]:
 
 
 def trace_usage(trace_text: str) -> tuple[int, int, int]:
-    usage = [event for event in _parse_events(trace_text) if event.get("type") == "usage"]
+    usage = trace_request_usages(trace_text)
     return (
         len(usage),
-        sum(int(event.get("request_input_tokens") or event.get("input_tokens") or 0) for event in usage),
-        sum(int(event.get("request_output_tokens") or event.get("output_tokens") or 0) for event in usage),
+        sum(item[0] for item in usage),
+        sum(item[1] for item in usage),
     )
 
 
@@ -198,8 +209,10 @@ def _prepare_workspace(workspace: Path, *, explicit_rules: bool, tasks: list[Per
 
 def dry_run(
     *, root: Path, studies_path: Path, runs_dir: Path, run_prefix: str,
+    scope: Literal["pilot", "formal"] = "formal",
 ) -> list[RunRecorder]:
     studies = load_studies(studies_path)
+    tasks, repetitions = scoped_tasks(studies, scope=scope)
     recorders = []
     with tempfile.TemporaryDirectory(prefix="codepacex-permission-probe-") as text:
         sandbox_available, sandbox_reason = probe_os_sandbox(Path(text))
@@ -207,13 +220,15 @@ def dry_run(
         recorder = RunRecorder(
             runs_dir,
             build_manifest(
-                root=root, studies_path=studies_path, studies=studies, profile=profile,
+                root=root, studies_path=studies_path, studies=studies,
+                profile=profile, scope=scope,
             ),
             run_id=f"{run_prefix}-{profile.permission_strategy.value}", repo_root=root,
         )
         recorder.event("dry_run", {
             "network_called": False, "model_called": False,
-            "planned_trial_count": len(studies.permission.tasks) * studies.permission.repetitions,
+            "planned_trial_count": len(tasks) * repetitions,
+            "scope": scope,
             "os_sandbox_available": sandbox_available,
             "os_sandbox_probe": sandbox_reason,
         })
@@ -227,6 +242,7 @@ def dry_run(
 def _run_profile(
     *, root: Path, studies: Goal2Studies, profile: ExperimentProfile,
     recorder: RunRecorder, gate: PaidRunGate,
+    scope: Literal["pilot", "formal"],
 ) -> str:
     pilot = load_pilot_config(root / "evals" / "pilot.qwen.yaml")
     statuses: list[str] = []
@@ -241,8 +257,9 @@ def _run_profile(
             yaml.safe_dump(profile.canonical_payload(), sort_keys=True), encoding="utf-8",
         )
         environment = _child_environment(pilot, home_text)
-        for repetition in range(1, studies.permission.repetitions + 1):
-            for task in studies.permission.tasks:
+        tasks, repetitions = scoped_tasks(studies, scope=scope)
+        for repetition in range(1, repetitions + 1):
+            for task in tasks:
                 trial_id = f"permission/{profile.permission_strategy.value}/{task.id}/{repetition}"
                 reservation = gate.reserve(
                     trial_id, maximum_requests=MAXIMUM_REQUESTS_PER_TRIAL,
@@ -260,7 +277,7 @@ def _run_profile(
                     _prepare_workspace(
                         workspace,
                         explicit_rules=profile.permission_strategy is PermissionStrategy.EXPLICIT_RULES,
-                        tasks=studies.permission.tasks,
+                        tasks=tasks,
                     )
                     try:
                         process = subprocess.run(
@@ -282,6 +299,7 @@ def _run_profile(
                             "budget_reconciliation_required": True,
                         })
                         return "timeout"
+                request_usages = trace_request_usages(process.stdout or "")
                 requests, input_tokens, output_tokens = trace_usage(process.stdout or "")
                 if requests == 0:
                     recorder.event("trial_completed", {
@@ -291,8 +309,7 @@ def _run_profile(
                     })
                     return "infrastructure_error"
                 settlement = gate.settle(
-                    reservation, requests=requests,
-                    input_tokens=input_tokens, output_tokens=output_tokens,
+                    reservation, request_usages=request_usages,
                 )
                 # Ingest directly from a private temporary file so the raw trace is not retained.
                 with tempfile.NamedTemporaryFile("w", suffix=".ndjson", encoding="utf-8") as trace:
@@ -323,7 +340,8 @@ def _run_profile(
 def execute(
     *, root: Path, studies_path: Path, runs_dir: Path, run_prefix: str,
     pricing_snapshot: Path, budget_authorization: Path, budget_ledger: Path,
-    confirmed: bool,
+    confirmed: bool, budget_stage: Literal["A", "B", "C"] = "C",
+    scope: Literal["pilot", "formal"] = "formal",
 ) -> list[RunRecorder]:
     studies = load_studies(studies_path)
     pilot = load_pilot_config(root / "evals" / "pilot.qwen.yaml")
@@ -332,13 +350,14 @@ def execute(
     pricing = load_pricing(pricing_snapshot)
     gate = PaidRunGate(
         root=root, authorization_path=budget_authorization,
-        ledger_path=budget_ledger, pricing=pricing,
+        ledger_path=budget_ledger, pricing=pricing, stage=budget_stage,
     )
     recorders: list[RunRecorder] = []
     with gate.locked():
         for profile in profiles(studies):
             manifest = build_manifest(
-                root=root, studies_path=studies_path, studies=studies, profile=profile,
+                root=root, studies_path=studies_path, studies=studies,
+                profile=profile, scope=scope,
             )
             manifest.pricing_snapshot_hash = pricing_snapshot_hash(pricing)
             recorder = RunRecorder(
@@ -348,7 +367,7 @@ def execute(
             )
             status = _run_profile(
                 root=root, studies=studies, profile=profile,
-                recorder=recorder, gate=gate,
+                recorder=recorder, gate=gate, scope=scope,
             )
             recorder.finalize({
                 "status": status, "execution_mode": "live",
@@ -369,17 +388,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pricing-snapshot", type=Path)
     parser.add_argument("--budget-authorization", type=Path)
     parser.add_argument("--budget-ledger", type=Path)
+    parser.add_argument("--budget-stage", choices=["A", "B", "C"])
+    parser.add_argument("--scope", choices=["pilot", "formal"])
     parser.add_argument("--confirm-paid-run", action="store_true")
     args = parser.parse_args(argv)
     try:
         root = Path.cwd()
         studies = load_studies(args.studies)
+        scope = args.scope or "formal"
+        selected_tasks, repetitions = scoped_tasks(studies, scope=scope)
         payload: dict[str, Any] = {
-            "valid": True,
-            "task_count": len(studies.permission.tasks),
+            "valid": True, "scope": scope,
+            "task_count": len(selected_tasks),
             "strategy_count": len(studies.permission.strategies),
             "top_level_trial_count": (
-                len(studies.permission.tasks) * studies.permission.repetitions
+                len(selected_tasks) * repetitions
                 * len(studies.permission.strategies)
             ),
             "asset_hash": asset_hash(args.studies),
@@ -387,10 +410,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "dry-run":
             payload["run_paths"] = [str(item.path) for item in dry_run(
                 root=root, studies_path=args.studies, runs_dir=args.runs_dir,
-                run_prefix=args.run_prefix,
+                run_prefix=args.run_prefix, scope=scope,
             )]
         elif args.command == "execute":
-            required = [args.pricing_snapshot, args.budget_authorization, args.budget_ledger]
+            required = [args.pricing_snapshot, args.budget_authorization, args.budget_ledger, args.budget_stage, args.scope]
             if any(item is None for item in required):
                 raise ValueError("execute requires pricing, budget authorization, and ledger paths")
             payload["run_paths"] = [str(item.path) for item in execute(
@@ -398,6 +421,8 @@ def main(argv: list[str] | None = None) -> int:
                 run_prefix=args.run_prefix, pricing_snapshot=args.pricing_snapshot,
                 budget_authorization=args.budget_authorization,
                 budget_ledger=args.budget_ledger, confirmed=args.confirm_paid_run,
+                budget_stage=args.budget_stage,
+                scope=args.scope,
             )]
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         return 0

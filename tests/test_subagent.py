@@ -487,10 +487,14 @@ class TestTraceManager:
         failed = tm.create("worker", parent_id="lead")
         tm.update(
             completed.agent_id, input_tokens=100, output_tokens=25,
-            request_count=3, tool_call_count=2,
+            request_count=3, request_usages=[(30, 5), (30, 10), (40, 10)],
+            tool_call_count=2,
         )
         tm.complete(completed.agent_id, "completed")
-        tm.update(failed.agent_id, input_tokens=40, output_tokens=10, request_count=1)
+        tm.update(
+            failed.agent_id, input_tokens=40, output_tokens=10,
+            request_count=1, request_usages=[(40, 10)],
+        )
         tm.complete(failed.agent_id, "failed")
 
         assert tm.benchmark_summary("lead") == {
@@ -500,6 +504,12 @@ class TestTraceManager:
             "child_input_tokens": 140,
             "child_output_tokens": 35,
             "child_request_count": 4,
+            "child_request_usages": [
+                {"input_tokens": 30, "output_tokens": 5},
+                {"input_tokens": 30, "output_tokens": 10},
+                {"input_tokens": 40, "output_tokens": 10},
+                {"input_tokens": 40, "output_tokens": 10},
+            ],
             "child_tool_call_count": 2,
             "maximum_parallel_children": 2,
         }

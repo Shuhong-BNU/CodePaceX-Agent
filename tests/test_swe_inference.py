@@ -91,6 +91,7 @@ def test_official_environment_freezes_exact_python_only_revision() -> None:
     assert environment["branch"] == "python-only"
     assert environment["commit"] == "ad79b850f15e33992e96f03f6e97f05ddf9aa0be"
     assert environment["evaluator_namespace"] == "starryzhang"
+    assert environment["arm64_evaluator_architecture"] == "x86_64"
     assert environment["split"] == "lite"
 
 

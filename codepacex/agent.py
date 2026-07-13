@@ -1893,14 +1893,20 @@ class Agent:
             self.total_output_tokens += response.output_tokens
 
             if event_callback:
-                event_callback({
-                    "type": "usage",
-                    "usage": {
-                        "inputTokens": self.total_input_tokens,
-                        "outputTokens": self.total_output_tokens,
-                        "requestIndex": response.request_index,
-                    },
-                })
+                event_callback(self._usage_event_payload(UsageEvent(
+                    input_tokens=self.total_input_tokens,
+                    output_tokens=self.total_output_tokens,
+                    request_input_tokens=response.input_tokens,
+                    request_output_tokens=response.output_tokens,
+                    provider_usage=response.provider_usage,
+                    provider=(
+                        self.active_provider.name if self.active_provider is not None else None
+                    ),
+                    model_id=(
+                        self.active_provider.model if self.active_provider is not None else None
+                    ),
+                    request_index=response.request_index,
+                )))
 
             if response.text:
                 last_text = response.text

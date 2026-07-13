@@ -12,6 +12,7 @@ from evals.multi_agent_study import (
     dry_run,
     grade_trial,
     profiles,
+    scoped_tasks,
     success_rate_fields,
 )
 
@@ -24,6 +25,12 @@ def test_multi_agent_profiles_change_real_tool_availability_contract() -> None:
     assert single.effective_runtime()["multi_agent_tools_enabled"] is False
     assert multi.effective_runtime()["multi_agent_tools_enabled"] is True
     assert single.permission_strategy.value == multi.permission_strategy.value == "session_allow"
+
+
+def test_multi_agent_pilot_scope_pairs_both_modes_on_one_task() -> None:
+    tasks, repetitions = scoped_tasks(load_studies(STUDIES), scope="pilot")
+    assert repetitions == 1
+    assert [task.id for task in tasks] == ["multi_parser_commands"]
 
 
 def test_frozen_fixture_starts_with_each_task_failing(tmp_path: Path) -> None:

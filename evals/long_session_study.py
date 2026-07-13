@@ -214,6 +214,7 @@ class _CycleTelemetry:
         self.task_id = task_id
         self.cycle = cycle
         self.requests = 0
+        self.request_usages: list[tuple[int, int]] = []
 
     def __call__(self, event: dict[str, Any]) -> None:
         if event.get("type") == "runtime_manifest":
@@ -224,6 +225,10 @@ class _CycleTelemetry:
                 "attempt_id": 1,
             })
         elif event.get("type") == "usage" and self.requests:
+            self.request_usages.append((
+                int(event.get("request_input_tokens") or 0),
+                int(event.get("request_output_tokens") or 0),
+            ))
             self.recorder.capture_event({
                 **event, "request_index": self.requests,
                 "task_id": self.task_id, "repetition_id": str(self.cycle),
@@ -265,9 +270,8 @@ def _new_runtime(
 async def _run_cycle(
     *, agent: Agent, conversation: ConversationManager, recorder: RunRecorder,
     task_id: str, cycle: int, marker: str,
-) -> tuple[str, dict[str, Any], int, int, int]:
+) -> tuple[str, dict[str, Any], list[tuple[int, int]]]:
     telemetry = _CycleTelemetry(recorder, task_id, cycle)
-    before_input, before_output = agent.total_input_tokens, agent.total_output_tokens
     answer = await agent.run_to_completion(
         f"Long-session continuity check {cycle}. Return exactly one JSON object "
         f'{{"cycle":{cycle},"marker":"{marker}","status":"ok"}}. '
@@ -276,11 +280,9 @@ async def _run_cycle(
     )
     passed, grade = strict_cycle_grade(answer, cycle=cycle, marker=marker)
     status = "success" if passed and telemetry.requests <= 10 else "task_failure"
-    return (
-        status, grade, telemetry.requests,
-        agent.total_input_tokens - before_input,
-        agent.total_output_tokens - before_output,
-    )
+    if len(telemetry.request_usages) != telemetry.requests:
+        raise ValueError("long-session provider request usage is incomplete")
+    return status, grade, telemetry.request_usages
 
 
 def dry_run(
@@ -312,6 +314,7 @@ def execute(
     kind: Literal["pilot", "formal"], index: int,
     pricing_snapshot: Path, budget_authorization: Path, budget_ledger: Path,
     checkpoint_path: Path, confirmed: bool, resume: bool,
+    budget_stage: Literal["A", "B", "C"] = "C",
 ) -> RunRecorder:
     studies = load_studies(studies_path)
     spec = schedule(studies, kind=kind, index=index)
@@ -321,7 +324,7 @@ def execute(
     pricing = load_pricing(pricing_snapshot)
     gate = PaidRunGate(
         root=root, authorization_path=budget_authorization,
-        ledger_path=budget_ledger, pricing=pricing,
+        ledger_path=budget_ledger, pricing=pricing, stage=budget_stage,
     )
     manifest = build_manifest(
         root=root, studies_path=studies_path, studies=studies,
@@ -391,7 +394,7 @@ def execute(
             })
             started = time.monotonic()
             try:
-                status, grade, requests, input_tokens, output_tokens = asyncio.run(
+                status, grade, request_usages = asyncio.run(
                     _run_cycle(
                         agent=agent, conversation=conversation, recorder=recorder,
                         task_id=task_id, cycle=cycle, marker=marker,
@@ -407,8 +410,7 @@ def execute(
                 statuses.append("infrastructure_error")
                 break
             settlement = gate.settle(
-                reservation, requests=requests,
-                input_tokens=input_tokens, output_tokens=output_tokens,
+                reservation, request_usages=request_usages,
             )
             statuses.append(status)
             recorder.event("trial_completed", {
@@ -482,6 +484,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pricing-snapshot", type=Path)
     parser.add_argument("--budget-authorization", type=Path)
     parser.add_argument("--budget-ledger", type=Path)
+    parser.add_argument("--budget-stage", choices=["A", "B", "C"])
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--confirm-paid-run", action="store_true")
     args = parser.parse_args(argv)
@@ -499,7 +502,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command in {"execute", "resume"}:
             required = [
                 args.pricing_snapshot, args.budget_authorization,
-                args.budget_ledger, args.checkpoint,
+                args.budget_ledger, args.checkpoint, args.budget_stage,
             ]
             if any(item is None for item in required):
                 raise ValueError("live long-session requires pricing, budget, ledger, and checkpoint paths")
@@ -510,6 +513,7 @@ def main(argv: list[str] | None = None) -> int:
                 budget_authorization=args.budget_authorization,
                 budget_ledger=args.budget_ledger, checkpoint_path=args.checkpoint,
                 confirmed=args.confirm_paid_run, resume=args.command == "resume",
+                budget_stage=args.budget_stage,
             )
             payload["run_path"] = str(recorder.path)
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
