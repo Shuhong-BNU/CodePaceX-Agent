@@ -14,6 +14,7 @@ from codepacex.client import (
 )
 from codepacex.config import ProviderConfig
 from codepacex.conversation import ConversationManager
+from codepacex.experiments import ExperimentProfile, combined_runtime_hash
 from codepacex.serialization import (
     build_anthropic_messages,
     build_chat_completion_messages,
@@ -125,6 +126,45 @@ async def test_agent_assigns_monotonic_request_indexes_across_turns(tmp_path) ->
     runtime_events = [event for event in events if isinstance(event, RuntimeManifestEvent)]
     assert [event.request_index for event in runtime_events] == [1, 2]
     assert [event.provider for event in runtime_events] == ["primary", "fallback"]
+
+
+@pytest.mark.asyncio
+async def test_agent_binds_experiment_profile_to_each_runtime_request(tmp_path) -> None:
+    runtime = RuntimeManifestEvent(
+        "primary", "openai-compat", "model", "system", "tools", "messages"
+    )
+
+    class RuntimeClient:
+        async def stream(self, conversation, system="", tools=None):
+            yield runtime
+            yield TextDelta("done")
+            yield StreamEnd("end_turn")
+
+        def set_max_output_tokens(self, tokens: int) -> None:
+            pass
+
+    profile = ExperimentProfile.model_validate({
+        "tool_loading": "deferred",
+        "compression_profile": "recovery_v1",
+        "permission_strategy": "default",
+        "agent_mode": "single",
+    })
+    agent = Agent(
+        RuntimeClient(), create_default_registry(), "openai-compat",
+        work_dir=str(tmp_path), experiment_profile=profile,
+    )
+    conversation = ConversationManager()
+    conversation.add_user_message("run")
+    events = [event async for event in agent.run(conversation)]
+    observed = next(event for event in events if isinstance(event, RuntimeManifestEvent))
+
+    assert observed.experiment_profile_hash == profile.profile_hash()
+    assert observed.runtime_contract_hash == profile.runtime_contract_hash()
+    assert observed.combined_runtime_hash == combined_runtime_hash(
+        profile_hash=profile.profile_hash(),
+        system_sha256="system",
+        tools_sha256="tools",
+    )
 
 
 def test_runtime_hash_components_change_independently() -> None:

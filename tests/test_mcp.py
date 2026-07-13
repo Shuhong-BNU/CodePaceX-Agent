@@ -219,6 +219,20 @@ class TestMCPToolWrapper:
         assert schema["name"] == "mcp_srv_search"
         assert schema["input_schema"] == input_schema
 
+    def test_benchmark_profile_can_make_mcp_tool_eager(self) -> None:
+        from mcp import types as mcp_types
+        from codepacex.mcp.tool_wrapper import MCPToolWrapper
+
+        tool_def = mcp_types.Tool(
+            name="lookup",
+            description="Lookup",
+            inputSchema={"type": "object", "properties": {}},
+        )
+        wrapper = MCPToolWrapper(
+            "fixture", tool_def, MagicMock(), should_defer=False,
+        )
+        assert wrapper.should_defer is False
+
 # ===========================================================================
 # _extract_text
 # ===========================================================================
@@ -299,3 +313,27 @@ class TestMCPManagerPartialFailure:
         assert len(result.errors) == 1
         assert "bad" in result.errors[0]
         assert registry.get("mcp_good_test_tool") is not None
+
+    @pytest.mark.asyncio
+    async def test_manager_applies_eager_loading_to_discovered_tools(self) -> None:
+        from codepacex.mcp.manager import MCPManager
+        from codepacex.tools import ToolRegistry
+        from mcp import types as mcp_types
+
+        manager = MCPManager()
+        manager.load_configs([MCPServerConfig(name="fixture", command="fixture")])
+        registry = ToolRegistry()
+        client = AsyncMock()
+        client.instructions = ""
+        client.list_tools.return_value = [mcp_types.Tool(
+            name="lookup", description="Lookup",
+            inputSchema={"type": "object", "properties": {}},
+        )]
+        with patch("codepacex.mcp.manager.MCPClient", return_value=client):
+            await manager.register_all_tools(registry, defer_tools=False)
+
+        tool = registry.get("mcp_fixture_lookup")
+        assert tool is not None and tool.should_defer is False
+        assert "mcp_fixture_lookup" in {
+            schema["name"] for schema in registry.get_all_schemas()
+        }

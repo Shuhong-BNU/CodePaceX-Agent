@@ -46,7 +46,7 @@ class MCPManager:
             self._configs[cfg.name] = cfg
 
 
-    async def connect_all(self) -> ConnectResult:
+    async def connect_all(self, *, defer_tools: bool = True) -> ConnectResult:
         """连接所有已加载的 MCP 服务器，返回工具列表、服务器信息和错误。
 
         连接后从初始化结果提取 instructions，
@@ -65,7 +65,9 @@ class MCPManager:
 
                 tools = await client.list_tools()
                 for tool_def in tools:
-                    wrapper = MCPToolWrapper(name, tool_def, client)
+                    wrapper = MCPToolWrapper(
+                        name, tool_def, client, should_defer=defer_tools,
+                    )
                     result.tools.append(wrapper)
                     logger.info("Registered MCP tool: %s", wrapper.name)
 
@@ -76,14 +78,16 @@ class MCPManager:
 
         return result
 
-    async def register_all_tools(self, registry: ToolRegistry) -> ConnectResult:
+    async def register_all_tools(
+        self, registry: ToolRegistry, *, defer_tools: bool = True,
+    ) -> ConnectResult:
         """连接所有服务器并注册工具到 registry，返回 ConnectResult。
 
         与旧版签名兼容（之前返回 list[str]），现在返回 ConnectResult，
         调用方可通过 result.errors 获取错误列表，也可通过 result.servers
         获取每个服务器的 instructions。
         """
-        result = await self.connect_all()
+        result = await self.connect_all(defer_tools=defer_tools)
         for tool in result.tools:
             registry.register(tool)
         return result
