@@ -730,6 +730,19 @@ class TestPermissionMode:
 # =====================================================================
 
 class TestAgentToolParams:
+    def test_billable_usage_keeps_cached_prompt_tokens(self):
+        from codepacex.tools.agent_tool import _billable_request_usage
+
+        assert _billable_request_usage({
+            "request_input_tokens": 200,
+            "request_output_tokens": 30,
+            "provider_usage": {
+                "prompt_tokens": 1200,
+                "completion_tokens": 30,
+                "prompt_tokens_details": {"cached_tokens": 1000},
+            },
+        }) == (1200, 30)
+
     def test_required_fields(self):
         from codepacex.tools.agent_tool import AgentToolParams
         params = AgentToolParams(prompt="do this", description="test")

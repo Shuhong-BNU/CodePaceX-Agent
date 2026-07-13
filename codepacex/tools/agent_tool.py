@@ -22,6 +22,23 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+def _billable_request_usage(event: dict[str, Any]) -> tuple[int, int]:
+    """Use total provider tokens when the frozen price assumes no cache discount."""
+    input_tokens = int(event.get("request_input_tokens") or 0)
+    output_tokens = int(event.get("request_output_tokens") or 0)
+    raw = event.get("provider_usage")
+    if isinstance(raw, dict):
+        for key in ("prompt_tokens", "input_tokens"):
+            if key in raw and raw[key] is not None:
+                input_tokens = int(raw[key])
+                break
+        for key in ("completion_tokens", "output_tokens"):
+            if key in raw and raw[key] is not None:
+                output_tokens = int(raw[key])
+                break
+    return input_tokens, output_tokens
+
+
 # 核心实现
 class AgentToolParams(BaseModel):
     prompt: str
@@ -255,10 +272,7 @@ class AgentTool(Tool):
 
         def capture_usage(event: dict[str, Any]) -> None:
             if event.get("type") == "usage":
-                request_usages.append((
-                    int(event.get("request_input_tokens") or 0),
-                    int(event.get("request_output_tokens") or 0),
-                ))
+                request_usages.append(_billable_request_usage(event))
 
         try:
             if is_fork:
@@ -277,8 +291,8 @@ class AgentTool(Tool):
 
         self._trace_manager.update(
             trace_node.agent_id,
-            input_tokens=sub_agent.total_input_tokens,
-            output_tokens=sub_agent.total_output_tokens,
+            input_tokens=sum(item[0] for item in request_usages),
+            output_tokens=sum(item[1] for item in request_usages),
             request_count=sub_agent._runtime_request_index,
             request_usages=request_usages,
             tool_call_count=sub_agent._loop_count,
@@ -640,10 +654,7 @@ class AgentTool(Tool):
 
         def capture_usage(event: dict[str, Any]) -> None:
             if event.get("type") == "usage":
-                request_usages.append((
-                    int(event.get("request_input_tokens") or 0),
-                    int(event.get("request_output_tokens") or 0),
-                ))
+                request_usages.append(_billable_request_usage(event))
 
         try:
             result_text = await sub_agent.run_to_completion(
@@ -658,8 +669,8 @@ class AgentTool(Tool):
 
         self._trace_manager.update(
             trace_node.agent_id,
-            input_tokens=sub_agent.total_input_tokens,
-            output_tokens=sub_agent.total_output_tokens,
+            input_tokens=sum(item[0] for item in request_usages),
+            output_tokens=sum(item[1] for item in request_usages),
             request_count=sub_agent._runtime_request_index,
             request_usages=request_usages,
             tool_call_count=sub_agent._loop_count,

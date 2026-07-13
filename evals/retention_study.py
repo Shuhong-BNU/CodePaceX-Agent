@@ -25,7 +25,7 @@ from codepacex.tools import create_default_registry
 from evals.benchmark import RunManifest, RunRecorder, canonical_hash, current_git_commit, sanitize_origin
 from evals.costing import load_pricing, pricing_snapshot_hash
 from evals.goal2_studies import Goal2Studies, load_studies, retention_canaries
-from evals.paid_gate import PaidRunGate
+from evals.paid_gate import PaidRunGate, billable_request_usage
 from evals.pilot import _provider_payload, _runtime_secrets, load_config as load_pilot_config
 
 MAXIMUM_REQUESTS_PER_SESSION = 50
@@ -187,7 +187,11 @@ class _Telemetry:
                 request_output = int(event.get("request_output_tokens") or 0)
             self._cumulative_input = max(self._cumulative_input, total_input)
             self._cumulative_output = max(self._cumulative_output, total_output)
-            self.request_usages.append((request_input, request_output))
+            self.request_usages.append(billable_request_usage({
+                "request_input_tokens": request_input,
+                "request_output_tokens": request_output,
+                "provider_usage": event.get("provider_usage"),
+            }))
             self.recorder.capture_event({
                 "type": "usage", "request_index": self.request_count,
                 "input_tokens": total_input, "output_tokens": total_output,

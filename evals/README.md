@@ -117,7 +117,7 @@ fixture 中的 `.codepacex/permissions.yaml` 会通过项目级 permission rule 
 
 Claims 声明的 sample size 必须与真实 trial 或真实 A/B 配对数完全相等。rate 使用汇总后的 numerator/denominator；A/B 仅比较完全相同的 `task_id + repetition_id` 配对，且双方都必须具有唯一、成功的终态 Attempt；含多个终态 Attempt 的 trial 在 Pilot v1 中是 insufficient-data。p95 唯一使用 nearest-rank：`sorted_values[ceil(0.95 * n) - 1]`，不使用插值。
 
-Goal 2 的四类 `ExperimentProfile` 会真实改变 ToolRegistry、压缩、权限和多 Agent Runtime；Runtime Artifact 记录 profile/hash、最终 Provider payload hash 和工具 Schema 字节数。六项指标 runner、分项成本估算、官方 SWE 环境 preflight、单写者预算 gate、长会话 checkpoint 和 Goal 2 Claims 自动生成均已实现并有测试。尚未运行任何 Qwen paid Pilot、真实 SWE-bench-Live、正式 Token A/B 或长会话，因此没有这些项目的实际指标或成绩。执行手册见 [`GOAL2_RUNBOOK.md`](GOAL2_RUNBOOK.md)。
+Goal 2 的四类 `ExperimentProfile` 会真实改变 ToolRegistry、压缩、权限和多 Agent Runtime；Runtime Artifact 记录 profile/hash、最终 Provider payload hash 和工具 Schema 字节数。六项指标 runner、分项成本估算、官方 SWE 环境 preflight、单写者预算 gate、长会话 checkpoint 和 Goal 2 Claims 自动生成均已实现并有测试。`8fd4b19` 的首次 Qwen Stage A Pilot 已真实调用 Provider，但以 `task_failure` 结束并触发证据/计费修复，不能写成效果成绩；真实 SWE Agent inference、正式 Token A/B 和长会话仍未运行。执行手册见 [`GOAL2_RUNBOOK.md`](GOAL2_RUNBOOK.md)。
 
 ## SWE-bench 官方适配器
 

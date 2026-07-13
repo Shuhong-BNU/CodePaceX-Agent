@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from codepacex.experiments import ExperimentProfile
 from evals.benchmark import RunManifest, RunRecorder, canonical_hash, current_git_commit, sanitize_origin
 from evals.costing import load_pricing
-from evals.paid_gate import PaidRunGate
+from evals.paid_gate import PaidRunGate, billable_request_usage
 
 FROZEN_PROVIDER = "bailian-qwen37-max"
 FROZEN_PROTOCOL = "openai-compat"
@@ -368,13 +368,32 @@ def trace_request_usages(trace_text: str) -> list[tuple[int, int]]:
             continue
         if not isinstance(event, dict) or event.get("type") != "usage":
             continue
-        if "request_input_tokens" not in event or "request_output_tokens" not in event:
-            raise ValueError("provider usage lacks per-request token accounting")
-        result.append((
-            int(event.get("request_input_tokens") or 0),
-            int(event.get("request_output_tokens") or 0),
-        ))
+        result.append(billable_request_usage(event))
     return result
+
+
+def _trial_evidence(report_dir: Path, task_id: str) -> str:
+    """Retain the inner grader result before its temporary directory is removed."""
+    results = list(report_dir.glob("*/suite_result.json"))
+    if len(results) != 1:
+        return ""
+    inner = results[0].parent
+    payload = json.loads(results[0].read_text(encoding="utf-8"))
+    report = inner / "report.md"
+    return "\n".join([
+        f"## {task_id}",
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+        report.read_text(encoding="utf-8") if report.exists() else "",
+    ])
+
+
+def _provider_request_count(recorder: RunRecorder) -> int:
+    try:
+        payload = json.loads((recorder.path / "usage.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+    requests = payload.get("requests") if isinstance(payload, dict) else None
+    return len(requests) if isinstance(requests, list) else 0
 
 
 def _run_trials(
@@ -384,6 +403,7 @@ def _run_trials(
     statuses: list[str] = []
     stdout_chunks: list[str | bytes] = []
     stderr_chunks: list[str | bytes] = []
+    evidence_chunks: list[str] = []
     successful = recorder.successful_trials()
     with (
         tempfile.TemporaryDirectory(prefix="codepacex-pilot-home-") as home,
@@ -439,6 +459,9 @@ def _run_trials(
                 try:
                     process = subprocess.run(command, cwd=root, env=env, text=True, capture_output=True, timeout=config.timeout_seconds)
                     status = _suite_status(report_dir, task_id, process.returncode)
+                    evidence = _trial_evidence(report_dir, task_id)
+                    if evidence:
+                        evidence_chunks.append(evidence)
                     stdout_chunks.append(process.stdout or "")
                     stderr_chunks.append(process.stderr or "")
                     for trace_path in report_dir.glob("*/**/trace.ndjson"):
@@ -489,6 +512,8 @@ def _run_trials(
         recorder.write_artifact("stdout.txt", "\n".join(_as_text(item) for item in stdout_chunks))
     if stderr_chunks:
         recorder.write_artifact("stderr.txt", "\n".join(_as_text(item) for item in stderr_chunks))
+    if evidence_chunks:
+        recorder.write_artifact("test-output.txt", "\n\n".join(evidence_chunks))
     return statuses
 
 
@@ -514,7 +539,13 @@ def execute(
     try:
         with gate.locked():
             statuses = _run_trials(config, root, recorder, gate)
-        recorder.finalize({"status": _aggregate_status(statuses), "execution_mode": "live"})
+        provider_requests = _provider_request_count(recorder)
+        recorder.finalize({
+            "status": _aggregate_status(statuses), "execution_mode": "live",
+            "model_called": provider_requests > 0,
+            "network_called": provider_requests > 0,
+            "provider_request_count": provider_requests,
+        })
     except asyncio.CancelledError:
         recorder.finalize({"status": "cancelled", "execution_mode": "live"})
         raise
@@ -547,7 +578,13 @@ def resume(
         status = _aggregate_status(statuses) if statuses else (
             recorder.previous_status or "infrastructure_error"
         )
-        recorder.finalize({"status": status, "execution_mode": "live", "resumed": True})
+        provider_requests = _provider_request_count(recorder)
+        recorder.finalize({
+            "status": status, "execution_mode": "live", "resumed": True,
+            "model_called": provider_requests > 0,
+            "network_called": provider_requests > 0,
+            "provider_request_count": provider_requests,
+        })
     except asyncio.CancelledError:
         recorder.finalize({"status": "cancelled", "execution_mode": "live", "resumed": True})
         raise

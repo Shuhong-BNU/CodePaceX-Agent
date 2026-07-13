@@ -1,6 +1,6 @@
 # Goal 2：真实实验、正式 Benchmark 与证据闭环运行手册
 
-本手册是 Goal 2 的唯一执行顺序。它冻结实验设计和 Run ID，但不伪造结果。当前仓库已完成实验基础设施、离线测试、dry-run、正式确定性 Hook 研究，以及 SWE empty/gold evaluator smoke；截至 2026-07-13，尚未执行任何 Goal 2 付费模型调用、真实 SWE-bench-Live Agent inference、正式付费 A/B、2/8 小时长会话或 AgentRouter 实验。
+本手册是 Goal 2 的唯一执行顺序。它冻结实验设计和 Run ID，但不伪造结果。当前仓库已完成实验基础设施、离线测试、dry-run、正式确定性 Hook 研究，以及 SWE empty/gold evaluator smoke。`8fd4b19` 的首次 Stage A 真实 Pilot 产生 6 次 Provider request 并以 terminal `task_failure` 结束；原 ledger 记录 CNY 0.221436，但按 Provider `prompt_tokens` 与冻结的无 cache 折扣价格重算为 CNY 0.321276，后续基线必须保守 carry forward 后者。该旧 Run 没有显式调用标记和完整失败 grader 附件，因此不能放行 Stage B；相关 runner/telemetry 缺口修复并通过新 CI 后，才允许用新 Run ID 重跑 Stage A。真实 SWE Agent inference、正式付费 A/B、2/8 小时长会话和 AgentRouter 仍未执行。
 
 ## 1. 冻结身份与不可变边界
 

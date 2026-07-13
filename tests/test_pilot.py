@@ -113,6 +113,20 @@ def test_cli_validate_does_not_show_key_value(tmp_path: Path, monkeypatch: pytes
     assert '"api_key_present": true' in output
 
 
+def test_trace_request_usages_prices_total_provider_tokens_without_cache_discount() -> None:
+    trace = json.dumps({
+        "type": "usage",
+        "request_input_tokens": 200,
+        "request_output_tokens": 30,
+        "provider_usage": {
+            "prompt_tokens": 1200,
+            "completion_tokens": 30,
+            "prompt_tokens_details": {"cached_tokens": 1000},
+        },
+    })
+    assert pilot.trace_request_usages(trace) == [(1200, 30)]
+
+
 def test_live_execute_is_mockable_and_child_env_excludes_other_provider_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = pilot.load_config(config_file(tmp_path, task_ids=["codepacex_001_config_bugfix"]))
     monkeypatch.setenv("BAILIAN_API_KEY", "test-only-bailian-key")
@@ -135,6 +149,7 @@ def test_live_execute_is_mockable_and_child_env_excludes_other_provider_keys(tmp
             "suite_status": "PASS",
             "tasks": [{"id": "codepacex_001_config_bugfix", "status": "PASS"}],
         }))
+        (report_dir / "report.md").write_text("inner report", encoding="utf-8")
         from codepacex.experiments import load_experiment_profile
 
         profile = load_experiment_profile(Path(command[command.index("--experiment-profile") + 1]))
@@ -180,9 +195,13 @@ def test_live_execute_is_mockable_and_child_env_excludes_other_provider_keys(tmp
     assert "test-only-bailian-key" not in all_output
     assert "proxy-password" not in all_output
     result = json.loads((recorder.path / "result.json").read_text())
+    assert result["model_called"] is result["network_called"] is True
     assert result["attempted_trial_count"] == 1
     assert result["completed_trial_count"] == 1
     assert result["unscorable_trial_count"] == 0
+    evidence = (recorder.path / "artifacts" / "test-output.txt").read_text()
+    assert '"suite_status": "PASS"' in evidence
+    assert "inner report" in evidence
     assert not (recorder.path / "artifacts" / "task-runs").exists()
 
 

@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_UP
 from pathlib import Path
-from typing import Iterator, Literal
+from typing import Any, Iterator, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -183,6 +183,27 @@ def actual_cost(
         + Decimal(output_tokens) * Decimal(str(pricing.output_price))
         / Decimal(pricing.unit_tokens)
     )
+
+
+def billable_request_usage(event: Mapping[str, Any]) -> tuple[int, int]:
+    """Return total provider tokens for frozen pricing without cache discounts."""
+    if "request_input_tokens" not in event or "request_output_tokens" not in event:
+        raise ValueError("provider usage lacks per-request token accounting")
+    request_input = int(event.get("request_input_tokens") or 0)
+    request_output = int(event.get("request_output_tokens") or 0)
+    raw = event.get("provider_usage")
+    if isinstance(raw, Mapping):
+        for key in ("prompt_tokens", "input_tokens"):
+            if key in raw and raw[key] is not None:
+                request_input = int(raw[key])
+                break
+        for key in ("completion_tokens", "output_tokens"):
+            if key in raw and raw[key] is not None:
+                request_output = int(raw[key])
+                break
+    if request_input < 0 or request_output < 0:
+        raise ValueError("provider request token usage cannot be negative")
+    return request_input, request_output
 
 
 class PaidRunGate:

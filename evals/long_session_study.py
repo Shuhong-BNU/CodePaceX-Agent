@@ -25,7 +25,7 @@ from codepacex.tools import create_default_registry
 from evals.benchmark import RunManifest, RunRecorder, canonical_hash, current_git_commit, sanitize_origin
 from evals.costing import load_pricing, pricing_snapshot_hash
 from evals.goal2_studies import Goal2Studies, load_studies
-from evals.paid_gate import PaidRunGate
+from evals.paid_gate import PaidRunGate, billable_request_usage
 from evals.pilot import _runtime_secrets, load_config as load_pilot_config
 
 MAXIMUM_INPUT_TOKENS_PER_REQUEST = 128_000
@@ -225,10 +225,7 @@ class _CycleTelemetry:
                 "attempt_id": 1,
             })
         elif event.get("type") == "usage" and self.requests:
-            self.request_usages.append((
-                int(event.get("request_input_tokens") or 0),
-                int(event.get("request_output_tokens") or 0),
-            ))
+            self.request_usages.append(billable_request_usage(event))
             self.recorder.capture_event({
                 **event, "request_index": self.requests,
                 "task_id": self.task_id, "repetition_id": str(self.cycle),
