@@ -1,75 +1,80 @@
-# CodePaceX 代码修改提案
+# CodePaceX 工程闭环状态与后续提案
 
-本文记录审阅过程中发现、但尚未获准实施的业务代码修改。每项提案都需要单独确认后再进入编码阶段。
+本文记录 PR #13 合并后的 correctness closure 结果，以及因范围或实验边界而延期的工作。当前工程基线为 `origin/main` 的 PR #13 merge commit `e44f3a1`；下列“已完成”项在其上的本地修复分支中实现并有回归测试。
 
-## 1. 自动记忆提取缺少落盘闭环
+## 1. 自动记忆提取落盘闭环 — 已完成
 
 - 位置：`codepacex/memory/auto_memory.py`，`MemoryManager.extract()`。
-- 当前行为：函数调用 LLM 并收集文本到 `collected`，随后只更新消息计数；返回内容没有解析，也没有创建记忆文件或更新 `MEMORY.md`。
-- 风险：界面和提示词表现为支持自动记忆，但会话结束后实际没有新增可召回内容。
-- 建议方案：让提取模型返回受约束 JSON；校验 `type`、标题、描述和正文；净化文件名；按 user/project 类型路由；使用临时文件加原子替换写入；去重并更新索引。
-- 目标行为：值得保留的对话信息能够稳定写入正确作用域，无有效内容时不修改磁盘，部分失败不会损坏已有索引。
-- 测试方法：覆盖空结果、非法 JSON、路径穿越、重复记忆、用户/项目路由、原子写入失败和下一会话召回。
+- 实现：提取模型返回受约束 JSON；Pydantic 校验 type、name、description 和 content；文件名经过净化；user/feedback 与 project/reference 分别路由到用户级和项目级目录；记忆文件和索引使用临时文件加原子替换写入。
+- 失败语义：非法 JSON、结构校验失败或写入异常均不推进提取游标；合法空结果可以推进游标；同一作用域的重复名称更新现有记忆并保持单一索引项。
+- 回归覆盖：作用域路由、非法 JSON、路径穿越、重复更新、原子写入失败和游标行为。
 
-## 2. 权限流水线不是严格 deny 优先
+## 2. 权限 deny 优先级 — 已完成
 
 - 位置：`codepacex/permissions/checker.py`，`PermissionChecker.check()`。
-- 当前行为：被识别为安全的 Shell 命令会在规则引擎之前直接返回 allow，因此显式 deny 规则可能没有机会生效。
-- 风险：用户认为已禁止的命令仍可能执行，实际语义不符合纵深权限模型。
-- 建议方案：区分强制 deny、显式规则、沙箱结果、会话 allow 和模式默认值；先收集不可覆盖的 deny，再决定 allow/ask。为每个优先级写成可读的决策表。
-- 目标行为：危险命令和显式 deny 始终优先；普通安全命令只在没有更高优先级限制时自动放行。
-- 测试方法：增加 safe+deny、sandbox+allow、session allow+deny、bypass+dangerous 等组合测试。
+- 实现：显式规则不再被 Plan 提前放行绕过；路径、规则和 Hook 决策统一按 `deny > ask > allow` 聚合。危险命令和设备操作仍属于不可覆盖的强制安全层。
+- 目标语义：显式 deny 优先于 Plan allow，ask 优先于普通 allow；`bypassPermissions` 只能跳过模式兜底，不能跳过强制安全决定。
+- 回归覆盖：Plan 精确目标叠加显式 deny，以及既有 safe/deny、sandbox、session 和 dangerous 命令组合。
 
-## 3. Plan 文件路径判断过宽
+## 3. Plan 文件精确路径授权 — 已完成
 
-- 位置：`codepacex/permissions/checker.py`，`_is_plan_file()` 及 Plan Mode 提前放行分支。
-- 当前行为：目标路径只要包含 `.codepacex/plans/`，或 basename 与计划文件相同，就可能被视为计划文件；提前返回还会跳过后续路径检查。
-- 风险：构造相似路径可能扩大 Plan Mode 的写入范围。
-- 建议方案：保存唯一的已解析计划文件绝对路径；对目标路径执行 `resolve()`；只允许完全相等；计划文件也必须位于当前项目的 `.codepacex/plans` 下并经过 PathSandbox。
-- 目标行为：Plan Mode 只能写当前会话生成的唯一计划文件。
-- 测试方法：覆盖绝对/相对路径、符号链接、同名文件、包含相似目录名、`..` 和项目外路径。
+- 位置：`codepacex/permissions/checker.py`，`_is_plan_file()`。
+- 实现：配置的计划文件和工具目标都相对项目根目录执行 `resolve()`；只有当前项目 `.codepacex/plans/` 内的配置目标与请求目标完全相等时才具有 Plan allow 效果。
+- 拒绝范围：同 basename 文件、包含 `.codepacex/plans` 字样的相似目录、路径别名和项目外目标不会获得 Plan 放行。
+- 回归覆盖：同名文件、相似嵌套目录和精确目标上的显式 deny。
 
-## 4. 非交互模式运行时装配不完整
+## 4. TUI、Remote、`-p` 运行时 capability contract — 设计完成，实现延期
 
-- 位置：`codepacex/__main__.py` 的 `_run_prompt()`，以及 `codepacex/app.py` 的初始化流程。
-- 当前行为：`-p` 模式创建基础工具和子 Agent，但没有完整复用 TUI 的 MCP、Skill、Memory、Session、文件历史等装配过程。
-- 风险：同一个任务在 TUI 和 CI/脚本模式下拥有不同能力，文档和用户预期容易失真。
-- 建议方案：抽取 RuntimeBuilder/RuntimeContext，统一构造 client、registry、permission、MCP、Skill、Memory、Session、TeamManager 和清理钩子；不同界面只负责事件消费。
-- 目标行为：TUI、Remote 和非交互模式共享相同核心能力，可通过显式选项关闭交互专属工具。
-- 测试方法：为三个入口比较注册工具、MCP 生命周期、会话写入、记忆注入和关闭清理。
+进一步核验表明三个入口并非只缺少一两个工具，而是具有不同的同步/异步生命周期、事件消费者和关闭责任。直接抽取完整 RuntimeBuilder 会大幅改变 CLI/TUI/Remote 生命周期，触发本轮停止实现阈值；因此本轮不加入只改变标签而不消除遗漏的伪 contract。
 
-## 5. Agent Hook executor 尚未实现
+当前 capability contract：
 
-- 位置：`codepacex/hooks/executors.py`，`execute_agent()`。
-- 当前行为：Agent 类型 Hook 返回 stub 文本，没有真正执行受限 Agent。
-- 风险：配置能够通过校验但不会产生预期效果，属于静默功能缺失。
-- 建议方案：二选一：注入受限 Agent runner 并实现超时、工具白名单和结果截断；或从配置协议中删除 Agent action，直到实现完成。
-- 目标行为：受支持的 Hook action 都有明确、可测试的执行语义；未支持类型在加载时失败。
-- 测试方法：覆盖成功、超时、异常、权限拒绝、递归 Hook 防护和输出上限。
+| 能力 | TUI | Remote | `-p` | 合同分类 |
+| --- | --- | --- | --- | --- |
+| provider/client、核心 ToolRegistry、权限检查、项目指令、`ToolSearch`、`InstallSkill`、Agent loop、上下文遥测 | 是 | 是 | 是 | 所有入口共享 |
+| Session、Memory、Skill loader/`LoadSkill`、MCP 生命周期 | 是 | 是 | 否 | 当前交互入口共享，需评估是否提升为核心 |
+| FileHistory、`AskUserQuestion`、`ExitPlanMode`、worktree/team UI | 是 | 否 | 否 | TUI 交互专属 |
+| 子 Agent、worktree-backed delegation、Team 工具 | 是 | 否 | 是 | TUI 与 `-p` 共享，Remote 当前缺失 |
+| 流式非交互输出、拒绝式审批 | 否 | 否 | 是 | `-p` 专属 |
 
-## 6. Worktree 缺少显式变更集成流程
+最小后续方案：
+
+1. 定义不可变 `RuntimeProfile`，显式列出 core、interactive、prompt-only capability 和资源关闭责任。
+2. 提取只负责公共 client/registry/permission/instructions/Agent 基础装配的 `RuntimeBuilder`；MCP、Session、Memory 和 UI 工具通过 profile adapter 接入。
+3. 统一异步 `close()`/上下文管理协议，不改变各入口事件消费方式。
+4. 增加入口级 characterization 测试：断言每个 profile 的必需工具、manager、MCP 生命周期和关闭行为，并要求每个差异有显式声明。
+
+## 5. Agent Hook action — 已完成安全收口
+
+- 位置：`codepacex/hooks/loader.py`、`codepacex/hooks/executors.py`。
+- 实现：当前支持的 action 明确为 `command`、`prompt` 和 `http`；未实现的 `agent` action 在配置加载阶段被拒绝。
+- 防御语义：即使内部代码直接调用 `execute_agent()`，也返回失败而不是 stub success。
+- 后续：只有在受限 Agent runner、超时、工具白名单、递归防护和输出上限均有设计与测试后，才重新开放配置协议。
+
+## 6. Worktree inspect → approve → integrate — 新功能，延期
 
 - 位置：`codepacex/worktree/`、`codepacex/tools/agent_tool.py`、团队清理逻辑。
-- 当前行为：隔离 Agent 完成后保留含改动的 worktree 和分支，但不会生成结构化 diff、冲突预检或受控集成操作。
-- 风险：用户需要手动定位和合并，多 Agent 并行产生的冲突无法在任务层表达。
-- 建议方案：增加 inspect → approve → integrate 三阶段流程；先报告 commit、diffstat 和冲突预检，再由用户选择 cherry-pick、merge 或保留。
-- 目标行为：任何工作区集成都可审查、可拒绝、可追踪，不自动覆盖主工作区未提交改动。
-- 测试方法：覆盖无改动、未提交改动、已有提交、冲突、主工作区脏状态和用户拒绝。
+- 当前行为：隔离 Agent 的改动保留在独立 worktree 和分支，不会自动合并；这属于安全保留机制，不是完整集成工作流。
+- 设计方向：inspect 阶段输出 branch、commit、diffstat、未提交状态和冲突预检；approve 阶段要求用户选择拒绝、保留或集成；integrate 阶段执行受控操作并记录结果。
+- 安全约束：不得自动覆盖脏主工作区，不得把无冲突预检等同于可安全集成，用户拒绝必须保持零主工作区修改。
+- 后续测试：无改动、未提交改动、已有提交、冲突、脏主工作区、用户拒绝和中途失败恢复。
 
-## 7. 性能结论缺少真实基准
+## 7. Feature Flag runtime mapping 与真实基准 — 延期到实验 Goal
 
-- 位置：延迟工具、上下文压缩和多 Agent 相关测试及文档。
-- 当前行为：延迟工具只有模拟 Schema 字符体积测试；长会话与多 Agent 没有统一任务集和测量工具。
-- 风险：把合成体积等同 Token，把机制存在等同稳定性或加速比，会产生不可复现结论。
-- 建议方案：新增独立 benchmark 目录，固定模型、提示、工具集合、任务语料和重复次数；记录 Token、墙钟时间、成功率、压缩次数、恢复完整度和总成本。
-- 目标行为：每个数字都能通过命令复现，并明确环境、样本量和误差范围。
-- 测试方法：benchmark 不进入普通单元测试门禁；在固定配置下生成 JSON 和 Markdown 报告，并校验报告字段完整性。
+当前 Pilot 与 Claims 会拒绝所有未注册或未映射的 feature flag。这是刻意的 fail-closed 行为：仅把 flag 写入 manifest 标签而不改变运行时，不允许作为 A/B 证据。
 
-## 8. 权限集成测试依赖不存在的 Git 仓库
+首选最小实验为 `deferred_tools`，但真实闭环需要同时修改 Pilot 子进程配置、核心 ToolRegistry、三个入口的装配、有效运行时证据和 Claims 兼容规则，已经超出本轮小范围修复。后续方案：
+
+1. 冻结 flag 语义：`true` 使用当前 deferred/discovery 行为，`false` 在首个模型请求前使同一工具集合的 Schema 全部可见。
+2. 把 flag 写入子进程可读取的冻结配置，并由 RuntimeBuilder 应用；禁止仅在 manifest 中记标签。
+3. 在 run event/manifest 中记录应用后的 effective flag、初始 Schema 哈希、可见工具名哈希和 CodePaceX commit。
+4. 单元测试证明同一 registry 在 flag 两侧产生不同的初始 Schema/哈希，同时工具执行语义不变；集成测试证明 Pilot 记录值与子进程应用值一致。
+5. 只有上述证据通过后，Claims 才允许以该 flag 作为唯一实验差异；未知 flag 继续拒绝。
+
+本轮没有运行真实模型、真实网络实验或付费调用，也没有运行真实 Pilot、SWE-bench、AgentRouter、正式 A/B 或长会话。fixture、mock、合成 Schema 和 dry-run 不能被表述为这些真实实验。
+
+## 8. Permission Git 集成测试 cwd 依赖 — 已完成
 
 - 位置：`tests/test_permissions.py::test_e2e_rule_allows_git`。
-- 当前行为：测试在 `tempfile.mkdtemp()` 创建的普通目录中运行 `git status`，同时断言命令成功。
-- 风险：全量测试在正常环境稳定出现 1 个失败，掩盖真正的回归。
-- 建议方案：测试开始时在临时目录执行 `git init`，或把命令改为不依赖仓库的只读 Git 命令；不要 mock Bash，因为该测试需要验证端到端权限与执行结果。
-- 目标行为：测试只验证权限规则是否免于 HITL，同时提供满足命令成功条件的真实环境。
-- 测试方法：单独运行该用例和全量测试，预期从 553/1 变为 554/0。
+- 实现：测试在 `tmp_path` 内初始化真实 Git 仓库，并为 Bash sandbox 配置明确 `work_dir`，不再依赖启动 pytest 的当前目录。
+- 验证：用例从项目根目录和项目外 cwd 运行都能验证真实 `git status` 的权限与执行闭环，不使用 Bash mock。
