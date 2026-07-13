@@ -94,11 +94,11 @@ multi_agent:
   modes: [single, multi]
   maximum_workers: 3
   tasks:
-    - {id: multi_parser_commands, prompt: fix parser and command alias behavior, expected_files: [mini_multi/parser.py, mini_multi/commands.py]}
-    - {id: multi_config_validation, prompt: fix config defaults and validation behavior, expected_files: [mini_multi/config.py, mini_multi/validation.py]}
-    - {id: multi_cache_io, prompt: fix cache invalidation and storage behavior, expected_files: [mini_multi/cache.py, mini_multi/storage.py]}
-    - {id: multi_auth_audit, prompt: fix authorization and audit event behavior, expected_files: [mini_multi/auth.py, mini_multi/audit.py]}
-    - {id: multi_pricing_format, prompt: fix price calculation and receipt formatting, expected_files: [mini_multi/pricing.py, mini_multi/formatting.py]}
+    - {id: multi_parser_commands, prompt: fix parser normalization and command alias behavior, expected_files: [mini_multi/parser.py, mini_multi/commands.py], test_file: tests/test_parser_commands.py}
+    - {id: multi_config_validation, prompt: fix isolated config defaults and strict validation behavior, expected_files: [mini_multi/config.py, mini_multi/validation.py], test_file: tests/test_config_validation.py}
+    - {id: multi_cache_io, prompt: fix cache coherence and storage version behavior, expected_files: [mini_multi/cache.py, mini_multi/storage.py], test_file: tests/test_cache_io.py}
+    - {id: multi_auth_audit, prompt: fix authorization decisions and audit event behavior, expected_files: [mini_multi/auth.py, mini_multi/audit.py], test_file: tests/test_auth_audit.py}
+    - {id: multi_pricing_format, prompt: fix decimal price calculation and stable receipt formatting, expected_files: [mini_multi/pricing.py, mini_multi/formatting.py], test_file: tests/test_pricing_format.py}
 hook:
   paths: [sequential, parallel, streaming, no_checker]
   cases_per_path: 25

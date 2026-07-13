@@ -345,6 +345,16 @@ async def _run_prompt(
 
     agent.notification_fn = drain_mailbox_only
 
+    def emit_agent_experiment_summary() -> None:
+        if not is_json or experiment_profile is None:
+            return
+        emit_json({
+            "type": "experiment_agent_summary",
+            "agent_mode": experiment_profile.agent_mode.value,
+            "maximum_workers": 3,
+            **trace_manager.benchmark_summary(agent.agent_id),
+        })
+
     # 使用事件驱动的 agent.run()，支持 text 和 stream-json 两种输出格式
     conv = ConversationManager()
     conv.add_user_message(prompt)
@@ -497,6 +507,7 @@ async def _run_prompt(
 
     # 如果有 team 在运行，轮询等待 teammate 完成
     if not team_manager._teams:
+        emit_agent_experiment_summary()
         if mcp_manager is not None:
             await mcp_manager.shutdown()
         return
@@ -523,6 +534,8 @@ async def _run_prompt(
             emit_json({"type": "assistant", "text": last_result})
         else:
             print(last_result, flush=True)
+
+    emit_agent_experiment_summary()
     if mcp_manager is not None:
         await mcp_manager.shutdown()
 

@@ -79,6 +79,17 @@ class MultiTask(StrictModel):
     id: str
     prompt: str
     expected_files: list[str] = Field(min_length=2)
+    test_file: str
+
+    @model_validator(mode="after")
+    def validate_paths(self) -> MultiTask:
+        if len(self.expected_files) != len(set(self.expected_files)):
+            raise ValueError("multi-agent task repeats an expected file")
+        if any(not path.startswith("mini_multi/") for path in self.expected_files):
+            raise ValueError("multi-agent expected files must stay in mini_multi")
+        if not self.test_file.startswith("tests/test_"):
+            raise ValueError("multi-agent test file must be a frozen test module")
+        return self
 
 
 class MultiAgentStudy(StrictModel):

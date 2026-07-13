@@ -208,6 +208,7 @@ class AgentTool(Tool):
             context_window=self._parent_agent.context_window,
             instructions_content=definition.system_prompt,
             hook_engine=self._parent_agent.hook_engine,
+            experiment_profile=self._parent_agent.experiment_profile,
         )
         sub_agent.parent_id = self._parent_agent.agent_id
         sub_agent.trace_id = self._parent_agent.trace_id or self._parent_agent.agent_id
@@ -265,6 +266,8 @@ class AgentTool(Tool):
             trace_node.agent_id,
             input_tokens=sub_agent.total_input_tokens,
             output_tokens=sub_agent.total_output_tokens,
+            request_count=sub_agent._runtime_request_index,
+            tool_call_count=sub_agent._loop_count,
         )
         self._trace_manager.complete(trace_node.agent_id, "completed")
 
@@ -403,6 +406,7 @@ class AgentTool(Tool):
             context_window=self._parent_agent.context_window,
             instructions_content=instructions,
             hook_engine=self._parent_agent.hook_engine,
+            experiment_profile=self._parent_agent.experiment_profile,
         )
         sub_agent.parent_id = self._parent_agent.agent_id
         sub_agent.trace_id = self._parent_agent.trace_id or self._parent_agent.agent_id
@@ -606,6 +610,7 @@ class AgentTool(Tool):
             context_window=self._parent_agent.context_window,
             instructions_content=definition.system_prompt,
             hook_engine=self._parent_agent.hook_engine,
+            experiment_profile=self._parent_agent.experiment_profile,
         )
         sub_agent.parent_id = self._parent_agent.agent_id
         sub_agent.trace_id = self._parent_agent.trace_id or self._parent_agent.agent_id
@@ -630,6 +635,8 @@ class AgentTool(Tool):
             trace_node.agent_id,
             input_tokens=sub_agent.total_input_tokens,
             output_tokens=sub_agent.total_output_tokens,
+            request_count=sub_agent._runtime_request_index,
+            tool_call_count=sub_agent._loop_count,
         )
         self._trace_manager.complete(trace_node.agent_id, "completed")
 

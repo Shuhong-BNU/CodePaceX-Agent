@@ -481,6 +481,29 @@ class TestTraceManager:
         assert total_in == 300
         assert total_out == 130
 
+    def test_benchmark_summary_reports_child_usage_without_content(self):
+        tm = TraceManager()
+        completed = tm.create("worker", parent_id="lead")
+        failed = tm.create("worker", parent_id="lead")
+        tm.update(
+            completed.agent_id, input_tokens=100, output_tokens=25,
+            request_count=3, tool_call_count=2,
+        )
+        tm.complete(completed.agent_id, "completed")
+        tm.update(failed.agent_id, input_tokens=40, output_tokens=10, request_count=1)
+        tm.complete(failed.agent_id, "failed")
+
+        assert tm.benchmark_summary("lead") == {
+            "child_count": 2,
+            "completed_child_count": 1,
+            "failed_child_count": 1,
+            "child_input_tokens": 140,
+            "child_output_tokens": 35,
+            "child_request_count": 4,
+            "child_tool_call_count": 2,
+            "maximum_parallel_children": 2,
+        }
+
     def test_get_nonexistent(self):
         tm = TraceManager()
         assert tm.get("nope") is None
