@@ -113,9 +113,9 @@ fixture 中的 `.codepacex/permissions.yaml` 会通过项目级 permission rule 
 
 每次 terminal Run 的五个核心文件是 `manifest.json`、`environment.json`、`events.jsonl`、`result.json` 与 `report.md`。usage、Runtime Hash、权限、压缩和 patch/test-output 附件仅在真实事件或真实文件存在时生成。Runtime Hash 在协议转换完成后针对实际 system/tools/messages payload 计算，只保存 SHA-256 与实际 Provider 身份，不保存请求原文。Provider 返回的 usage 结构按原样保存，缺失字段不会补零或推断。
 
-`.runs/` 是本地、脱敏前的实验产物，不能提交；可提交的 Claims 也只能由注册计算器从可计分、条件一致的 Run 重新生成。A/B 默认逐字段比较 Manifest 与 Runtime 身份，研究变量只能通过 `allowed_differences` 精确放行；放行项仍保留在 evidence summary。`experiment_config_hash` 仅用于审计，不代替字段级比较。dry-run、不可计分 Run、缺失样本、未配对 trial 和未获放行的身份差异都不能被标为 verified。
+`.runs/` 是本地、脱敏前的实验产物，不能提交；可提交的 Claims 也只能由注册计算器从可计分、条件一致的 Run 重新生成。A/B 默认逐字段比较 Manifest 与 Runtime 身份，研究变量只能通过 `allowed_differences` 精确放行；放行项仍保留在 evidence summary。当前 Pilot 没有 feature flag 到 Runtime 的映射，因此 live Run 与 verified Claim 只允许空 `feature_flags`。`experiment_config_hash` 仅用于审计，不代替字段级比较。dry-run、不可计分 Run、缺失样本、未配对 trial 和未获放行的身份差异都不能被标为 verified。
 
-Claims 的 sample size 按真实 trial 或真实 A/B 配对数计算。rate 使用汇总后的 numerator/denominator；A/B 仅比较完全相同的 `task_id + repetition_id` 配对。p95 唯一使用 nearest-rank：`sorted_values[ceil(0.95 * n) - 1]`，不使用插值。
+Claims 声明的 sample size 必须与真实 trial 或真实 A/B 配对数完全相等。rate 使用汇总后的 numerator/denominator；A/B 仅比较完全相同的 `task_id + repetition_id` 配对，且双方都必须具有唯一、成功的终态 Attempt；含多个终态 Attempt 的 trial 在 Pilot v1 中是 insufficient-data。p95 唯一使用 nearest-rank：`sorted_values[ceil(0.95 * n) - 1]`，不使用插值。
 
 当前状态：可复现实验采集、dry-run 校验与 Claims 溯源已实现并有测试；尚未运行任何本轮 Qwen paid Pilot、真实 SWE-bench-Live、Token 节省率实验或长会话实验，因此没有这些项目的实际指标或成绩。
 

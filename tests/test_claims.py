@@ -22,7 +22,7 @@ def _conditions(**changes: object) -> dict[str, object]:
         "prompt_version": "prompt-v1", "model_parameters": {"temperature": None},
         "timeout_seconds": 60, "retry_budget": 0, "fallback_enabled": False,
         "task_ids": ["task"], "repetitions": 1,
-        "feature_flags": {"study_feature": "baseline"},
+        "feature_flags": {},
         "allowed_differences": [],
     }
     conditions.update(changes)
@@ -50,7 +50,7 @@ def _successful_run(
     run_id: str,
     *,
     provider: str = "p",
-    study_feature: str = "baseline",
+    feature_flags: dict[str, object] | None = None,
     task_id: str = "task",
     repetition_id: str = "1",
     prompt_tokens: int = 12,
@@ -64,7 +64,7 @@ def _successful_run(
         prompt_version="prompt-v1", model_parameters={"temperature": None},
         timeout_seconds=60, retry_budget=0, fallback_enabled=False,
         task_ids=["task"], repetitions=1,
-        feature_flags={"study_feature": study_feature},
+        feature_flags=feature_flags or {},
     ), run_id=run_id)
     recorder.event("trial_started", {
         "task_id": task_id, "repetition_id": repetition_id,
@@ -107,7 +107,8 @@ def test_dry_run_and_missing_runtime_are_insufficient(tmp_path: Path) -> None:
     recorder.finalize({"status": "dry_run"})
     claim = compile_claims(_document(), tmp_path)["claims"][0]
     assert claim["status"] == "insufficient-data"
-    assert claim["sample_size"] == 0
+    assert claim["sample_size"] == 1
+    assert claim["evidence_summary"]["measured_sample_size"] == 0
 
 
 def test_claim_rejects_unregistered_metric_and_allowed_difference() -> None:
@@ -119,26 +120,19 @@ def test_claim_rejects_unregistered_metric_and_allowed_difference() -> None:
         ))
 
 
-def test_study_feature_is_not_automatically_ignored(tmp_path: Path) -> None:
+def test_nonempty_feature_flags_are_not_eligible_for_claims(tmp_path: Path) -> None:
     _successful_run(tmp_path, "run")
-    _successful_run(tmp_path, "second", study_feature="improved")
+    _successful_run(tmp_path, "second", feature_flags={"study_feature": "improved"})
     source = ["run", "second"]
     blocked = compile_claims(_document(
         source_run_ids=source, sample_size=2,
     ), tmp_path)["claims"][0]
     assert blocked["status"] == "insufficient-data"
-    assert any("study_feature" in item for item in blocked["limitations"])
-
-    allowed = compile_claims(_document(
-        source_run_ids=source, sample_size=2,
-        experiment_conditions=_conditions(
+    assert any("feature_flags" in item for item in blocked["limitations"])
+    with pytest.raises(ValueError, match="allowed_differences"):
+        _document(experiment_conditions=_conditions(
             allowed_differences=["manifest.feature_flags.study_feature"],
-        ),
-    ), tmp_path)["claims"][0]
-    assert allowed["status"] == "verified"
-    assert allowed["evidence_summary"]["observed_differences"] == [
-        "manifest.feature_flags.study_feature"
-    ]
+        ))
 
 
 def test_provider_or_runtime_identity_difference_blocks_claim(tmp_path: Path) -> None:
@@ -193,12 +187,12 @@ def test_rate_uses_pooled_numerator_and_denominator(tmp_path: Path) -> None:
 def test_ab_requires_exact_pairs_and_explicit_runtime_difference(tmp_path: Path) -> None:
     _successful_run(tmp_path, "base", prompt_tokens=100, runtime_tools="base-tools")
     _successful_run(
-        tmp_path, "improved", prompt_tokens=80, study_feature="improved",
+        tmp_path, "improved", prompt_tokens=80,
         runtime_tools="improved-tools",
     )
     base_conditions = _conditions(
         baseline_run_ids=["base"], improved_run_ids=["improved"],
-        allowed_differences=["manifest.feature_flags.study_feature"],
+        allowed_differences=[],
     )
     blocked = compile_claims(_document(
         metric_name="ab_reduction_percent", aggregation="mean", unit="percent",
@@ -208,9 +202,7 @@ def test_ab_requires_exact_pairs_and_explicit_runtime_difference(tmp_path: Path)
     assert blocked["status"] == "insufficient-data"
     assert any("runtime.tools_sha256" in item for item in blocked["limitations"])
 
-    base_conditions["allowed_differences"] = [
-        "manifest.feature_flags.study_feature", "runtime.tools_sha256",
-    ]
+    base_conditions["allowed_differences"] = ["runtime.tools_sha256"]
     verified = compile_claims(_document(
         metric_name="ab_reduction_percent", aggregation="mean", unit="percent",
         source_run_ids=["base", "improved"],
@@ -224,7 +216,7 @@ def test_ab_requires_exact_pairs_and_explicit_runtime_difference(tmp_path: Path)
 def test_ab_unbalanced_trial_pairs_are_insufficient(tmp_path: Path) -> None:
     _successful_run(tmp_path, "base", prompt_tokens=100)
     _successful_run(
-        tmp_path, "improved", prompt_tokens=80, study_feature="improved",
+        tmp_path, "improved", prompt_tokens=80,
         repetition_id="2",
     )
     claim = compile_claims(_document(
@@ -232,11 +224,62 @@ def test_ab_unbalanced_trial_pairs_are_insufficient(tmp_path: Path) -> None:
         source_run_ids=["base", "improved"],
         experiment_conditions=_conditions(
             baseline_run_ids=["base"], improved_run_ids=["improved"],
-            allowed_differences=["manifest.feature_flags.study_feature"],
+            allowed_differences=[],
         ),
     ), tmp_path)["claims"][0]
     assert claim["status"] == "insufficient-data"
-    assert claim["sample_size"] == 0
+    assert claim["sample_size"] == 1
+    assert claim["evidence_summary"]["measured_sample_size"] == 0
+
+
+@pytest.mark.parametrize("declared", [1, 3])
+def test_claim_requires_exact_declared_sample_size(tmp_path: Path, declared: int) -> None:
+    _successful_run(tmp_path, "run")
+    _successful_run(tmp_path, "second", repetition_id="2")
+    claim = compile_claims(_document(
+        source_run_ids=["run", "second"], sample_size=declared,
+    ), tmp_path)["claims"][0]
+    assert claim["status"] == "insufficient-data"
+    assert claim["sample_size"] == declared
+    assert claim["evidence_summary"]["measured_sample_size"] == 2
+
+
+@pytest.mark.parametrize("baseline_status,improved_status", [
+    ("task_failure", "success"), ("success", "task_failure"),
+])
+def test_ab_requires_success_on_both_sides(
+    tmp_path: Path, baseline_status: str, improved_status: str,
+) -> None:
+    _successful_run(tmp_path, "base", prompt_tokens=100)
+    _successful_run(tmp_path, "improved", prompt_tokens=80)
+    for run_id, status in (("base", baseline_status), ("improved", improved_status)):
+        path = tmp_path / run_id / "events.jsonl"
+        records = [json.loads(line) for line in path.read_text().splitlines()]
+        records[-1]["status"] = status
+        path.write_text("\n".join(json.dumps(item) for item in records) + "\n")
+    claim = compile_claims(_document(
+        metric_name="ab_reduction_percent", aggregation="mean", unit="percent",
+        source_run_ids=["base", "improved"],
+        experiment_conditions=_conditions(baseline_run_ids=["base"], improved_run_ids=["improved"]),
+    ), tmp_path)["claims"][0]
+    assert claim["status"] == "insufficient-data"
+
+
+def test_ab_rejects_multiple_terminal_attempts(tmp_path: Path) -> None:
+    _successful_run(tmp_path, "base", prompt_tokens=100)
+    _successful_run(tmp_path, "improved", prompt_tokens=80)
+    path = tmp_path / "base" / "events.jsonl"
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    duplicate = dict(records[-1])
+    duplicate["attempt_id"] = 2
+    records.append(duplicate)
+    path.write_text("\n".join(json.dumps(item) for item in records) + "\n")
+    claim = compile_claims(_document(
+        metric_name="ab_reduction_percent", aggregation="mean", unit="percent",
+        source_run_ids=["base", "improved"],
+        experiment_conditions=_conditions(baseline_run_ids=["base"], improved_run_ids=["improved"]),
+    ), tmp_path)["claims"][0]
+    assert claim["status"] == "insufficient-data"
 
 
 def test_schema_is_generated_from_strict_pydantic_models() -> None:

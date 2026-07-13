@@ -32,8 +32,7 @@ jobs:
           python -m evals.claims validate
           python -m evals.claims compile
       - name: Scan tracked source for credential-shaped values
-        run: |
-          ! grep -R -E 'sk-ant-[A-Za-z0-9_-]{12,}|Bearer[[:space:]][A-Za-z0-9._~+/-]+' codepacex evals tests
+        run: python -m evals.secret_scan
       - name: Run Linux sandbox verification
         run: python -m pytest tests/test_os_sandbox_smoke.py -q -rs
 

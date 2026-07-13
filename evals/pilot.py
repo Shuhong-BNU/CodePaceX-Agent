@@ -81,6 +81,10 @@ class PilotConfig(BaseModel):
             raise ValueError("frozen Pilot configuration requires fallback=false and retry_budget=0")
         if self.model_parameters.temperature is not None or self.model_parameters.top_p is not None:
             raise ValueError("temperature and top_p remain unset until a real Pilot is frozen")
+        if self.feature_flags:
+            raise ValueError(
+                "Pilot v1 does not map feature_flags to runtime behavior; live runs require {}"
+            )
         return self
 
 
@@ -115,6 +119,8 @@ def _validate_task_ids(task_ids: list[str], root: Path) -> None:
 
 
 def build_manifest(config: PilotConfig, root: Path, *, run_id: str = "") -> RunManifest:
+    if config.feature_flags:
+        raise PilotConfigurationError("unmapped feature_flags cannot enter a Pilot Run")
     _validate_task_ids(config.task_ids, root)
     return RunManifest(
         experiment_kind=config.experiment_kind,

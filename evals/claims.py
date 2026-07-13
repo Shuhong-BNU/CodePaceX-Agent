@@ -27,11 +27,6 @@ REGISTERED_ALLOWED_DIFFERENCES = {
     "manifest.base_url_origin", "manifest.git_commit", "manifest.prompt_version",
     "manifest.model_parameters", "manifest.timeout_seconds", "manifest.retry_budget",
     "manifest.fallback_enabled", "manifest.task_ids", "manifest.repetitions",
-    "manifest.feature_flags.study_feature",
-    "manifest.feature_flags.deferred_tools",
-    "manifest.feature_flags.compression_strategy",
-    "manifest.feature_flags.permission_policy",
-    "manifest.feature_flags.multi_agent",
     "runtime.provider", "runtime.protocol", "runtime.model_id",
     "runtime.system_sha256", "runtime.tools_sha256", "runtime.messages_sha256",
 }
@@ -256,6 +251,10 @@ def _compatibility(
         if not identity["runtime.provider"]:
             problems.append("Runtime telemetry is missing from one or more source Runs.")
             break
+        if any(path.startswith("manifest.feature_flags.") for path in identity):
+            problems.append(
+                "Non-empty feature_flags have no approved runtime mapping and cannot verify a claim."
+            )
         undeclared_flags = {
             path for path in identity
             if path.startswith("manifest.feature_flags.")
@@ -411,7 +410,21 @@ def _paired_reductions(
         for manifest, _, run in runs:
             if manifest.get("run_id") not in ids:
                 continue
-            for key, value in _provider_token_trials(run).items():
+            try:
+                completed = _completed_trials(run)
+            except (OSError, ValueError, json.JSONDecodeError):
+                return None
+            values = _provider_token_trials(run)
+            if set(completed) != set(values):
+                return None
+            for key, terminal in completed.items():
+                # The conservative Pilot v1 selection rule is deliberately
+                # simple: one terminal, successful Attempt per pair.  Resumed
+                # Trials with multiple terminal attempts are insufficient data
+                # until a later study defines an explicit selection protocol.
+                if terminal.get("status") != "success" or key in grouped:
+                    return None
+            for key, value in values.items():
                 if key in grouped:
                     return None
                 grouped[key] = value
@@ -493,14 +506,13 @@ def compile_claims(document: ClaimDocument, runs_dir: Path) -> dict[str, Any]:
                     output["limitations"].append(
                         "Required measured trial fields are unavailable or unbalanced."
                     )
-                elif actual_samples < minimum_samples:
+                elif actual_samples != minimum_samples:
                     output["limitations"].append(
-                        "Measured trial or pair count is below the declared minimum sample size."
+                        "Declared sample_size does not exactly match the measured trial or pair count."
                     )
                 else:
                     output["generated_value"] = value
                     output["status"] = "verified"
-        output["sample_size"] = actual_samples
         output["evidence_summary"] = {
             "source_run_count": len(usable),
             "measured_sample_size": actual_samples,

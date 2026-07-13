@@ -28,8 +28,15 @@ def config_file(tmp_path: Path, **changes: object) -> Path:
 def test_frozen_config_validates_and_hash_changes(tmp_path: Path) -> None:
     config = pilot.load_config(config_file(tmp_path))
     assert config.provider == pilot.FROZEN_PROVIDER
+    with pytest.raises(ValueError, match="feature_flags"):
+        pilot.load_config(config_file(tmp_path, feature_flags={"deferred": True}))
+
+
+def test_model_copy_with_unmapped_flags_is_rejected_before_manifest(tmp_path: Path) -> None:
+    config = pilot.load_config(config_file(tmp_path))
     changed = config.model_copy(update={"feature_flags": {"deferred": True}})
-    assert pilot.config_hash(config) != pilot.config_hash(changed)
+    with pytest.raises(pilot.PilotConfigurationError, match="feature_flags"):
+        pilot.build_manifest(changed, Path.cwd())
 
 
 def test_non_frozen_provider_and_fallback_are_rejected(tmp_path: Path) -> None:
