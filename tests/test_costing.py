@@ -24,3 +24,9 @@ def test_cost_estimate_distinguishes_top_level_runs_from_provider_requests() -> 
     assert scenarios["hard_engineering_ceiling"]["provider_requests"] == 31240
     assert scenarios["minimum"]["estimated_cny"] < scenarios["expected"]["estimated_cny"]
     assert scenarios["expected"]["estimated_cny"] < scenarios["hard_engineering_ceiling"]["estimated_cny"]
+    components = estimate["components"]
+    assert components["minimum_pilot"]["top_level_runs"] == 1
+    assert components["swe_bench_pilot"]["top_level_runs"] == 3
+    assert components["swe_bench_formal_20"]["top_level_runs"] == 20
+    assert components["long_session_2h_pilot"]["workload_cycles"] == 8
+    assert components["long_session_3x8h"]["workload_cycles"] == 96

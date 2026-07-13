@@ -85,6 +85,51 @@ def estimate_scenarios(
             input_tokens=int(scenario["average_input_tokens_per_request"]),
             output_tokens=int(scenario["average_output_tokens_per_request"]),
         ), 2)
+    ordinary_components = {
+        "minimum_pilot": 1,
+        "swe_bench_pilot": studies.swe_bench.pilot_instances,
+        "swe_bench_formal_20": studies.swe_bench.formal_instances,
+        "swe_bench_repeat_extra": (
+            studies.swe_bench.repeated_instances * studies.swe_bench.repeat_extra_runs
+        ),
+        "mcp_tool_loading": top["mcp_tool_loading"],
+        "retention": top["retention"],
+        "permission": top["permission"],
+        "multi_agent": top["multi_agent"],
+        "hook": top["hook"],
+    }
+    long_components = {
+        "long_session_2h_pilot": (
+            studies.long_session.pilot.duration_hours * 60
+            // studies.long_session.workload_interval_minutes
+        ),
+        "long_session_3x8h": (
+            studies.long_session.formal.count
+            * studies.long_session.formal.duration_hours * 60
+            // studies.long_session.workload_interval_minutes
+        ),
+    }
+    component_estimates: dict[str, dict[str, float | int]] = {}
+    for name, count in ordinary_components.items():
+        component_estimates[name] = {"top_level_runs": count}
+        for scenario_name, scenario in scenarios.items():
+            requests = count * {
+                "minimum": 1, "expected": 4, "hard_engineering_ceiling": 50,
+            }[scenario_name]
+            component_estimates[name][f"{scenario_name}_cny"] = round(pricing.cost(
+                requests=requests,
+                input_tokens=int(scenario["average_input_tokens_per_request"]),
+                output_tokens=int(scenario["average_output_tokens_per_request"]),
+            ), 2)
+    for name, cycles in long_components.items():
+        component_estimates[name] = {"workload_cycles": cycles}
+        for scenario_name, scenario in scenarios.items():
+            requests_per_cycle = {"minimum": 1, "expected": 2, "hard_engineering_ceiling": 10}[scenario_name]
+            component_estimates[name][f"{scenario_name}_cny"] = round(pricing.cost(
+                requests=cycles * requests_per_cycle,
+                input_tokens=int(scenario["average_input_tokens_per_request"]),
+                output_tokens=int(scenario["average_output_tokens_per_request"]),
+            ), 2)
     return {
         "schema_version": 1,
         "currency": pricing.currency,
@@ -92,6 +137,7 @@ def estimate_scenarios(
         "ordinary_top_level_runs": ordinary_runs,
         "long_session_workload_cycles": long_cycles,
         "scenarios": scenarios,
+        "components": component_estimates,
         "pricing_snapshot_hash": pricing_snapshot_hash(pricing),
         "warning": "Provider requests, not top-level Runs, determine actual cost.",
     }
