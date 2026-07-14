@@ -255,6 +255,28 @@ async def test_compression_emits_structured_terminal_event(
 
 
 @pytest.mark.asyncio
+async def test_run_to_completion_reuses_conversation_after_compaction(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    async def fake_compact(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return CompactEvent(123) if calls == 1 else None
+
+    monkeypatch.setattr("codepacex.agent.auto_compact", fake_compact)
+    agent = Agent(
+        ScriptedClient([[TextDelta("done"), StreamEnd("end_turn")]]),
+        create_default_registry(), "anthropic", work_dir=str(tmp_path),
+    )
+
+    result = await agent.run_to_completion("run", ConversationManager())
+
+    assert result == "done"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("compression_profile", "expects_recovery"),
     [("summary_only", False), ("recovery_v1", True)],
