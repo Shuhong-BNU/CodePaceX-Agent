@@ -28,6 +28,7 @@ from evals.paid_gate import (
 SAFETY_RESERVE_RATIO = Decimal("0.15")
 FORECAST_MULTIPLIER = Decimal("2")
 DISABLED_CATEGORIES = {"swe", "long_session"}
+NON_STAGE_C_PREFIXES = {"pilot"}
 
 
 def formal_trial_counts(*, studies_path: Path, mcp_study_path: Path) -> dict[str, int]:
@@ -69,6 +70,9 @@ def derive_allocation(
     costs: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
     trials: dict[str, set[str]] = defaultdict(set)
     for charge in ledger.request_charges:
+        prefix = charge.trial_id.split("/", 1)[0]
+        if prefix in NON_STAGE_C_PREFIXES:
+            continue
         category = stage_c_category(charge.trial_id)
         costs[category] += charge.actual_cny
         trials[category].add(charge.trial_id)

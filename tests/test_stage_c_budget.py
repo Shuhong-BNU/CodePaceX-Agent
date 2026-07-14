@@ -34,6 +34,7 @@ def test_stage_c_budget_uses_all_observed_categories_and_disables_swe_long(tmp_p
         for category, prefix in (
             ("mcp", "mcp"), ("retention", "retention"),
             ("permission", "permission"), ("multi", "multi"),
+            ("pilot", "pilot"),
         )
     ]
     settlements = [Settlement(
@@ -42,7 +43,7 @@ def test_stage_c_budget_uses_all_observed_categories_and_disables_swe_long(tmp_p
         status="settled", settled_at="2026-07-14T00:00:00Z",
     ) for charge in charges]
     ledger = BudgetLedger(
-        authorization_hash=authorization_hash(authorization), spent_cny=Decimal("0.040000"),
+        authorization_hash=authorization_hash(authorization), spent_cny=Decimal("0.050000"),
         request_charges=charges, settlements=settlements, updated_at="2026-07-14T00:00:00Z",
     )
     allocation = derive_allocation(
