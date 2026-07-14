@@ -172,7 +172,7 @@ Agent：总结主调用链
 
 Eval 产物默认写入 `evals/.runs/`，该目录是本地 artifact 并被 Git 忽略。Baseline v1 已在正常 Mac Terminal 中完成完整 suite：6/6 PASS，0 FAIL，0 ERROR，0 WARNING，Task Success Rate 100%。详细任务、状态分类和边界见 [`evals/README.md`](evals/README.md) / [`evals/README.en.md`](evals/README.en.md)。
 
-除既有 deterministic Eval 外，Goal 2 已加入冻结 Qwen Pilot、真实 runtime-mapped `ExperimentProfile`、分阶段 reservation/逐请求 ledger、Stage B 成对最小 Pilot scope、MCP/Retention/Permission/Multi-Agent/Hook/长会话研究 runner、官方 SWE-bench-Live `python-only` 适配，以及由真实 Artifact 生成 Claims 的路径。Stage A/B 最小 Pilot、Hook 和一个 2 小时长会话 Pilot 已完成；SWE Pilot recovery 为真实 0/3 resolved，但 formal 20 题因 emulated evaluator control 失败而 `infrastructure-blocked`，不生成 SWE Claim。三次 8 小时正式长会话延期。完整顺序、预算风险和发布边界见 [`evals/GOAL2_RUNBOOK.md`](evals/GOAL2_RUNBOOK.md)。
+除既有 deterministic Eval 外，Goal 2 已加入冻结 Qwen Pilot、真实 runtime-mapped `ExperimentProfile`、逐 Provider request 的 fail-closed reservation/settlement ledger、Stage B 成对最小 Pilot scope、MCP/Retention/Permission/Multi-Agent/Hook/长会话研究 runner、官方 SWE-bench-Live `python-only` 适配，以及由真实 Artifact 生成 Claims 的路径。每个请求发出前独立检查总预算、Stage C 类别额度和安全余量；Usage 缺失时保留 active reservation 而非按零成本结算。Stage A/B 最小 Pilot、Hook 和一个 2 小时长会话 Pilot 已完成；SWE Pilot recovery 为真实 0/3 resolved，但 formal 20 题因 emulated evaluator control 失败而 `infrastructure-blocked`，不生成 SWE Claim。三次 8 小时正式长会话延期。完整顺序、预算风险和发布边界见 [`evals/GOAL2_RUNBOOK.md`](evals/GOAL2_RUNBOOK.md)。
 
 当前工程基线来自已合并的 PR #13（`e44f3a1`）及其 correctness closure。Goal 2 的真实 Pilot 只作为诊断或最小证据，后续正式 Claims 必须来自同一个新冻结 commit；AgentRouter 仍未运行。正式 MCP、Retention、Permission 与可能放行的 Multi-Agent 仍受 allocation、CI 和 Artifact 闸门约束。
 

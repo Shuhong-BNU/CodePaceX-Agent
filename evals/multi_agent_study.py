@@ -20,7 +20,7 @@ from codepacex.experiments import AgentMode, ExperimentProfile
 from evals.benchmark import RunManifest, RunRecorder, canonical_hash, current_git_commit, sanitize_origin
 from evals.costing import load_pricing, pricing_snapshot_hash
 from evals.goal2_studies import Goal2Studies, MultiTask, load_studies
-from evals.paid_gate import PaidRunGate
+from evals.paid_gate import PaidRunGate, provider_request_budget_environment
 from evals.permission_study import trace_usage
 from evals.pilot import (
     _child_environment, _ingest_trace, _provider_payload, _runtime_secrets,
@@ -330,27 +330,28 @@ def _run_profile(
         for repetition in range(1, repetitions + 1):
             for task in tasks:
                 trial_id = f"multi/{profile.agent_mode.value}/{task.id}/{repetition}"
-                reservation = gate.reserve(
-                    trial_id, maximum_requests=MAXIMUM_REQUESTS_PER_TRIAL,
-                    maximum_input_tokens_per_request=MAXIMUM_INPUT_TOKENS_PER_REQUEST,
-                    maximum_output_tokens_per_request=MAXIMUM_OUTPUT_TOKENS_PER_REQUEST,
-                )
                 recorder.event("trial_started", {
                     "task_id": task.id, "repetition_id": str(repetition),
-                    "attempt_id": 1, "budget_reservation_id": reservation.reservation_id,
+                    "attempt_id": 1, "budget_mode": "per_provider_request",
                 })
                 started = time.monotonic()
                 with tempfile.TemporaryDirectory(prefix=f"codepacex-{task.id}-") as text:
                     workspace = Path(text)
                     _prepare_workspace(workspace)
                     try:
+                        request_environment = dict(environment)
+                        request_environment.update(provider_request_budget_environment(
+                            gate, trial_id=trial_id,
+                            maximum_input_tokens_per_request=MAXIMUM_INPUT_TOKENS_PER_REQUEST,
+                            maximum_output_tokens_per_request=MAXIMUM_OUTPUT_TOKENS_PER_REQUEST,
+                        ))
                         process = subprocess.run(
                             [
                                 sys.executable, "-m", "codepacex", "-p",
                                 _task_prompt(task, profile.agent_mode),
                                 "--output-format", "stream-json",
                                 "--experiment-profile", str(profile_path),
-                            ], cwd=workspace, env=environment,
+                            ], cwd=workspace, env=request_environment,
                             text=True, capture_output=True, timeout=900, check=False,
                         )
                     except subprocess.TimeoutExpired:
@@ -413,9 +414,30 @@ def _run_profile(
                         _ingest_trace(
                             recorder, Path(trace.name), task.id, str(repetition), 1,
                         )
-                settlement = gate.settle(
-                    reservation, request_usages=request_usages,
-                )
+                accounting = gate.trial_accounting(trial_id)
+                if accounting["budget_blocked"]:
+                    recorder.event("trial_completed", {
+                        "task_id": task.id, "repetition_id": str(repetition),
+                        "attempt_id": 1, "status": "budget_blocked",
+                        "budget_block_reasons": accounting["budget_block_reasons"],
+                        "actual_cny": accounting["actual_cny"],
+                    })
+                    return "budget_blocked"
+                if accounting["active_reservation"] is not None:
+                    recorder.event("trial_completed", {
+                        "task_id": task.id, "repetition_id": str(repetition),
+                        "attempt_id": 1, "status": "infrastructure_error",
+                        "budget_reconciliation_required": True,
+                    })
+                    return "infrastructure_error"
+                if accounting["request_count"] != requests:
+                    recorder.event("trial_completed", {
+                        "task_id": task.id, "repetition_id": str(repetition),
+                        "attempt_id": 1, "status": "infrastructure_error",
+                        "budget_reconciliation_required": True,
+                        "error_category": "ledger_trace_request_count_mismatch",
+                    })
+                    return "infrastructure_error"
                 status = (
                     "success" if process.returncode == 0 and passed
                     else "task_failure" if process.returncode == 0
@@ -426,8 +448,8 @@ def _run_profile(
                     "task_id": task.id, "repetition_id": str(repetition),
                     "attempt_id": 1, "status": status,
                     "duration_seconds": time.monotonic() - started,
-                    "actual_cny": str(settlement.actual_cny), "grade": grade,
-                    "provider_request_count": requests,
+                    "actual_cny": accounting["actual_cny"], "grade": grade,
+                    "provider_request_count": accounting["request_count"],
                     "input_tokens": input_tokens, "output_tokens": output_tokens,
                     **success_rate_fields(status),
                 })
@@ -456,32 +478,32 @@ def execute(
         root=root, authorization_path=budget_authorization,
         ledger_path=budget_ledger, pricing=pricing, stage=budget_stage,
         allocation_path=budget_allocation,
+        pricing_path=pricing_snapshot,
     )
     recorders: list[RunRecorder] = []
-    with gate.locked():
-        for profile in profiles(studies):
-            manifest = build_manifest(
-                root=root, studies_path=studies_path, studies=studies,
-                profile=profile, scope=scope,
-            )
-            manifest.pricing_snapshot_hash = pricing_snapshot_hash(pricing)
-            recorder = RunRecorder(
-                runs_dir, manifest,
-                run_id=f"{run_prefix}-{profile.agent_mode.value}",
-                repo_root=root, secrets=_runtime_secrets(pilot),
-            )
-            status = _run_profile(
-                root=root, studies=studies, profile=profile,
-                recorder=recorder, gate=gate, scope=scope,
-            )
-            recorder.finalize({
-                "status": status, "execution_mode": "live",
-                "agent_mode": profile.agent_mode.value,
-                "maximum_workers": studies.multi_agent.maximum_workers,
-            })
-            recorders.append(recorder)
-            if status in {"timeout", "infrastructure_error"}:
-                break
+    for profile in profiles(studies):
+        manifest = build_manifest(
+            root=root, studies_path=studies_path, studies=studies,
+            profile=profile, scope=scope,
+        )
+        manifest.pricing_snapshot_hash = pricing_snapshot_hash(pricing)
+        recorder = RunRecorder(
+            runs_dir, manifest,
+            run_id=f"{run_prefix}-{profile.agent_mode.value}",
+            repo_root=root, secrets=_runtime_secrets(pilot),
+        )
+        status = _run_profile(
+            root=root, studies=studies, profile=profile,
+            recorder=recorder, gate=gate, scope=scope,
+        )
+        recorder.finalize({
+            "status": status, "execution_mode": "live",
+            "agent_mode": profile.agent_mode.value,
+            "maximum_workers": studies.multi_agent.maximum_workers,
+        })
+        recorders.append(recorder)
+        if status in {"timeout", "infrastructure_error", "budget_blocked"}:
+            break
     return recorders
 
 

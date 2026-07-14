@@ -116,9 +116,9 @@ def derive_allocation(
             costs[category] / Decimal(observed_trials)
             * Decimal(formal_trials) * FORECAST_MULTIPLIER
         )
-        requests, maximum_input, maximum_output = _RESERVATION_SHAPES[category]
+        _requests, maximum_input, maximum_output = _RESERVATION_SHAPES[category]
         limits[category] = max(forecast, worst_case_reservation(
-            pricing, maximum_requests=requests,
+            pricing, maximum_requests=1,
             maximum_input_tokens_per_request=maximum_input,
             maximum_output_tokens_per_request=maximum_output,
         ))
@@ -132,6 +132,7 @@ def derive_allocation(
         baseline_spent_cny=ledger.spent_cny,
         baseline_request_charge_count=len(ledger.request_charges),
         baseline_settlement_count=len(ledger.settlements),
+        baseline_budget_block_count=len(ledger.budget_blocks),
         baseline_rebind_count=len(ledger.authorization_rebinds),
         safety_reserve_cny=safety_reserve,
         spendable_total_cny=spendable_total,

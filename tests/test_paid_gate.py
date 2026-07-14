@@ -64,23 +64,30 @@ def test_cost_functions_use_frozen_standard_prices() -> None:
     ) == Decimal("0.060000")
 
 
-def test_gate_reserves_worst_next_trial_and_settles_actual_usage(tmp_path: Path) -> None:
+def test_gate_reserves_and_settles_each_provider_request_in_one_trial(tmp_path: Path) -> None:
     gate = _gate(tmp_path)
     with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
         "evals.paid_gate._git_is_clean", return_value=True,
     ), gate.locked():
         reservation = gate.reserve(
-            "mcp/task/1", maximum_requests=2,
+            "mcp/task/1", maximum_requests=1,
             maximum_input_tokens_per_request=1000,
             maximum_output_tokens_per_request=500,
         )
         settlement = gate.settle(reservation, request_usages=[(1000, 500)])
+        next_reservation = gate.reserve(
+            "mcp/task/1", maximum_requests=1,
+            maximum_input_tokens_per_request=1000,
+            maximum_output_tokens_per_request=500,
+        )
+        next_settlement = gate.settle(next_reservation, request_usages=[(10, 1)])
     assert settlement.actual_cny == Decimal("0.030000")
-    assert gate.summary()["remaining_cny"] == "99.970000"
+    assert next_settlement.actual_cny == Decimal("0.000156")
+    assert gate.summary()["remaining_cny"] == "99.969844"
     ledger = json.loads((tmp_path / "ledger.json").read_text())
     assert ledger["active_reservation"] is None
-    assert ledger["settlements"][0]["status"] == "settled"
-    assert ledger["request_charges"] == [{
+    assert [item["status"] for item in ledger["settlements"]] == ["settled", "settled"]
+    assert ledger["request_charges"][0] == {
         "actual_cny": "0.030000",
         "input_tokens": 1000,
         "output_tokens": 500,
@@ -88,7 +95,8 @@ def test_gate_reserves_worst_next_trial_and_settles_actual_usage(tmp_path: Path)
         "request_index": 1,
         "reservation_id": reservation.reservation_id,
         "trial_id": "mcp/task/1",
-    }]
+    }
+    assert ledger["request_charges"][1]["request_index"] == 2
 
 
 def test_gate_enforces_stage_limit_before_total_authorization(tmp_path: Path) -> None:
@@ -120,7 +128,7 @@ def test_gate_settles_provider_overage_when_total_cost_remains_reserved(tmp_path
         "evals.paid_gate._git_is_clean", return_value=True,
     ), gate.locked():
         reservation = gate.reserve(
-            "too-many-tokens", maximum_requests=2,
+            "too-many-tokens", maximum_requests=1,
             maximum_input_tokens_per_request=1000,
             maximum_output_tokens_per_request=500,
         )
@@ -148,7 +156,7 @@ def test_gate_fails_closed_when_worst_next_trial_exceeds_remaining_budget(tmp_pa
         "evals.paid_gate._git_is_clean", return_value=True,
     ), gate.locked(), pytest.raises(ValueError, match="insufficient stage A budget"):
         gate.reserve(
-            "too-expensive", maximum_requests=2,
+            "too-expensive", maximum_requests=1,
             maximum_input_tokens_per_request=1000,
             maximum_output_tokens_per_request=500,
         )
@@ -216,6 +224,90 @@ def test_stage_c_disabled_category_fails_before_any_provider_request(tmp_path: P
                 maximum_input_tokens_per_request=1000,
                 maximum_output_tokens_per_request=500,
             )
+    ledger = BudgetLedger.model_validate_json(ledger_path.read_text(encoding="utf-8"))
+    assert ledger.budget_blocks[-1].reason == "category_limit"
+
+
+def test_stage_c_second_request_is_blocked_by_its_category_before_provider_call(tmp_path: Path) -> None:
+    authorization_path = tmp_path / "authorization.json"
+    allocation_path = tmp_path / "allocation.json"
+    ledger_path = tmp_path / "ledger.json"
+    _authorization(authorization_path, "600")
+    authorization = load_authorization(authorization_path)
+    ledger = BudgetLedger(authorization_hash=authorization_hash(authorization), updated_at="now")
+    ledger_path.write_text(ledger.model_dump_json(indent=2), encoding="utf-8")
+    allocation = StageCBudgetAllocation(
+        experiment_commit=COMMIT, pricing_snapshot_hash=authorization.pricing_snapshot_hash,
+        baseline_ledger_sha256=ledger_fingerprint(ledger),
+        baseline_authorization_hash=ledger.authorization_hash, baseline_spent_cny="0",
+        baseline_request_charge_count=0, baseline_settlement_count=0,
+        baseline_rebind_count=0, safety_reserve_cny="90", spendable_total_cny="510",
+        category_limits_cny={
+            "swe": "0", "mcp": "0.035", "retention": "0",
+            "permission": "0", "multi_agent": "0", "long_session": "0",
+        },
+    )
+    allocation_path.write_text(allocation.model_dump_json(indent=2), encoding="utf-8")
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ):
+        gate = PaidRunGate(
+            root=tmp_path, authorization_path=authorization_path, ledger_path=ledger_path,
+            pricing=load_pricing(PRICING_PATH), stage="C", allocation_path=allocation_path,
+        )
+        first = gate.reserve(
+            "mcp/eager/task/1", maximum_requests=1,
+            maximum_input_tokens_per_request=1000,
+            maximum_output_tokens_per_request=500,
+        )
+        gate.settle(first, request_usages=[(1000, 500)])
+        with pytest.raises(ValueError, match="mcp category budget"):
+            gate.reserve(
+                "mcp/eager/task/1", maximum_requests=1,
+                maximum_input_tokens_per_request=1000,
+                maximum_output_tokens_per_request=500,
+            )
+    after = BudgetLedger.model_validate_json(ledger_path.read_text(encoding="utf-8"))
+    assert after.active_reservation is None
+    assert len(after.request_charges) == 1
+    assert after.budget_blocks[-1].reason == "category_limit"
+
+
+def test_stage_c_unknown_trial_category_fails_closed_and_is_audited(tmp_path: Path) -> None:
+    authorization_path = tmp_path / "authorization.json"
+    allocation_path = tmp_path / "allocation.json"
+    ledger_path = tmp_path / "ledger.json"
+    _authorization(authorization_path, "600")
+    authorization = load_authorization(authorization_path)
+    ledger = BudgetLedger(authorization_hash=authorization_hash(authorization), updated_at="now")
+    ledger_path.write_text(ledger.model_dump_json(indent=2), encoding="utf-8")
+    allocation = StageCBudgetAllocation(
+        experiment_commit=COMMIT, pricing_snapshot_hash=authorization.pricing_snapshot_hash,
+        baseline_ledger_sha256=ledger_fingerprint(ledger),
+        baseline_authorization_hash=ledger.authorization_hash, baseline_spent_cny="0",
+        baseline_request_charge_count=0, baseline_settlement_count=0,
+        baseline_rebind_count=0, safety_reserve_cny="90", spendable_total_cny="510",
+        category_limits_cny={
+            "swe": "0", "mcp": "1", "retention": "0",
+            "permission": "0", "multi_agent": "0", "long_session": "0",
+        },
+    )
+    allocation_path.write_text(allocation.model_dump_json(indent=2), encoding="utf-8")
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ):
+        gate = PaidRunGate(
+            root=tmp_path, authorization_path=authorization_path, ledger_path=ledger_path,
+            pricing=load_pricing(PRICING_PATH), stage="C", allocation_path=allocation_path,
+        )
+        with pytest.raises(ValueError, match="no Stage C budget category"):
+            gate.reserve(
+                "unknown/task/1", maximum_requests=1,
+                maximum_input_tokens_per_request=1000,
+                maximum_output_tokens_per_request=500,
+            )
+    after = BudgetLedger.model_validate_json(ledger_path.read_text(encoding="utf-8"))
+    assert after.budget_blocks[-1].reason == "unknown_category"
 
 
 def test_authorization_rebind_preserves_settled_request_evidence(tmp_path: Path) -> None:
@@ -246,3 +338,64 @@ def test_authorization_rebind_preserves_settled_request_evidence(tmp_path: Path)
     assert len(rebound.request_charges) == len(rebound.settlements) == 1
     assert rebound.authorization_hash == authorization_hash(replacement)
     assert len(rebound.authorization_rebinds) == 1
+
+
+def test_rebind_detaches_a_settled_old_stage_c_allocation(tmp_path: Path) -> None:
+    old_path = tmp_path / "old-authorization.json"
+    replacement_path = tmp_path / "replacement-authorization.json"
+    _authorization(old_path, "600")
+    old = load_authorization(old_path)
+    ledger = BudgetLedger(
+        authorization_hash=authorization_hash(old), allocation_hash="a" * 64,
+        updated_at="2026-07-14T00:00:00Z",
+    )
+    ledger_path = tmp_path / "ledger.json"
+    ledger_path.write_text(ledger.model_dump_json(indent=2), encoding="utf-8")
+    replacement = old.model_copy(update={"experiment_commit": "b" * 40})
+    replacement_path.write_text(replacement.model_dump_json(indent=2), encoding="utf-8")
+    rebound = rebind_ledger_authorization(
+        ledger_path, previous=old, replacement=replacement,
+    )
+    assert rebound.allocation_hash is None
+    assert rebound.authorization_rebinds[-1].previous_allocation_hash == "a" * 64
+
+
+def test_request_with_missing_usage_keeps_active_reservation(tmp_path: Path) -> None:
+    gate = _gate(tmp_path)
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ):
+        reservation = gate.reserve(
+            "mcp/task/missing-usage", maximum_requests=1,
+            maximum_input_tokens_per_request=1000,
+            maximum_output_tokens_per_request=500,
+        )
+    ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
+    assert ledger.active_reservation is not None
+    assert ledger.active_reservation.reservation_id == reservation.reservation_id
+    assert not ledger.request_charges
+
+
+def test_duplicate_settlement_is_rejected(tmp_path: Path) -> None:
+    gate = _gate(tmp_path)
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ):
+        reservation = gate.reserve(
+            "mcp/task/duplicate", maximum_requests=1,
+            maximum_input_tokens_per_request=1000,
+            maximum_output_tokens_per_request=500,
+        )
+        gate.settle(reservation, request_usages=[(1, 1)])
+        with pytest.raises(ValueError, match="not active"):
+            gate.settle(reservation, request_usages=[(1, 1)])
+
+
+def test_multi_request_reservation_is_refused(tmp_path: Path) -> None:
+    gate = _gate(tmp_path)
+    with pytest.raises(ValueError, match="exactly one Provider request"):
+        gate.reserve(
+            "mcp/task/legacy", maximum_requests=2,
+            maximum_input_tokens_per_request=1000,
+            maximum_output_tokens_per_request=500,
+        )

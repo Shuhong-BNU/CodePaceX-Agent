@@ -59,8 +59,8 @@ def test_stage_c_budget_uses_all_observed_categories_and_disables_swe_long(tmp_p
         "permission": 200, "multi_agent": 50, "long_session": 0,
     }
     assert allocation.category_limits_cny == {
-        "swe": Decimal("0"), "mcp": Decimal("91.545600"),
-        "retention": Decimal("34.406400"), "permission": Decimal("91.545600"),
-        "multi_agent": Decimal("91.545600"), "long_session": Decimal("0"),
+        "swe": Decimal("0"), "mcp": Decimal("6.000000"),
+        "retention": Decimal("0.688128"), "permission": Decimal("4.000000"),
+        "multi_agent": Decimal("1.830912"), "long_session": Decimal("0"),
     }
     assert allocation.safety_reserve_cny == Decimal("90.000000")

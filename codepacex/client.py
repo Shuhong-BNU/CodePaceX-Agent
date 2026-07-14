@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from abc import ABC, abstractmethod
 from typing import Any, AsyncIterator
 
@@ -78,6 +79,20 @@ def _provider_usage_payload(usage: Any) -> dict[str, Any] | None:
     if isinstance(usage, dict):
         return usage
     return None
+
+
+def _experimental_request_budget() -> Any | None:
+    """Load Goal 2 accounting only when a frozen experiment opts in by env.
+
+    This deliberately keeps ordinary TUI, remote and CLI Agent behavior free of
+    benchmark/accounting dependencies.  The guard itself is invoked immediately
+    around the Provider call, not from post-hoc telemetry.
+    """
+    if os.environ.get("CODEPACEX_EXPERIMENT_REQUEST_BUDGET") is None:
+        return None
+    from evals.paid_gate import ProviderRequestBudget
+
+    return ProviderRequestBudget.from_environment()
 
 
 # 核心实现
@@ -543,8 +558,11 @@ class OpenAICompatClient(LLMClient):
                 _missing_api_key_message("OpenAI-compatible", "OPENAI_API_KEY")
             )
         kwargs: dict[str, Any] = {"api_key": api_key, "base_url": config.base_url}
-        if max_retries is not None:
-            kwargs["max_retries"] = max_retries
+        # A request-budgeted experiment may never allow SDK retries: a retry is
+        # a new potentially billable request that must obtain its own ledger
+        # reservation first.
+        if max_retries is not None or os.environ.get("CODEPACEX_EXPERIMENT_REQUEST_BUDGET"):
+            kwargs["max_retries"] = 0 if max_retries is None else max_retries
         self._client = AsyncOpenAI(**kwargs)
 
     def set_max_output_tokens(self, tokens: int) -> None:
@@ -614,7 +632,12 @@ class OpenAICompatClient(LLMClient):
             system=embedded_system, tools=kwargs.get("tools"),
             messages=kwargs["messages"],
         )
+        request_budget = _experimental_request_budget()
+        reservation = None
+        settled = False
         try:
+            if request_budget is not None:
+                reservation = request_budget.reserve_before_request()
             response = await self._client.chat.completions.create(**kwargs)
             async for chunk in response:
                 if not chunk.choices:
@@ -629,13 +652,17 @@ class OpenAICompatClient(LLMClient):
                         )
                         cache_read = getattr(details, "cached_tokens", 0) or 0
                         prompt_tokens = chunk.usage.prompt_tokens or 0
+                        provider_usage = _provider_usage_payload(chunk.usage)
+                        if request_budget is not None and reservation is not None:
+                            request_budget.settle_after_usage(reservation, provider_usage)
+                            settled = True
                         yield StreamEnd(
                             stop_reason="end_turn",
                             input_tokens=max(prompt_tokens - cache_read, 0),
                             output_tokens=chunk.usage.completion_tokens or 0,
                             cache_read=cache_read,
                             cache_creation=0,
-                            provider_usage=_provider_usage_payload(chunk.usage),
+                            provider_usage=provider_usage,
                         )
                     continue
 
@@ -690,6 +717,13 @@ class OpenAICompatClient(LLMClient):
                                 arguments=args,
                             )
                         active_calls.clear()
+
+            if request_budget is not None and reservation is not None and not settled:
+                from evals.paid_gate import ProviderUsageUnknown
+
+                raise ProviderUsageUnknown(
+                    "Provider response completed without Usage; active reservation retained"
+                )
 
         except _openai.AuthenticationError as e:
             raise AuthenticationError(f"Invalid API key: {e}") from e

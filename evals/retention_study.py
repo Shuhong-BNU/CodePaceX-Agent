@@ -26,7 +26,9 @@ from codepacex.tools import create_default_registry
 from evals.benchmark import RunManifest, RunRecorder, canonical_hash, current_git_commit, sanitize_origin
 from evals.costing import load_pricing, pricing_snapshot_hash
 from evals.goal2_studies import Goal2Studies, load_studies, retention_canaries
-from evals.paid_gate import PaidRunGate, billable_request_usage
+from evals.paid_gate import (
+    PaidRunGate, billable_request_usage, provider_request_budget_scope,
+)
 from evals.pilot import _provider_payload, _runtime_secrets, load_config as load_pilot_config
 
 MAXIMUM_REQUESTS_PER_SESSION = 50
@@ -326,79 +328,92 @@ def execute(
     gate = PaidRunGate(
         root=root, authorization_path=budget_authorization,
         ledger_path=budget_ledger, pricing=pricing, stage=budget_stage,
-        allocation_path=budget_allocation,
+        allocation_path=budget_allocation, pricing_path=pricing_snapshot,
     )
     recorders: list[RunRecorder] = []
-    with gate.locked():
-        for profile in profiles(studies):
-            manifest = build_manifest(
-                root=root, studies_path=studies_path, studies=studies,
-                profile=profile, scope=scope,
-            )
-            manifest.pricing_snapshot_hash = pricing_snapshot_hash(pricing)
-            recorder = RunRecorder(
-                runs_dir, manifest,
-                run_id=f"{run_prefix}-{profile.compression_profile.value}",
-                repo_root=root, secrets=_runtime_secrets(pilot),
-            )
-            statuses: list[str] = []
-            for index in scoped_session_indices(studies, scope=scope):
-                task_id = f"retention-session-{index + 1:02d}"
-                reservation = gate.reserve(
-                    f"retention/{profile.compression_profile.value}/{task_id}",
-                    maximum_requests=MAXIMUM_REQUESTS_PER_SESSION,
-                    maximum_input_tokens_per_request=MAXIMUM_INPUT_TOKENS_PER_REQUEST,
-                    maximum_output_tokens_per_request=MAXIMUM_OUTPUT_TOKENS_PER_REQUEST,
-                )
-                recorder.event("trial_started", {
-                    "task_id": task_id, "repetition_id": "1", "attempt_id": 1,
-                    "budget_reservation_id": reservation.reservation_id,
-                })
-                started = time.monotonic()
-                try:
-                    with tempfile.TemporaryDirectory(prefix=f"codepacex-{task_id}-") as text:
-                        status, grade, request_usages = asyncio.run(
-                            _run_session(
-                                workspace=Path(text), pilot=pilot, profile=profile,
-                                canaries=retention_canaries(studies.retention, index),
-                                minimum_compactions=studies.retention.minimum_real_compactions,
-                                context_window=studies.retention.context_window,
-                                recorder=recorder, task_id=task_id,
-                            )
-                        )
-                except Exception as exc:
-                    recorder.event("trial_completed", {
-                        "task_id": task_id, "repetition_id": "1", "attempt_id": 1,
-                        "status": "infrastructure_error",
-                        "duration_seconds": time.monotonic() - started,
-                        "budget_reconciliation_required": True,
-                        "error_category": type(exc).__name__,
-                    })
-                    statuses.append("infrastructure_error")
-                    break
-                settlement = gate.settle(
-                    reservation, request_usages=request_usages,
-                )
-                statuses.append(status)
+    for profile in profiles(studies):
+        manifest = build_manifest(
+            root=root, studies_path=studies_path, studies=studies,
+            profile=profile, scope=scope,
+        )
+        manifest.pricing_snapshot_hash = pricing_snapshot_hash(pricing)
+        recorder = RunRecorder(
+            runs_dir, manifest,
+            run_id=f"{run_prefix}-{profile.compression_profile.value}",
+            repo_root=root, secrets=_runtime_secrets(pilot),
+        )
+        statuses: list[str] = []
+        for index in scoped_session_indices(studies, scope=scope):
+            task_id = f"retention-session-{index + 1:02d}"
+            trial_id = f"retention/{profile.compression_profile.value}/{task_id}"
+            recorder.event("trial_started", {
+                "task_id": task_id, "repetition_id": "1", "attempt_id": 1,
+                "budget_mode": "per_provider_request",
+            })
+            started = time.monotonic()
+            try:
+                with tempfile.TemporaryDirectory(prefix=f"codepacex-{task_id}-") as text:
+                    with provider_request_budget_scope(
+                        gate, trial_id=trial_id,
+                        maximum_input_tokens_per_request=MAXIMUM_INPUT_TOKENS_PER_REQUEST,
+                        maximum_output_tokens_per_request=MAXIMUM_OUTPUT_TOKENS_PER_REQUEST,
+                    ):
+                        status, grade, request_usages = asyncio.run(_run_session(
+                            workspace=Path(text), pilot=pilot, profile=profile,
+                            canaries=retention_canaries(studies.retention, index),
+                            minimum_compactions=studies.retention.minimum_real_compactions,
+                            context_window=studies.retention.context_window,
+                            recorder=recorder, task_id=task_id,
+                        ))
+            except Exception as exc:
                 recorder.event("trial_completed", {
                     "task_id": task_id, "repetition_id": "1", "attempt_id": 1,
-                    "status": status, "duration_seconds": time.monotonic() - started,
-                    "actual_cny": str(settlement.actual_cny), "grade": grade,
-                    **retention_rate_fields(status, grade),
+                    "status": "infrastructure_error",
+                    "duration_seconds": time.monotonic() - started,
+                    "budget_reconciliation_required": True,
+                    "error_category": type(exc).__name__,
                 })
-            aggregate = (
-                "success" if statuses and all(item == "success" for item in statuses)
-                else "infrastructure_error" if "infrastructure_error" in statuses
-                else "task_failure"
-            )
-            recorder.finalize({
-                "status": aggregate, "execution_mode": "live",
-                "profile": profile.compression_profile.value,
-                "synthetic_controlled_filler": True,
-            })
-            recorders.append(recorder)
-            if aggregate == "infrastructure_error":
+                statuses.append("infrastructure_error")
                 break
+            accounting = gate.trial_accounting(trial_id)
+            if accounting["budget_blocked"]:
+                recorder.event("trial_completed", {
+                    "task_id": task_id, "repetition_id": "1", "attempt_id": 1,
+                    "status": "budget_blocked",
+                    "budget_block_reasons": accounting["budget_block_reasons"],
+                    "actual_cny": accounting["actual_cny"],
+                })
+                statuses.append("budget_blocked")
+                break
+            if accounting["active_reservation"] is not None or accounting["request_count"] != len(request_usages):
+                recorder.event("trial_completed", {
+                    "task_id": task_id, "repetition_id": "1", "attempt_id": 1,
+                    "status": "infrastructure_error", "budget_reconciliation_required": True,
+                })
+                statuses.append("infrastructure_error")
+                break
+            statuses.append(status)
+            recorder.event("trial_completed", {
+                "task_id": task_id, "repetition_id": "1", "attempt_id": 1,
+                "status": status, "duration_seconds": time.monotonic() - started,
+                "actual_cny": accounting["actual_cny"], "grade": grade,
+                "provider_request_count": accounting["request_count"],
+                **retention_rate_fields(status, grade),
+            })
+        aggregate = (
+            "success" if statuses and all(item == "success" for item in statuses)
+            else "budget_blocked" if "budget_blocked" in statuses
+            else "infrastructure_error" if "infrastructure_error" in statuses
+            else "task_failure"
+        )
+        recorder.finalize({
+            "status": aggregate, "execution_mode": "live",
+            "profile": profile.compression_profile.value,
+            "synthetic_controlled_filler": True,
+        })
+        recorders.append(recorder)
+        if aggregate in {"infrastructure_error", "budget_blocked"}:
+            break
     return recorders
 
 

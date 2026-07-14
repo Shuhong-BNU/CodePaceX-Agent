@@ -1,6 +1,6 @@
 # Goal 2：真实实验、正式 Benchmark 与证据闭环运行手册
 
-本手册冻结 Goal 2 的实验顺序和证据边界，不伪造结果。当前已完成真实 Stage A/B 最小 Pilot、3 题 SWE Pilot prediction 与零模型 evaluator recovery、Hook 100/100，以及 `long-pilot-1` 的真实 2 小时 8/8 cycles。累计按实测 Token 与冻结价格的估算成本为 CNY `19.236348`。SWE recovery 是 0/3 resolved；其中 aiogram/arviz 有 patch-contract miss，amoffat 与 gold 同受 x86_64-emulated PASS_TO_PASS 干扰。随后 formal empty-equivalent control 已使完整 20 题 SWE 标记为 `infrastructure-blocked`。不运行正式 SWE、重复子集或有效子集；三次 8 小时长会话延期到 follow-up Goal。AgentRouter 仍不在本 Goal 范围。
+本手册冻结 Goal 2 的实验顺序和证据边界，不伪造结果。当前已完成真实 Stage A/B 最小 Pilot、3 题 SWE Pilot prediction 与零模型 evaluator recovery、Hook 100/100，以及 `long-pilot-1` 的真实 2 小时 8/8 cycles。累计按实测 Token 与冻结价格的估算成本为 CNY `19.326924`：其中包含旧基线 `mcp-formal-eager` 的一条真实请求（CNY `0.090576`），它仅是 pre-change diagnostic evidence，不进入新基线正式 Claim。SWE recovery 是 0/3 resolved；其中 aiogram/arviz 有 patch-contract miss，amoffat 与 gold 同受 x86_64-emulated PASS_TO_PASS 干扰。随后 formal empty-equivalent control 已使完整 20 题 SWE 标记为 `infrastructure-blocked`。不运行正式 SWE、重复子集或有效子集；三次 8 小时长会话延期到 follow-up Goal。AgentRouter 仍不在本 Goal 范围。
 
 ## 1. 冻结身份与不可变边界
 
@@ -71,7 +71,7 @@ Preflight 必须同时满足：官方模块可用、安装 checkout 的 Git comm
 
 定价快照来自阿里云 Model Studio 官方价格页，2026-07-13 冻结值为输入 CNY 12/M tokens、输出 CNY 36/M tokens；不假设免费额度、折扣或 cache 优惠。价格快照 SHA-256 为 `a09eb6e6955b9fb68d3e011771c948f7a14b7bbca5316a2433cab099d0b643d3`。
 
-计划共有 608 个 top-level paid Runs。估算不是承诺支出：实际计费取决于 Provider request 和 Token；每次下一 trial 都必须先按最坏上限预约预算。
+计划共有 608 个 top-level paid Runs。估算不是承诺支出：实际计费取决于 Provider request 和 Token；每次下一 **Provider request** 都必须先按该单次请求的最坏上限预约预算。
 
 | 部分 | 数量 | 最小估算 CNY | 预期估算 CNY | 工程硬上限 CNY |
 | --- | ---: | ---: | ---: | ---: |
@@ -88,7 +88,7 @@ Preflight 必须同时满足：官方模块可用、安装 checkout 的 Git comm
 | 3×8h 长会话 | 96 cycles | 4.03 | 41.47 | 1757.68 |
 | 总计 | 608 Runs / 104 long cycles | 29.74 | 566.78 | 57197.69 |
 
-硬上限假设普通 trial 50 requests、每 request 128K input + 8192 output；它是 fail-closed reservation ceiling，不是合理消费预测。用户必须给出明确总预算 CNY。schema v2 授权 JSON 需包含 `authorized_total_cny`、`stage_limits_cny`（本 Goal 固定为 A=100、B=400、C=600）、当前 40 位 HEAD、上述 pricing hash、UTC 授权时间和 `authorized_by: user`。每次 execute 必须显式传 `--budget-stage A|B|C`；reservation 同时受阶段累计上限和总上限约束。ledger 逐 Provider request 记录 input/output Token 与估算 CNY，再记录 Trial 聚合 settlement；缺少请求级 Usage 时 fail-closed，不允许用累计字段伪造拆分。预算 ledger、authorization 和 lock 文件只能放在被忽略的本地 Artifact 目录。
+硬上限假设普通 trial 最多 50 requests、每 request 128K input + 8192 output；它只用于预注册成本上界和类别 forecast，**不是**一次性 Trial reservation。用户必须给出明确总预算 CNY。schema v2 授权 JSON 需包含 `authorized_total_cny`、`stage_limits_cny`（本 Goal 固定为 A=100、B=400、C=600）、当前 40 位 HEAD、上述 pricing hash、UTC 授权时间和 `authorized_by: user`。每次 execute 必须显式传 `--budget-stage A|B|C`；每条真实 Provider request 在发出前分别检查全局、阶段、类别和 15% 安全余量，并获得唯一 reservation ID。收到真实 Provider Usage 后立即单独 settlement 并释放未使用预留；同一 Trial 的请求只能串行进行。Usage 缺失、timeout 或进程崩溃时 active reservation 保留并停止后续付费调用；预留失败写入 `budget_blocked`，不伪装成能力失败。预算 ledger、authorization 和 lock 文件只能放在被忽略的本地 Artifact 目录。
 
 ## 5. 真实执行顺序
 
@@ -122,7 +122,7 @@ python -m evals.pilot execute --confirm-paid-run \
 
 Stage B 先使用 `--scope pilot --budget-stage B` 跑最小、成对子集：MCP 每类 1 个任务、Retention 同一 seed、Permission 1 safe + 1 dangerous、Multi-Agent 同一 cross-file task；每个 arm/mode/strategy 均只重复 1 次。它们只证明 runner、唯一变量、Usage 和 Artifact 链能稳定工作，不生成正式效果 Claim。
 
-Stage C 在新 clean commit、全绿 CI、新 authorization rebind 和 allocation 后才允许运行。每个 runner 必须额外传入 `--budget-allocation`；allocation 按所有保留 Pilot request（包括失败请求）推算 2× 类别上限，保留总授权的 15% 安全余量，且类别不可转移。SWE 与 long-session 类别额度固定为零。默认串行并保持唯一变量；Multi-Agent 内部最多 3 个真实 worker，但必须先通过零模型 `grader-preflight`。固定 Run prefix 不得改变：
+Stage C 在新 clean commit、全绿 CI、新 authorization rebind 和 allocation 后才允许运行。每个 runner 必须额外传入 `--budget-allocation`；allocation 按所有保留 Pilot request（包括失败请求）推算 2× 类别上限，保留总授权的 15% 安全余量，且类别不可转移。旧基线的 `mcp-formal-eager` 只 carry forward 已发生的 CNY 成本，不能混入新 commit 的正式 Claim。SWE 与 long-session 类别额度固定为零。默认串行并保持唯一变量；Multi-Agent 内部最多 3 个真实 worker，但必须先通过零模型 `grader-preflight`。固定 Run prefix 不得改变：
 
 ```bash
 python -m evals.mcp_study execute --scope formal --budget-stage C --confirm-paid-run --runs-dir evals/.runs/goal2 --run-prefix mcp-formal ...

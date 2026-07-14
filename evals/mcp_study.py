@@ -26,7 +26,7 @@ from evals.benchmark import (
     sanitize_origin,
 )
 from evals.costing import load_pricing, pricing_snapshot_hash
-from evals.paid_gate import PaidRunGate
+from evals.paid_gate import PaidRunGate, provider_request_budget_environment
 from evals.pilot import (
     _child_environment,
     _ingest_trace,
@@ -301,16 +301,11 @@ def _run_arm(
         for repetition in range(1, repetitions + 1):
             for task in selected_tasks:
                 attempt_id = 1
-                reservation = gate.reserve(
-                    f"mcp/{profile.tool_loading.value}/{task.id}/{repetition}",
-                    maximum_requests=MAXIMUM_REQUESTS_PER_TRIAL,
-                    maximum_input_tokens_per_request=MAXIMUM_INPUT_TOKENS_PER_REQUEST,
-                    maximum_output_tokens_per_request=MAXIMUM_OUTPUT_TOKENS_PER_REQUEST,
-                )
+                trial_id = f"mcp/{profile.tool_loading.value}/{task.id}/{repetition}"
                 recorder.event("trial_started", {
                     "task_id": task.id, "repetition_id": str(repetition),
                     "attempt_id": attempt_id,
-                    "budget_reservation_id": reservation.reservation_id,
+                    "budget_mode": "per_provider_request",
                 })
                 with tempfile.TemporaryDirectory(
                     prefix=f"codepacex-{task.id}-"
@@ -320,9 +315,15 @@ def _run_arm(
                         "--output-format", "stream-json",
                         "--experiment-profile", str(profile_path),
                     ]
+                    request_environment = dict(environment)
+                    request_environment.update(provider_request_budget_environment(
+                        gate, trial_id=trial_id,
+                        maximum_input_tokens_per_request=MAXIMUM_INPUT_TOKENS_PER_REQUEST,
+                        maximum_output_tokens_per_request=MAXIMUM_OUTPUT_TOKENS_PER_REQUEST,
+                    ))
                     try:
                         process = subprocess.run(
-                            command, cwd=workspace_text, env=environment,
+                            command, cwd=workspace_text, env=request_environment,
                             text=True, capture_output=True,
                             timeout=study.timeout_seconds, check=False,
                         )
@@ -363,23 +364,37 @@ def _run_arm(
                             "budget_reconciliation_required": True, "grade": grade,
                         })
                         return status
-                if requests == 0:
+                accounting = gate.trial_accounting(trial_id)
+                if accounting["budget_blocked"]:
+                    recorder.event("trial_completed", {
+                        "task_id": task.id, "repetition_id": str(repetition),
+                        "attempt_id": attempt_id, "status": "budget_blocked",
+                        "budget_block_reasons": accounting["budget_block_reasons"],
+                        "actual_cny": accounting["actual_cny"],
+                    })
+                    return "budget_blocked"
+                if accounting["active_reservation"] is not None:
+                    recorder.event("trial_completed", {
+                        "task_id": task.id, "repetition_id": str(repetition),
+                        "attempt_id": attempt_id, "status": "infrastructure_error",
+                        "budget_reconciliation_required": True,
+                    })
+                    return "infrastructure_error"
+                if requests == 0 or accounting["request_count"] != requests:
                     recorder.event("trial_completed", {
                         "task_id": task.id, "repetition_id": str(repetition),
                         "attempt_id": attempt_id, "status": "infrastructure_error",
                         "budget_reconciliation_required": True, "grade": grade,
                     })
                     return "infrastructure_error"
-                settlement = gate.settle(
-                    reservation, request_usages=request_usages,
-                )
                 statuses.append(status)
                 recorder.event("trial_completed", {
                     "task_id": task.id, "repetition_id": str(repetition),
                     "attempt_id": attempt_id, "status": status,
                     "numerator": int(status == "success"), "denominator": 1,
                     "grade": grade,
-                    "actual_cny": str(settlement.actual_cny),
+                    "actual_cny": accounting["actual_cny"],
+                    "provider_request_count": accounting["request_count"],
                 })
     if all(status == "success" for status in statuses):
         return "success"
@@ -410,32 +425,32 @@ def execute(
         root=root, authorization_path=budget_authorization,
         ledger_path=budget_ledger, pricing=pricing, stage=budget_stage,
         allocation_path=budget_allocation,
+        pricing_path=pricing_snapshot,
     )
     recorders: list[RunRecorder] = []
-    with gate.locked():
-        for profile in profiles(study):
-            manifest = build_arm_manifest(
-                root=root, study_path=study_path, study=study,
-                tasks=tasks, profile=profile, scope=scope,
-            )
-            manifest.pricing_snapshot_hash = pricing_hash
-            recorder = RunRecorder(
-                runs_dir, manifest,
-                run_id=f"{run_prefix}-{profile.tool_loading.value}",
-                repo_root=root, secrets=_runtime_secrets(pilot),
-            )
-            status = _run_arm(
-                root=root, study=study, tasks=tasks,
-                profile=profile, recorder=recorder, gate=gate, scope=scope,
-            )
-            recorder.finalize({
-                "status": status, "execution_mode": "live",
-                "arm": profile.tool_loading.value,
-                "controlled_corpus_only": True,
-            })
-            recorders.append(recorder)
-            if status in {"timeout", "infrastructure_error"}:
-                break
+    for profile in profiles(study):
+        manifest = build_arm_manifest(
+            root=root, study_path=study_path, study=study,
+            tasks=tasks, profile=profile, scope=scope,
+        )
+        manifest.pricing_snapshot_hash = pricing_hash
+        recorder = RunRecorder(
+            runs_dir, manifest,
+            run_id=f"{run_prefix}-{profile.tool_loading.value}",
+            repo_root=root, secrets=_runtime_secrets(pilot),
+        )
+        status = _run_arm(
+            root=root, study=study, tasks=tasks,
+            profile=profile, recorder=recorder, gate=gate, scope=scope,
+        )
+        recorder.finalize({
+            "status": status, "execution_mode": "live",
+            "arm": profile.tool_loading.value,
+            "controlled_corpus_only": True,
+        })
+        recorders.append(recorder)
+        if status in {"timeout", "infrastructure_error", "budget_blocked"}:
+            break
     return recorders
 
 
