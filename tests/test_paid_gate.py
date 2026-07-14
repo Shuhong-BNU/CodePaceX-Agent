@@ -15,6 +15,7 @@ from evals.paid_gate import (
     authorization_hash,
     ledger_fingerprint,
     load_authorization,
+    reconcile_unknown_usage,
     rebind_ledger_authorization,
     worst_case_reservation,
 )
@@ -374,6 +375,95 @@ def test_request_with_missing_usage_keeps_active_reservation(tmp_path: Path) -> 
     assert ledger.active_reservation is not None
     assert ledger.active_reservation.reservation_id == reservation.reservation_id
     assert not ledger.request_charges
+
+
+def test_unknown_usage_is_conservatively_settled_without_fabricating_tokens(tmp_path: Path) -> None:
+    authorization_path = tmp_path / "authorization.json"
+    _authorization(authorization_path)
+    gate = _gate(tmp_path)
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ):
+        reservation = gate.reserve(
+            "mcp/task/unknown-usage", maximum_requests=1,
+            maximum_input_tokens_per_request=1000,
+            maximum_output_tokens_per_request=500,
+        )
+    with pytest.raises(TypeError):
+        gate.cancel(reservation)  # type: ignore[call-arg]
+    settlement = reconcile_unknown_usage(
+        gate.ledger_path, authorization=load_authorization(authorization_path),
+        reservation_id=reservation.reservation_id,
+        evidence_gap="no durable provider request ID, Usage, or billing evidence",
+    )
+    ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
+    assert settlement.actual_cny == reservation.reserved_cny
+    assert settlement.status == "conservative_settled"
+    assert settlement.settlement_method == "conservative_reserved_amount"
+    assert settlement.usage_status == "unknown"
+    assert settlement.requests is settlement.input_tokens is settlement.output_tokens is None
+    assert ledger.spent_cny == reservation.reserved_cny
+    assert ledger.active_reservation is None
+    assert not ledger.request_charges
+    assert gate.trial_accounting("mcp/task/unknown-usage") == {
+        "request_count": 0,
+        "actual_cny": str(reservation.reserved_cny),
+        "reservation_ids": [],
+        "budget_blocked": False,
+        "budget_block_reasons": [],
+        "active_reservation": None,
+        "settlement_count": 1,
+        "usage_unknown": True,
+        "claim_exclusion_reason": "unknown_provider_usage_conservative_reservation",
+    }
+    with pytest.raises(ValueError, match="not active"):
+        reconcile_unknown_usage(
+            gate.ledger_path, authorization=load_authorization(authorization_path),
+            reservation_id=reservation.reservation_id, evidence_gap="duplicate",
+        )
+
+
+def test_conservative_settlement_debits_stage_c_category_before_next_request(tmp_path: Path) -> None:
+    authorization_path = tmp_path / "authorization.json"
+    allocation_path = tmp_path / "allocation.json"
+    ledger_path = tmp_path / "ledger.json"
+    _authorization(authorization_path, "600")
+    authorization = load_authorization(authorization_path)
+    ledger = BudgetLedger(authorization_hash=authorization_hash(authorization), updated_at="now")
+    ledger_path.write_text(ledger.model_dump_json(indent=2), encoding="utf-8")
+    allocation = StageCBudgetAllocation(
+        experiment_commit=COMMIT, pricing_snapshot_hash=authorization.pricing_snapshot_hash,
+        baseline_ledger_sha256=ledger_fingerprint(ledger),
+        baseline_authorization_hash=ledger.authorization_hash, baseline_spent_cny="0",
+        baseline_request_charge_count=0, baseline_settlement_count=0,
+        baseline_rebind_count=0, safety_reserve_cny="90", spendable_total_cny="510",
+        category_limits_cny={
+            "swe": "0", "mcp": "0.030000", "retention": "0",
+            "permission": "0", "multi_agent": "0", "long_session": "0",
+        },
+    )
+    allocation_path.write_text(allocation.model_dump_json(indent=2), encoding="utf-8")
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ):
+        gate = PaidRunGate(
+            root=tmp_path, authorization_path=authorization_path, ledger_path=ledger_path,
+            pricing=load_pricing(PRICING_PATH), stage="C", allocation_path=allocation_path,
+        )
+        reservation = gate.reserve(
+            "mcp/run/deferred/task/1", maximum_requests=1,
+            maximum_input_tokens_per_request=1000,
+            maximum_output_tokens_per_request=500,
+        )
+        gate.conservatively_settle_unknown_usage(
+            reservation, evidence_gap="Provider Usage was irrecoverable",
+        )
+        with pytest.raises(ValueError, match="mcp category budget"):
+            gate.reserve(
+                "mcp/run/deferred/task/2", maximum_requests=1,
+                maximum_input_tokens_per_request=1000,
+                maximum_output_tokens_per_request=500,
+            )
 
 
 def test_duplicate_settlement_is_rejected(tmp_path: Path) -> None:

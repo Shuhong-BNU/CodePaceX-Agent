@@ -83,12 +83,38 @@ class Settlement(BaseModel):
     reservation_id: str
     trial_id: str
     stage: BudgetStage
-    requests: int = Field(ge=0)
-    input_tokens: int = Field(ge=0)
-    output_tokens: int = Field(ge=0)
+    requests: int | None = Field(default=None, ge=0)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
     actual_cny: Decimal = Field(ge=0)
-    status: Literal["settled", "cancelled"]
+    status: Literal["settled", "cancelled", "conservative_settled"]
+    settlement_method: Literal[
+        "provider_usage", "provider_confirmed_not_submitted",
+        "conservative_reserved_amount",
+    ] | None = None
+    usage_status: Literal["known", "unknown"] = "known"
+    evidence_gap: str | None = None
     settled_at: str
+
+    @model_validator(mode="after")
+    def validate_usage_semantics(self) -> Settlement:
+        if self.status == "conservative_settled":
+            if self.settlement_method != "conservative_reserved_amount":
+                raise ValueError("conservative settlement requires its explicit method")
+            if self.usage_status != "unknown":
+                raise ValueError("conservative settlement must preserve unknown Usage")
+            if any(value is not None for value in (
+                self.requests, self.input_tokens, self.output_tokens,
+            )):
+                raise ValueError("conservative settlement cannot fabricate request Usage")
+            if not self.evidence_gap:
+                raise ValueError("conservative settlement requires an evidence gap")
+        elif self.status == "settled":
+            if self.usage_status != "known" or any(value is None for value in (
+                self.requests, self.input_tokens, self.output_tokens,
+            )):
+                raise ValueError("settled Provider Usage must be complete")
+        return self
 
 
 class RequestCharge(BaseModel):
@@ -215,6 +241,95 @@ def ledger_fingerprint(ledger: BudgetLedger) -> str:
     ).hexdigest()
 
 
+def _conservative_total(ledger: BudgetLedger) -> Decimal:
+    return _money(sum(
+        (item.actual_cny for item in ledger.settlements
+         if item.status == "conservative_settled"),
+        Decimal("0"),
+    ))
+
+
+def _validate_ledger_totals(ledger: BudgetLedger) -> None:
+    request_total = _money(sum(
+        (item.actual_cny for item in ledger.request_charges), Decimal("0"),
+    ))
+    settlement_total = _money(sum(
+        (item.actual_cny for item in ledger.settlements), Decimal("0"),
+    ))
+    accounted_total = _money(request_total + _conservative_total(ledger))
+    if ledger.spent_cny != accounted_total or settlement_total != accounted_total:
+        raise ValueError("budget ledger is internally inconsistent")
+
+
+def _write_ledger_atomic(ledger_path: Path, ledger: BudgetLedger) -> None:
+    ledger.updated_at = _utc_now()
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = ledger_path.with_name(f".{ledger_path.name}.{uuid.uuid4().hex}.tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        handle.write(json.dumps(
+            ledger.model_dump(mode="json"), ensure_ascii=False,
+            indent=2, sort_keys=True,
+        ) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, ledger_path)
+    directory = os.open(ledger_path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def _conservative_settlement(
+    ledger: BudgetLedger, reservation: Reservation, *, evidence_gap: str,
+) -> Settlement:
+    active = ledger.active_reservation
+    if active is None or active.reservation_id != reservation.reservation_id:
+        raise ValueError("paid trial reservation is not active")
+    if any(item.reservation_id == active.reservation_id for item in ledger.request_charges) or any(
+        item.reservation_id == active.reservation_id for item in ledger.settlements
+    ):
+        raise ValueError("reservation ID has already been settled")
+    settlement = Settlement(
+        reservation_id=active.reservation_id, trial_id=active.trial_id,
+        stage=active.stage, requests=None, input_tokens=None,
+        output_tokens=None, actual_cny=active.reserved_cny,
+        status="conservative_settled",
+        settlement_method="conservative_reserved_amount",
+        usage_status="unknown", evidence_gap=evidence_gap,
+        settled_at=_utc_now(),
+    )
+    ledger.spent_cny = _money(ledger.spent_cny + active.reserved_cny)
+    ledger.settlements.append(settlement)
+    ledger.active_reservation = None
+    return settlement
+
+
+def reconcile_unknown_usage(
+    ledger_path: Path, *, authorization: BudgetAuthorization,
+    reservation_id: str, evidence_gap: str,
+) -> Settlement:
+    """Resolve a historical active reservation without authorizing new calls.
+
+    Reconciliation is deliberately bound to the ledger's existing authorization
+    hash, rather than current Git HEAD: it can close evidence created by an old
+    frozen baseline before the ledger is rebound to a later commit.
+    """
+    lock_path = ledger_path.with_suffix(ledger_path.suffix + ".lock")
+    with _exclusive_ledger_lock(lock_path):
+        ledger = BudgetLedger.model_validate_json(ledger_path.read_text(encoding="utf-8"))
+        if ledger.authorization_hash != authorization_hash(authorization):
+            raise ValueError("budget ledger belongs to a different authorization")
+        active = ledger.active_reservation
+        if active is None or active.reservation_id != reservation_id:
+            raise ValueError("requested reservation is not active")
+        settlement = _conservative_settlement(
+            ledger, active, evidence_gap=evidence_gap,
+        )
+        _write_ledger_atomic(ledger_path, ledger)
+        return settlement
+
+
 def stage_c_category(trial_id: str) -> BudgetCategory:
     prefix = trial_id.split("/", 1)[0]
     try:
@@ -268,14 +383,10 @@ def rebind_ledger_authorization(
             raise ValueError("authorization rebind requires unchanged stage limits")
         if previous.pricing_snapshot_hash != replacement.pricing_snapshot_hash:
             raise ValueError("authorization rebind requires the same pricing snapshot")
-        request_total = _money(sum(
-            (item.actual_cny for item in ledger.request_charges), Decimal("0"),
-        ))
-        settlement_total = _money(sum(
-            (item.actual_cny for item in ledger.settlements), Decimal("0"),
-        ))
-        if ledger.spent_cny != request_total or request_total != settlement_total:
-            raise ValueError("cannot rebind an internally inconsistent budget ledger")
+        try:
+            _validate_ledger_totals(ledger)
+        except ValueError as exc:
+            raise ValueError("cannot rebind an internally inconsistent budget ledger") from exc
         ledger.authorization_hash = replacement_hash
         ledger.authorization_rebinds.append(AuthorizationRebind(
             previous_authorization_hash=previous_hash,
@@ -286,21 +397,7 @@ def rebind_ledger_authorization(
         # A Stage C allocation is commit-bound.  Settled charges remain durable
         # evidence, but the old allocation cannot authorize the new commit.
         ledger.allocation_hash = None
-        ledger.updated_at = _utc_now()
-        temporary = ledger_path.with_name(f".{ledger_path.name}.{uuid.uuid4().hex}.tmp")
-        with temporary.open("w", encoding="utf-8") as handle:
-            handle.write(json.dumps(
-                ledger.model_dump(mode="json"), ensure_ascii=False,
-                indent=2, sort_keys=True,
-            ) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, ledger_path)
-        directory = os.open(ledger_path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        _write_ledger_atomic(ledger_path, ledger)
         return ledger
 
 
@@ -453,24 +550,7 @@ class PaidRunGate:
         return ledger
 
     def _write_ledger(self, ledger: BudgetLedger) -> None:
-        ledger.updated_at = _utc_now()
-        self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.ledger_path.with_name(
-            f".{self.ledger_path.name}.{uuid.uuid4().hex}.tmp"
-        )
-        with temporary.open("w", encoding="utf-8") as handle:
-            handle.write(json.dumps(
-                ledger.model_dump(mode="json"), ensure_ascii=False,
-                indent=2, sort_keys=True,
-            ) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, self.ledger_path)
-        directory = os.open(self.ledger_path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        _write_ledger_atomic(self.ledger_path, ledger)
 
     def _record_budget_block(
         self, ledger: BudgetLedger, *, trial_id: str, amount: Decimal,
@@ -543,6 +623,13 @@ class PaidRunGate:
                     self.allocation.baseline_request_charge_count:
                 ]
                 if self._category_for_trial(item.trial_id) == category
+            ) + sum(
+                item.actual_cny
+                for item in ledger.settlements[
+                    self.allocation.baseline_settlement_count:
+                ]
+                if item.status == "conservative_settled"
+                and self._category_for_trial(item.trial_id) == category
             )
             if category_spent + amount > self.allocation.category_limits_cny[category]:
                 self._record_budget_block(
@@ -645,7 +732,8 @@ class PaidRunGate:
             stage=active.stage,
             requests=1, input_tokens=input_tokens,
             output_tokens=output_tokens, actual_cny=cost,
-            status="settled", settled_at=_utc_now(),
+            status="settled", settlement_method="provider_usage",
+            settled_at=_utc_now(),
         )
         ledger.spent_cny = _money(ledger.spent_cny + cost)
         ledger.request_charges.append(charge)
@@ -654,11 +742,17 @@ class PaidRunGate:
         self._write_ledger(ledger)
         return settlement
 
-    def cancel(self, reservation: Reservation) -> Settlement:
+    def cancel(
+        self, reservation: Reservation, *,
+        reason: Literal["provider_confirmed_not_submitted"],
+    ) -> Settlement:
         with self.locked():
-            return self._cancel(reservation)
+            return self._cancel(reservation, reason=reason)
 
-    def _cancel(self, reservation: Reservation) -> Settlement:
+    def _cancel(
+        self, reservation: Reservation, *,
+        reason: Literal["provider_confirmed_not_submitted"],
+    ) -> Settlement:
         ledger = self._load_ledger()
         active = ledger.active_reservation
         if active is None or active.reservation_id != reservation.reservation_id:
@@ -667,12 +761,30 @@ class PaidRunGate:
             reservation_id=active.reservation_id, trial_id=active.trial_id,
             stage=active.stage,
             requests=0, input_tokens=0, output_tokens=0,
-            actual_cny=Decimal("0"), status="cancelled", settled_at=_utc_now(),
+            actual_cny=Decimal("0"), status="cancelled",
+            settlement_method=reason, settled_at=_utc_now(),
         )
         ledger.settlements.append(settlement)
         ledger.active_reservation = None
         self._write_ledger(ledger)
         return settlement
+
+    def conservatively_settle_unknown_usage(
+        self, reservation: Reservation, *, evidence_gap: str,
+    ) -> Settlement:
+        """Debit a durable reservation only when Provider Usage is irrecoverable.
+
+        This deliberately records no request charge or Token count.  The debit
+        is conservative budget accounting, not a claim about the Provider's
+        eventual invoice.
+        """
+        with self.locked():
+            ledger = self._load_ledger()
+            settlement = _conservative_settlement(
+                ledger, reservation, evidence_gap=evidence_gap,
+            )
+            self._write_ledger(ledger)
+            return settlement
 
     def trial_accounting(self, trial_id: str) -> dict[str, Any]:
         """Read durable per-request accounting for a completed or blocked Trial."""
@@ -685,6 +797,9 @@ class PaidRunGate:
                 "request_count": len(charges),
                 "actual_cny": str(_money(sum(
                     (item.actual_cny for item in charges), Decimal("0"),
+                ) + sum(
+                    (item.actual_cny for item in settlements
+                     if item.status == "conservative_settled"), Decimal("0"),
                 ))),
                 "reservation_ids": [item.reservation_id for item in charges],
                 "budget_blocked": bool(blocks),
@@ -695,6 +810,14 @@ class PaidRunGate:
                     and ledger.active_reservation.trial_id == trial_id else None
                 ),
                 "settlement_count": len(settlements),
+                "usage_unknown": any(
+                    item.status == "conservative_settled" for item in settlements
+                ),
+                "claim_exclusion_reason": (
+                    "unknown_provider_usage_conservative_reservation"
+                    if any(item.status == "conservative_settled" for item in settlements)
+                    else None
+                ),
             }
 
     def summary(self) -> dict[str, str | int | bool]:

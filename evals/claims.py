@@ -306,6 +306,11 @@ def _compatibility(
                 "Schema v1 and unversioned Runs are inspection-only and cannot verify Goal 2 claims."
             )
             continue
+        if result.get("scorable") is not True:
+            problems.append(
+                "Source Run is unscorable; infrastructure-error trials cannot enter formal Claims."
+            )
+            continue
         flags = manifest.get("feature_flags")
         if flags:
             problems.append("Legacy feature_flags are not eligible for Goal 2 claims.")
@@ -398,6 +403,7 @@ def _provider_usage_trials(
     if not isinstance(requests, list):
         return {}
     values: dict[tuple[str, str], float] = {}
+    terminals = _completed_trials(run)
     for item in requests:
         if not isinstance(item, dict):
             return {}
@@ -405,6 +411,11 @@ def _provider_usage_trials(
         raw = item.get("provider_usage")
         if key is None or not isinstance(raw, dict):
             return {}
+        terminal = terminals.get(key)
+        if terminal is not None and terminal.get("status") == "infrastructure_error":
+            # A missing-Usage reconciliation cannot be paired with token data.
+            # Keep its cost in the ledger, but exclude it from token metrics.
+            continue
         if metric == "input":
             tokens = raw.get("prompt_tokens", raw.get("input_tokens"))
         elif metric == "output":

@@ -194,6 +194,17 @@ def test_dry_run_and_missing_runtime_are_insufficient(tmp_path: Path) -> None:
     assert claim["evidence_summary"]["measured_sample_size"] == 0
 
 
+def test_unscorable_infrastructure_run_is_excluded_from_formal_claims(tmp_path: Path) -> None:
+    _successful_run(tmp_path, "run")
+    result_path = tmp_path / "run" / "result.json"
+    result = json.loads(result_path.read_text())
+    result.update({"status": "infrastructure_error", "scorable": False})
+    result_path.write_text(json.dumps(result), encoding="utf-8")
+    claim = compile_claims(_document(), tmp_path)["claims"][0]
+    assert claim["status"] == "insufficient-data"
+    assert any("infrastructure" in item.lower() for item in claim["limitations"])
+
+
 def test_claim_rejects_unregistered_metric_and_allowed_difference() -> None:
     with pytest.raises(ValueError, match="unregistered metric"):
         _document(metric_name="made-up")

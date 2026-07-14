@@ -28,6 +28,7 @@ from evals.multi_agent_study import (
 from evals.paid_gate import (
     BudgetLedger,
     StageCBudgetAllocation,
+    _conservative_total,
     _money,
     allocation_hash,
     authorization_hash,
@@ -92,7 +93,8 @@ def derive_allocation(
         raise ValueError("ledger must be rebound to the allocation authorization")
     request_total = _money(sum(item.actual_cny for item in ledger.request_charges))
     settlement_total = _money(sum(item.actual_cny for item in ledger.settlements))
-    if ledger.spent_cny != request_total or request_total != settlement_total:
+    accounted_total = _money(request_total + _conservative_total(ledger))
+    if ledger.spent_cny != accounted_total or settlement_total != accounted_total:
         raise ValueError("cannot allocate from an internally inconsistent ledger")
     counts = formal_trial_counts(studies_path=studies_path, mcp_study_path=mcp_study_path)
     costs: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
@@ -104,6 +106,15 @@ def derive_allocation(
         category = stage_c_category(charge.trial_id)
         costs[category] += charge.actual_cny
         trials[category].add(charge.trial_id)
+    for settlement in ledger.settlements:
+        if settlement.status != "conservative_settled":
+            continue
+        prefix = settlement.trial_id.split("/", 1)[0]
+        if prefix in NON_STAGE_C_PREFIXES:
+            continue
+        category = stage_c_category(settlement.trial_id)
+        costs[category] += settlement.actual_cny
+        trials[category].add(settlement.trial_id)
     limits: dict[str, Decimal] = {}
     for category, formal_trials in counts.items():
         if category in DISABLED_CATEGORIES:

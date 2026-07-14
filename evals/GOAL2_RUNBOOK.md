@@ -153,6 +153,8 @@ python -m evals.claims compile \
 
 Claims 只接受同一个 frozen commit 的完整 Run；样本数必须精确相等，A/B 必须精确配对，批准的 Runtime 差异仍写入 evidence summary。Hook 使用独立确定性 JSON 作为 Claim 来源，因为它没有 Provider Runtime。任何 `insufficient-data`、infra failure、被筛掉的失败 Run、dry-run、mock、fixture-only 或 synthetic schema 都不得写成真实效果。
 
+若某个 Provider request 已成功落盘 reservation、但无法恢复 Provider Usage、request ID 或可审计账单证据，则不得按零成本取消。记录 `conservative_reserved_amount` 审计结算：全额计入原 reservation、Token 字段保持 unknown、Trial 保持 `infrastructure_error`，并从 Token matched-pair 指标中排除；该金额是预算保守计提，不是 Provider 实际账单。该结算同样扣减全局与类别预算，且只允许一次。
+
 当前 Claims 状态：
 
 | 证据 | 当前状态 | 可发布条件 |

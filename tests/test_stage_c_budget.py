@@ -42,8 +42,16 @@ def test_stage_c_budget_uses_all_observed_categories_and_disables_swe_long(tmp_p
         requests=1, input_tokens=1, output_tokens=1, actual_cny=charge.actual_cny,
         status="settled", settled_at="2026-07-14T00:00:00Z",
     ) for charge in charges]
+    settlements.append(Settlement(
+        reservation_id="r-mcp-unknown", trial_id="mcp/formal/unknown-usage",
+        stage="C", requests=None, input_tokens=None, output_tokens=None,
+        actual_cny="0.001000", status="conservative_settled",
+        settlement_method="conservative_reserved_amount", usage_status="unknown",
+        evidence_gap="Provider Usage could not be recovered",
+        settled_at="2026-07-14T00:00:00Z",
+    ))
     ledger = BudgetLedger(
-        authorization_hash=authorization_hash(authorization), spent_cny=Decimal("0.050000"),
+        authorization_hash=authorization_hash(authorization), spent_cny=Decimal("0.051000"),
         request_charges=charges, settlements=settlements, updated_at="2026-07-14T00:00:00Z",
     )
     allocation = derive_allocation(
@@ -59,7 +67,7 @@ def test_stage_c_budget_uses_all_observed_categories_and_disables_swe_long(tmp_p
         "permission": 200, "multi_agent": 50, "long_session": 0,
     }
     assert allocation.category_limits_cny == {
-        "swe": Decimal("0"), "mcp": Decimal("6.000000"),
+        "swe": Decimal("0"), "mcp": Decimal("3.300000"),
         "retention": Decimal("0.688128"), "permission": Decimal("4.000000"),
         "multi_agent": Decimal("1.830912"), "long_session": Decimal("0"),
     }
