@@ -13,8 +13,6 @@ RUN_IDS = {
     "permission-formal-default", "permission-formal-session_allow",
     "permission-formal-explicit_rules", "permission-formal-sandbox_auto_allow",
     "multi-formal-single", "multi-formal-multi",
-    "long-pilot-1", "long-formal-1", "long-formal-2", "long-formal-3",
-    "swe-formal", "swe-repeat-1", "swe-repeat-2",
 }
 
 
@@ -40,22 +38,31 @@ def test_goal2_claim_generator_materializes_all_registered_claims(tmp_path: Path
     document = generate_claim_document(tmp_path)
     ids = {claim.claim_id for claim in document.claims}
     assert "mcp-input-reduction-median" in ids
-    assert "long-session-checkpoint-recovery" in ids
-    assert "swe-formal-resolve-rate" in ids
+    assert "long-session-formal-checkpoint-recovery" in ids
+    assert "swe-formal-resolve-rate" not in ids
+    long_claim = next(item for item in document.claims if item.claim_id == "long-session-formal-checkpoint-recovery")
+    assert long_claim.status == "insufficient-data"
+    assert long_claim.source_run_ids == []
     assert len(ids) == len(document.claims)
 
 
 def test_goal2_claim_generator_requires_every_run_and_one_commit(tmp_path: Path) -> None:
     _write_manifests(tmp_path)
-    (tmp_path / "swe-formal" / "manifest.json").unlink()
+    (tmp_path / "mcp-formal-eager" / "manifest.json").unlink()
     with pytest.raises(OSError):
         generate_claim_document(tmp_path)
 
     tmp_path = tmp_path / "mixed"
     _write_manifests(tmp_path)
-    path = tmp_path / "swe-formal" / "manifest.json"
+    path = tmp_path / "mcp-formal-eager" / "manifest.json"
     payload = json.loads(path.read_text())
     payload["git_commit"] = "b" * 40
     path.write_text(json.dumps(payload))
     with pytest.raises(ValueError, match="one frozen"):
         generate_claim_document(tmp_path)
+
+
+def test_goal2_claim_generator_can_exclude_multi_after_no_go_gate(tmp_path: Path) -> None:
+    _write_manifests(tmp_path)
+    document = generate_claim_document(tmp_path, include_multi=False)
+    assert not any(claim.claim_id.startswith("multi-") for claim in document.claims)

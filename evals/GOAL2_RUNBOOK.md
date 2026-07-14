@@ -1,6 +1,6 @@
 # Goal 2：真实实验、正式 Benchmark 与证据闭环运行手册
 
-本手册是 Goal 2 的唯一执行顺序。它冻结实验设计和 Run ID，但不伪造结果。当前仓库已完成实验基础设施、离线测试、dry-run、正式确定性 Hook 研究，以及 SWE empty/gold evaluator smoke。`8fd4b19` 的首次 Stage A 真实 Pilot 产生 6 次 Provider request 并以 terminal `task_failure` 结束；原 ledger 记录 CNY 0.221436，但按 Provider `prompt_tokens` 与冻结的无 cache 折扣价格重算为 CNY 0.321276，后续基线必须保守 carry forward 后者。该旧 Run 没有显式调用标记和完整失败 grader 附件，因此不能放行 Stage B；相关 runner/telemetry 缺口修复并通过新 CI 后，才允许用新 Run ID 重跑 Stage A。真实 SWE Agent inference、正式付费 A/B、2/8 小时长会话和 AgentRouter 仍未执行。
+本手册冻结 Goal 2 的实验顺序和证据边界，不伪造结果。当前已完成真实 Stage A/B 最小 Pilot、3 题 SWE Pilot prediction 与零模型 evaluator recovery、Hook 100/100，以及 `long-pilot-1` 的真实 2 小时 8/8 cycles。累计按实测 Token 与冻结价格的估算成本为 CNY `19.236348`。SWE recovery 是 0/3 resolved；其中 aiogram/arviz 有 patch-contract miss，amoffat 与 gold 同受 x86_64-emulated PASS_TO_PASS 干扰。随后 formal empty-equivalent control 已使完整 20 题 SWE 标记为 `infrastructure-blocked`。不运行正式 SWE、重复子集或有效子集；三次 8 小时长会话延期到 follow-up Goal。AgentRouter 仍不在本 Goal 范围。
 
 ## 1. 冻结身份与不可变边界
 
@@ -32,6 +32,7 @@ python -m evals.retention_study dry-run --runs-dir evals/.runs/goal2-dry --run-p
 python -m evals.permission_study validate
 python -m evals.permission_study dry-run --runs-dir evals/.runs/goal2-dry --run-prefix permission-dry
 python -m evals.multi_agent_study validate
+python -m evals.multi_agent_study grader-preflight
 python -m evals.multi_agent_study dry-run --runs-dir evals/.runs/goal2-dry --run-prefix multi-dry
 python -m evals.long_session_study validate
 python -m evals.long_session_study dry-run --runs-dir evals/.runs/goal2-dry --run-prefix long-dry --kind pilot --index 1
@@ -115,13 +116,13 @@ python -m evals.pilot execute --confirm-paid-run \
 
 ### 5.2 SWE-bench-Live
 
-用独立 SWE virtualenv 的 Python 串行运行，依次使用固定 Run ID：`swe-pilot`、`swe-formal`、`swe-repeat-1`、`swe-repeat-2`。Pilot 先运行 3 题并使用 `--budget-stage B`；Artifact 与 evaluator 稳定且预算足够后，正式 20 题和重复子集才使用 `--budget-stage C`。所有命令均传入冻结的 `--dataset-jsonl`、`--matrix`、预算参数及 `--confirm-paid-run`，阶段分别为 `pilot`、`formal`、`repeat --repeat-index 1/2`。
+`swe-pilot-v2` 的三条真实 prediction 已由固定官方 evaluator recovery 评测为 0/3 resolved。完整 formal 集合的 empty-equivalent control 随后发现非任务 PASS_TO_PASS 失败，因此当前 Apple-Silicon/x86_64-emulated 路径不能支持完整 20 题 Claim。SWE 在本 Goal 固定为 `infrastructure-blocked`：不得运行 `swe-formal`、`swe-repeat-*`、gold control、有效子集或正式 resolved-rate Claim。
 
 ### 5.3 六项指标
 
 Stage B 先使用 `--scope pilot --budget-stage B` 跑最小、成对子集：MCP 每类 1 个任务、Retention 同一 seed、Permission 1 safe + 1 dangerous、Multi-Agent 同一 cross-file task；每个 arm/mode/strategy 均只重复 1 次。它们只证明 runner、唯一变量、Usage 和 Artifact 链能稳定工作，不生成正式效果 Claim。
 
-Stage C 才使用 `--scope formal --budget-stage C` 跑完整 paid A/B。默认串行并保持唯一变量；Multi-Agent 内部允许最多 3 个真实并发 worker。固定 Run prefix 不得改变：
+Stage C 在新 clean commit、全绿 CI、新 authorization rebind 和 allocation 后才允许运行。每个 runner 必须额外传入 `--budget-allocation`；allocation 按所有保留 Pilot request（包括失败请求）推算 2× 类别上限，保留总授权的 15% 安全余量，且类别不可转移。SWE 与 long-session 类别额度固定为零。默认串行并保持唯一变量；Multi-Agent 内部最多 3 个真实 worker，但必须先通过零模型 `grader-preflight`。固定 Run prefix 不得改变：
 
 ```bash
 python -m evals.mcp_study execute --scope formal --budget-stage C --confirm-paid-run --runs-dir evals/.runs/goal2 --run-prefix mcp-formal ...
@@ -132,7 +133,7 @@ python -m evals.multi_agent_study execute --scope formal --budget-stage C --conf
 
 省略号仅代表前述完全相同的预算三参数，不代表额外配置。Hook 单独执行到 `evals/.runs/goal2/hook-study.json`，要求 100/100 受控用例、拒绝副作用为 0、`model_called=false`、`network_called=false`。
 
-长会话严格最后运行，且不得与任何其他付费实验并发。先运行 `long-pilot-1`（2h、8 cycles、cycle 4 planned restart）；成功后才按顺序运行 `long-formal-1`、`long-formal-2`、`long-formal-3`（各 8h、32 cycles、cycle 16 planned restart）。每个 session 使用独立 hash-chained checkpoint 文件；中断只能使用同一 Run ID 的 `resume`，不得重建或补写历史结果。
+`long-pilot-1` 是唯一长会话真实证据：2 小时墙钟、8/8 cycles、planned restart、recovery、4 个 hash-chained checkpoints、CNY `0.342108` 估算成本。`long-formal-1/2/3` 明确延期到 follow-up Goal；不得将该 Pilot 描述为 8 小时正式验证。
 
 ## 6. Claims、报告和简历边界
 
@@ -156,14 +157,14 @@ Claims 只接受同一个 frozen commit 的完整 Run；样本数必须精确相
 
 | 证据 | 当前状态 | 可发布条件 |
 | --- | --- | --- |
-| 最小真实 Pilot | 未运行 | 1/1 terminal、完整 Artifact、无凭据泄漏 |
-| SWE-bench-Live | 官方固定依赖、Docker、empty/gold smoke 已完成；未运行 Agent inference | 官方 evaluator + Docker + 3 Pilot + 20 formal + 10 repeat |
-| MCP Token / Schema | 未运行 | 150 对配对样本、input/cache/output/Schema bytes/success |
-| Retention | 未运行 | 两组各 10 会话、每会话 12 canaries、至少 3 次真实压缩 |
-| Permission | 未运行 | 四策略各 50 trials、HITL 分布和危险操作拦截率 |
-| Multi-Agent | 未运行 | 两组各 25 trials、并发度/成功率/耗时/Token/成本/冲突 |
+| 最小真实 Pilot | 已完成；旧/新 Pilot 仅作诊断或最小证据 | 不与新 formal baseline 混样 |
+| SWE-bench-Live | Pilot 0/3；formal `infrastructure-blocked` | 本 Goal 不生成正式 SWE Claim |
+| MCP Token / Schema | Stage B Pilot 已完成；formal 未运行 | 150 对配对样本、input/cache/output/Schema bytes/success |
+| Retention | Stage B Pilot 已完成；formal 未运行 | 两组各 10 会话、每会话 12 canaries、至少 3 次真实压缩 |
+| Permission | Stage B Pilot 已完成；formal 未运行 | 四策略各 50 trials、HITL 分布和危险操作拦截率 |
+| Multi-Agent | Stage B Pilot 已完成；formal 受 zero-model grader gate 约束 | 两组各 25 trials、并发度/成功率/耗时/Token/成本/冲突 |
 | Hook | 已完成 100/100，正式本地 Artifact 绑定 clean HEAD | 零模型、零网络、零拒绝副作用；最终报告引用 Artifact hash |
-| 长会话 | 未运行 | 1×2h + 3×8h、4 次 planned restart recovery |
+| 长会话 | 2h Pilot 已完成；3×8h formal `insufficient-data` / deferred | follow-up Goal，不阻塞本轮其他指标 |
 
 简历候选 bullet 必须等 compiled Claims 全部为 `verified` 后，从绝对值、绝对差、相对变化、样本量、commit 和限制自动填充。当前唯一合规表述是：“构建了 fail-closed、预算约束、可恢复且 Artifact 可追溯的 Agent Benchmark 基础设施”；不能声称任何尚未产生的 Token 节省率、SWE 成绩、长会话稳定性或显著性。
 

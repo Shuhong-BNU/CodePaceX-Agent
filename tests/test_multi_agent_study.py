@@ -10,6 +10,7 @@ from evals.multi_agent_study import (
     _prepare_workspace,
     agent_summary,
     dry_run,
+    grader_preflight,
     grade_trial,
     profiles,
     scoped_tasks,
@@ -79,6 +80,15 @@ def test_multi_agent_dry_run_creates_two_unscorable_arms(tmp_path: Path) -> None
         json.loads((item.path / "result.json").read_text())["status"] == "dry_run"
         for item in recorders
     )
+
+
+def test_multi_agent_grader_preflight_is_zero_model_and_blocks_runtime_noise() -> None:
+    result = grader_preflight(studies_path=STUDIES)
+    assert result["model_called"] is False
+    assert result["network_called"] is False
+    assert result["test_returncode"] == 0
+    assert result["status"] == "NO-GO"
+    assert result["grade"]["exact_change_scope"] is False
 
 
 def test_multi_agent_success_rate_fields_count_every_formal_trial() -> None:

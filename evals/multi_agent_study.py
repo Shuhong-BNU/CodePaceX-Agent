@@ -181,6 +181,49 @@ def grade_trial(
     }
 
 
+def grader_preflight(*, studies_path: Path) -> dict[str, Any]:
+    """Exercise the frozen scope grader with real fixture noise and no model."""
+    studies = load_studies(studies_path)
+    task = studies.multi_agent.tasks[0]
+    with tempfile.TemporaryDirectory(prefix="codepacex-multi-grader-") as text:
+        workspace = Path(text)
+        _prepare_workspace(workspace)
+        (workspace / "mini_multi" / "parser.py").write_text(
+            "def parse_command(raw: str) -> tuple[str, str]:\n"
+            "    command, separator, value = raw.strip().partition(\":\")\n"
+            "    return command.strip().lower(), value.strip() if separator else \"\"\n",
+            encoding="utf-8",
+        )
+        (workspace / "mini_multi" / "commands.py").write_text(
+            "ALIASES = {\"ls\": \"list\", \"rm\": \"remove\"}\n\n"
+            "def resolve_command(name: str) -> str:\n"
+            "    normalized = name.strip().lower()\n"
+            "    return ALIASES.get(normalized, normalized)\n",
+            encoding="utf-8",
+        )
+        (workspace / ".codepacex" / "debug.log").write_text("preflight\n", encoding="utf-8")
+        test = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", task.test_file],
+            cwd=workspace, text=True, capture_output=True, check=False,
+            env={**os.environ, "PYTHONPATH": str(workspace)},
+        )
+        trace = json.dumps({
+            "type": "experiment_agent_summary", "agent_mode": "multi",
+            "child_count": 1, "completed_child_count": 1, "failed_child_count": 0,
+            "child_input_tokens": 0, "child_output_tokens": 0,
+            "child_request_count": 0, "maximum_parallel_children": 1,
+        })
+        passed, grade = grade_trial(
+            task=task, mode=AgentMode.MULTI, trace_text=trace,
+            workspace=workspace, test_returncode=test.returncode,
+        )
+    return {
+        "model_called": False, "network_called": False,
+        "status": "GO" if passed else "NO-GO",
+        "test_returncode": test.returncode, "grade": grade,
+    }
+
+
 def success_rate_fields(status: str) -> dict[str, int]:
     return {"numerator": int(status == "success"), "denominator": 1}
 
@@ -396,10 +439,15 @@ def _run_profile(
 def execute(
     *, root: Path, studies_path: Path, runs_dir: Path, run_prefix: str,
     pricing_snapshot: Path, budget_authorization: Path, budget_ledger: Path,
+    budget_allocation: Path | None = None,
     confirmed: bool, budget_stage: Literal["A", "B", "C"] = "C",
     scope: Literal["pilot", "formal"] = "formal",
 ) -> list[RunRecorder]:
     studies = load_studies(studies_path)
+    if scope == "formal":
+        preflight = grader_preflight(studies_path=studies_path)
+        if preflight["status"] != "GO":
+            raise ValueError("Multi-Agent formal grader preflight is NO-GO")
     pilot = load_pilot_config(root / "evals" / "pilot.qwen.yaml")
     if not confirmed or not os.environ.get(pilot.api_key_env):
         raise ValueError("execute requires --confirm-paid-run and the configured API key")
@@ -407,6 +455,7 @@ def execute(
     gate = PaidRunGate(
         root=root, authorization_path=budget_authorization,
         ledger_path=budget_ledger, pricing=pricing, stage=budget_stage,
+        allocation_path=budget_allocation,
     )
     recorders: list[RunRecorder] = []
     with gate.locked():
@@ -438,13 +487,14 @@ def execute(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Goal 2 single-vs-multi Agent study")
-    parser.add_argument("command", choices=["validate", "dry-run", "execute"])
+    parser.add_argument("command", choices=["validate", "dry-run", "grader-preflight", "execute"])
     parser.add_argument("--studies", type=Path, default=Path("evals/goal2/studies.yaml"))
     parser.add_argument("--runs-dir", type=Path, default=Path("evals/.runs/goal2-multi"))
     parser.add_argument("--run-prefix", default="multi-dry")
     parser.add_argument("--pricing-snapshot", type=Path)
     parser.add_argument("--budget-authorization", type=Path)
     parser.add_argument("--budget-ledger", type=Path)
+    parser.add_argument("--budget-allocation", type=Path)
     parser.add_argument("--budget-stage", choices=["A", "B", "C"])
     parser.add_argument("--scope", choices=["pilot", "formal"])
     parser.add_argument("--confirm-paid-run", action="store_true")
@@ -463,7 +513,9 @@ def main(argv: list[str] | None = None) -> int:
             "maximum_workers": studies.multi_agent.maximum_workers,
             "asset_hash": asset_hash(args.studies),
         }
-        if args.command == "dry-run":
+        if args.command == "grader-preflight":
+            payload["grader_preflight"] = grader_preflight(studies_path=args.studies)
+        elif args.command == "dry-run":
             payload["run_paths"] = [str(item.path) for item in dry_run(
                 root=root, studies_path=args.studies, runs_dir=args.runs_dir,
                 run_prefix=args.run_prefix, scope=scope,
@@ -477,6 +529,7 @@ def main(argv: list[str] | None = None) -> int:
                 run_prefix=args.run_prefix, pricing_snapshot=args.pricing_snapshot,
                 budget_authorization=args.budget_authorization,
                 budget_ledger=args.budget_ledger, confirmed=args.confirm_paid_run,
+                budget_allocation=args.budget_allocation,
                 budget_stage=args.budget_stage,
                 scope=args.scope,
             )]

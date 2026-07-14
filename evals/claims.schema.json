@@ -41,13 +41,20 @@
           "type": "integer"
         },
         "experiment_conditions": {
-          "$ref": "#/$defs/ExperimentConditions"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExperimentConditions"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "source_run_ids": {
           "items": {
             "type": "string"
           },
-          "minItems": 1,
           "title": "Source Run Ids",
           "type": "array"
         },
@@ -100,9 +107,7 @@
         "metric_name",
         "aggregation",
         "unit",
-        "sample_size",
-        "experiment_conditions",
-        "source_run_ids"
+        "sample_size"
       ],
       "title": "Claim",
       "type": "object"

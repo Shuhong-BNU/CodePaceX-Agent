@@ -141,8 +141,8 @@ class Claim(BaseModel):
     )
     unit: str
     sample_size: int = Field(gt=0)
-    experiment_conditions: ExperimentConditions
-    source_run_ids: list[str] = Field(min_length=1)
+    experiment_conditions: ExperimentConditions | None = None
+    source_run_ids: list[str] = Field(default_factory=list)
     generated_value: float | None = None
     generation_command: str | None = None
     status: Literal["draft", "verified", "insufficient-data"] = "draft"
@@ -181,6 +181,14 @@ class Claim(BaseModel):
             raise ValueError(
                 f"aggregation {self.aggregation} is invalid for {self.metric_name}"
             )
+        if self.status == "insufficient-data" and not self.source_run_ids:
+            if self.experiment_conditions is not None:
+                raise ValueError("no-evidence insufficient-data claims cannot declare conditions")
+            if self.generated_value is not None:
+                raise ValueError("no-evidence insufficient-data claims cannot have a value")
+            return self
+        if self.experiment_conditions is None or not self.source_run_ids:
+            raise ValueError("measured claims require conditions and source Run IDs")
         return self
 
 
@@ -637,6 +645,22 @@ def compile_claims(document: ClaimDocument, runs_dir: Path) -> dict[str, Any]:
     compiled: list[dict[str, Any]] = []
     for claim in document.claims:
         minimum_samples = claim.sample_size
+        if claim.status == "insufficient-data" and not claim.source_run_ids:
+            output = claim.model_dump(mode="json")
+            output.update({
+                "generated_value": None,
+                "generation_command": "python -m evals.claims compile",
+                "status": "insufficient-data",
+                "limitations": list(dict.fromkeys(claim.limitations)),
+                "evidence_summary": {
+                    "source_run_count": 0,
+                    "measured_sample_size": 0,
+                    "allowed_differences": [],
+                    "observed_differences": [],
+                },
+            })
+            compiled.append(output)
+            continue
         loaded = [_load_run(runs_dir, run_id) for run_id in claim.source_run_ids]
         usable = [run for run in loaded if run is not None]
         output = claim.model_dump(mode="json")

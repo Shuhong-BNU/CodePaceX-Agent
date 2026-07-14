@@ -310,6 +310,7 @@ def execute(
     *, root: Path, studies_path: Path, runs_dir: Path, run_id: str,
     kind: Literal["pilot", "formal"], index: int,
     pricing_snapshot: Path, budget_authorization: Path, budget_ledger: Path,
+    budget_allocation: Path | None = None,
     checkpoint_path: Path, confirmed: bool, resume: bool,
     budget_stage: Literal["A", "B", "C"] = "C",
 ) -> RunRecorder:
@@ -322,6 +323,7 @@ def execute(
     gate = PaidRunGate(
         root=root, authorization_path=budget_authorization,
         ledger_path=budget_ledger, pricing=pricing, stage=budget_stage,
+        allocation_path=budget_allocation,
     )
     manifest = build_manifest(
         root=root, studies_path=studies_path, studies=studies,
@@ -481,6 +483,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pricing-snapshot", type=Path)
     parser.add_argument("--budget-authorization", type=Path)
     parser.add_argument("--budget-ledger", type=Path)
+    parser.add_argument("--budget-allocation", type=Path)
     parser.add_argument("--budget-stage", choices=["A", "B", "C"])
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--confirm-paid-run", action="store_true")
@@ -509,6 +512,7 @@ def main(argv: list[str] | None = None) -> int:
                 pricing_snapshot=args.pricing_snapshot,
                 budget_authorization=args.budget_authorization,
                 budget_ledger=args.budget_ledger, checkpoint_path=args.checkpoint,
+                budget_allocation=args.budget_allocation,
                 confirmed=args.confirm_paid_run, resume=args.command == "resume",
                 budget_stage=args.budget_stage,
             )

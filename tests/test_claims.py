@@ -61,6 +61,22 @@ def _document(**changes: object) -> ClaimDocument:
     return ClaimDocument.model_validate({"claims": [claim]})
 
 
+def test_no_evidence_insufficient_data_claim_is_preserved_without_fake_runs(tmp_path: Path) -> None:
+    document = ClaimDocument.model_validate({"claims": [{
+        "claim_id": "long-session-formal-checkpoint-recovery",
+        "description_zh": "延期的正式长会话",
+        "description_en": "Deferred formal long session",
+        "metric_name": "checkpoint_recovery_rate", "aggregation": "pooled_rate",
+        "unit": "ratio", "sample_size": 3, "status": "insufficient-data",
+        "limitations": ["Deferred to a follow-up Goal."],
+    }]})
+    compiled = compile_claims(document, tmp_path)
+    claim = compiled["claims"][0]
+    assert claim["status"] == "insufficient-data"
+    assert claim["source_run_ids"] == []
+    assert claim["evidence_summary"]["source_run_count"] == 0
+
+
 def _successful_run(
     root: Path,
     run_id: str,

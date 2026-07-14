@@ -18,6 +18,14 @@ from evals.costing import PricingSnapshot, pricing_snapshot_hash
 
 MONEY_QUANTUM = Decimal("0.000001")
 BudgetStage = Literal["A", "B", "C"]
+BudgetCategory = Literal[
+    "swe", "mcp", "retention", "permission", "multi_agent", "long_session",
+]
+_CATEGORY_PREFIXES: dict[str, BudgetCategory] = {
+    "swe": "swe", "mcp": "mcp", "retention": "retention",
+    "permission": "permission", "multi": "multi_agent",
+    "long_session": "long_session",
+}
 
 
 def _money(value: Decimal) -> Decimal:
@@ -97,6 +105,16 @@ class RequestCharge(BaseModel):
     recorded_at: str
 
 
+class AuthorizationRebind(BaseModel):
+    """Auditable authorization transition that preserves prior paid evidence."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    previous_authorization_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    authorization_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    rebound_at: str
+
+
 class BudgetLedger(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -105,9 +123,41 @@ class BudgetLedger(BaseModel):
     authorization_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     spent_cny: Decimal = Field(default=Decimal("0"), ge=0)
     active_reservation: Reservation | None = None
+    allocation_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     request_charges: list[RequestCharge] = Field(default_factory=list)
     settlements: list[Settlement] = Field(default_factory=list)
+    authorization_rebinds: list[AuthorizationRebind] = Field(default_factory=list)
     updated_at: str
+
+
+class StageCBudgetAllocation(BaseModel):
+    """Commit-bound, non-transferable Stage C limits derived from prior Usage."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    currency: Literal["CNY"] = "CNY"
+    experiment_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    pricing_snapshot_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    baseline_ledger_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    baseline_authorization_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    baseline_spent_cny: Decimal = Field(ge=0)
+    baseline_request_charge_count: int = Field(ge=0)
+    baseline_settlement_count: int = Field(ge=0)
+    baseline_rebind_count: int = Field(ge=0)
+    safety_reserve_cny: Decimal = Field(gt=0)
+    spendable_total_cny: Decimal = Field(gt=0)
+    category_limits_cny: dict[BudgetCategory, Decimal]
+
+    @model_validator(mode="after")
+    def validate_limits(self) -> StageCBudgetAllocation:
+        if set(self.category_limits_cny) != set(_CATEGORY_PREFIXES.values()):
+            raise ValueError("Stage C allocation requires every budget category")
+        if min(self.category_limits_cny.values()) < 0:
+            raise ValueError("Stage C category limits cannot be negative")
+        if self.baseline_spent_cny + sum(self.category_limits_cny.values()) > self.spendable_total_cny:
+            raise ValueError("Stage C category limits exceed the spendable total")
+        return self
 
 
 def authorization_hash(authorization: BudgetAuthorization) -> str:
@@ -119,8 +169,88 @@ def authorization_hash(authorization: BudgetAuthorization) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def allocation_hash(allocation: StageCBudgetAllocation) -> str:
+    import hashlib
+
+    payload = json.dumps(
+        allocation.model_dump(mode="json"), sort_keys=True, separators=(",", ":"),
+    ).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def ledger_fingerprint(ledger: BudgetLedger) -> str:
+    """Hash durable accounting facts, excluding volatile lock/allocation fields."""
+    import hashlib
+
+    payload = {
+        "schema_version": ledger.schema_version,
+        "currency": ledger.currency,
+        "authorization_hash": ledger.authorization_hash,
+        "spent_cny": str(ledger.spent_cny),
+        "request_charges": [item.model_dump(mode="json") for item in ledger.request_charges],
+        "settlements": [item.model_dump(mode="json") for item in ledger.settlements],
+        "authorization_rebinds": [
+            item.model_dump(mode="json") for item in ledger.authorization_rebinds
+        ],
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def stage_c_category(trial_id: str) -> BudgetCategory:
+    prefix = trial_id.split("/", 1)[0]
+    try:
+        return _CATEGORY_PREFIXES[prefix]
+    except KeyError as exc:
+        raise ValueError(f"trial ID has no Stage C budget category: {trial_id}") from exc
+
+
 def load_authorization(path: Path) -> BudgetAuthorization:
     return BudgetAuthorization.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+def load_stage_c_allocation(path: Path) -> StageCBudgetAllocation:
+    return StageCBudgetAllocation.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+def rebind_ledger_authorization(
+    ledger_path: Path, *, previous: BudgetAuthorization, replacement: BudgetAuthorization,
+) -> BudgetLedger:
+    """Move a settled ledger to a new frozen commit without discarding costs."""
+    ledger = BudgetLedger.model_validate_json(ledger_path.read_text(encoding="utf-8"))
+    previous_hash = authorization_hash(previous)
+    replacement_hash = authorization_hash(replacement)
+    if ledger.authorization_hash != previous_hash:
+        raise ValueError("budget ledger does not belong to the previous authorization")
+    if ledger.active_reservation is not None:
+        raise ValueError("cannot rebind a ledger with an active reservation")
+    if ledger.allocation_hash is not None:
+        raise ValueError("cannot rebind a ledger after Stage C allocation begins")
+    if previous.authorized_total_cny != replacement.authorized_total_cny:
+        raise ValueError("authorization rebind requires the same total budget")
+    if previous.stage_limits_cny != replacement.stage_limits_cny:
+        raise ValueError("authorization rebind requires unchanged stage limits")
+    if previous.pricing_snapshot_hash != replacement.pricing_snapshot_hash:
+        raise ValueError("authorization rebind requires the same pricing snapshot")
+    request_total = _money(sum(item.actual_cny for item in ledger.request_charges))
+    settlement_total = _money(sum(item.actual_cny for item in ledger.settlements))
+    if ledger.spent_cny != request_total or request_total != settlement_total:
+        raise ValueError("cannot rebind an internally inconsistent budget ledger")
+    ledger.authorization_hash = replacement_hash
+    ledger.authorization_rebinds.append(AuthorizationRebind(
+        previous_authorization_hash=previous_hash,
+        authorization_hash=replacement_hash,
+        rebound_at=_utc_now(),
+    ))
+    ledger.updated_at = _utc_now()
+    temporary = ledger_path.with_name(f".{ledger_path.name}.{uuid.uuid4().hex}.tmp")
+    temporary.write_text(
+        json.dumps(ledger.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, ledger_path)
+    return ledger
 
 
 def _git_commit(root: Path) -> str:
@@ -212,6 +342,7 @@ class PaidRunGate:
     def __init__(
         self, *, root: Path, authorization_path: Path, ledger_path: Path,
         pricing: PricingSnapshot, stage: BudgetStage,
+        allocation_path: Path | None = None,
     ) -> None:
         self.root = root.resolve()
         self.authorization_path = authorization_path
@@ -222,6 +353,21 @@ class PaidRunGate:
         self.authorization = load_authorization(authorization_path)
         validate_authorization(self.authorization, root=self.root, pricing=pricing)
         self._authorization_hash = authorization_hash(self.authorization)
+        self.allocation = (
+            load_stage_c_allocation(allocation_path) if allocation_path is not None else None
+        )
+        self._allocation_hash = allocation_hash(self.allocation) if self.allocation else None
+        if self.stage == "C" and self.allocation is None:
+            raise ValueError("Stage C paid execution requires a budget allocation")
+        if self.allocation is not None:
+            if self.stage != "C":
+                raise ValueError("budget allocation is only valid for Stage C")
+            if self.allocation.experiment_commit != self.authorization.experiment_commit:
+                raise ValueError("Stage C allocation is not bound to the authorization commit")
+            if self.allocation.pricing_snapshot_hash != pricing_snapshot_hash(pricing):
+                raise ValueError("Stage C allocation pricing snapshot hash mismatch")
+            if self.allocation.spendable_total_cny + self.allocation.safety_reserve_cny > self.authorization.authorized_total_cny:
+                raise ValueError("Stage C allocation consumes the reserved safety margin")
 
     @contextmanager
     def locked(self) -> Iterator[None]:
@@ -293,6 +439,23 @@ class PaidRunGate:
                 f"insufficient stage {self.stage} budget for worst next trial: "
                 f"remaining={remaining} CNY required={amount} CNY"
             )
+        if self.allocation is not None:
+            self._validate_allocation_ledger(ledger)
+            category = self._category_for_trial(trial_id)
+            category_spent = sum(
+                item.actual_cny
+                for item in ledger.request_charges[
+                    self.allocation.baseline_request_charge_count:
+                ]
+                if self._category_for_trial(item.trial_id) == category
+            )
+            if category_spent + amount > self.allocation.category_limits_cny[category]:
+                raise ValueError(
+                    f"insufficient Stage C {category} category budget for worst next trial"
+                )
+            if ledger.spent_cny + amount > self.allocation.spendable_total_cny:
+                raise ValueError("Stage C safety reserve prevents the worst next trial")
+            ledger.allocation_hash = self._allocation_hash
         reservation = Reservation(
             reservation_id=uuid.uuid4().hex, trial_id=trial_id, stage=self.stage,
             maximum_requests=maximum_requests,
@@ -303,6 +466,35 @@ class PaidRunGate:
         ledger.active_reservation = reservation
         self._write_ledger(ledger)
         return reservation
+
+    def _validate_allocation_ledger(self, ledger: BudgetLedger) -> None:
+        assert self.allocation is not None
+        if len(ledger.request_charges) < self.allocation.baseline_request_charge_count:
+            raise ValueError("Stage C allocation ledger baseline is ahead of the ledger")
+        if len(ledger.settlements) < self.allocation.baseline_settlement_count:
+            raise ValueError("Stage C allocation settlement baseline is ahead of the ledger")
+        if len(ledger.authorization_rebinds) < self.allocation.baseline_rebind_count:
+            raise ValueError("Stage C allocation rebind baseline is ahead of the ledger")
+        if ledger.authorization_hash != self.allocation.baseline_authorization_hash:
+            raise ValueError("Stage C allocation authorization baseline changed")
+        if ledger.allocation_hash not in {None, self._allocation_hash}:
+            raise ValueError("Stage C allocation hash changed during resume")
+        baseline = BudgetLedger(
+            authorization_hash=ledger.authorization_hash,
+            spent_cny=self.allocation.baseline_spent_cny,
+            active_reservation=None,
+            allocation_hash=None,
+            request_charges=ledger.request_charges[:self.allocation.baseline_request_charge_count],
+            settlements=ledger.settlements[:self.allocation.baseline_settlement_count],
+            authorization_rebinds=ledger.authorization_rebinds[:self.allocation.baseline_rebind_count],
+            updated_at=ledger.updated_at,
+        )
+        if ledger_fingerprint(baseline) != self.allocation.baseline_ledger_sha256:
+            raise ValueError("Stage C allocation baseline ledger hash mismatch")
+
+    @staticmethod
+    def _category_for_trial(trial_id: str) -> BudgetCategory:
+        return stage_c_category(trial_id)
 
     def settle(
         self, reservation: Reservation, *, request_usages: list[tuple[int, int]],

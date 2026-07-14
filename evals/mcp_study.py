@@ -390,6 +390,7 @@ def execute(
     pricing_snapshot: Path, confirmed: bool,
     budget_authorization: Path | None = None,
     budget_ledger: Path | None = None,
+    budget_allocation: Path | None = None,
     budget_stage: Literal["A", "B", "C"] = "C",
     scope: Literal["pilot", "formal"] = "formal",
 ) -> list[RunRecorder]:
@@ -404,6 +405,7 @@ def execute(
     gate = PaidRunGate(
         root=root, authorization_path=budget_authorization,
         ledger_path=budget_ledger, pricing=pricing, stage=budget_stage,
+        allocation_path=budget_allocation,
     )
     recorders: list[RunRecorder] = []
     with gate.locked():
@@ -443,6 +445,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--confirm-paid-run", action="store_true")
     parser.add_argument("--budget-authorization", type=Path)
     parser.add_argument("--budget-ledger", type=Path)
+    parser.add_argument("--budget-allocation", type=Path)
     parser.add_argument("--budget-stage", choices=["A", "B", "C"])
     parser.add_argument("--scope", choices=["pilot", "formal"])
     args = parser.parse_args(argv)
@@ -478,6 +481,7 @@ def main(argv: list[str] | None = None) -> int:
                 confirmed=args.confirm_paid_run,
                 budget_authorization=args.budget_authorization,
                 budget_ledger=args.budget_ledger,
+                budget_allocation=args.budget_allocation,
                 budget_stage=args.budget_stage,
                 scope=args.scope,
             )]

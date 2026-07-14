@@ -36,14 +36,7 @@ MCP_RUNTIME_DIFFERENCES = (
     "runtime.experiment_profile_hash", "runtime.runtime_contract_hash",
     "runtime.combined_runtime_hash",
 )
-LONG_SESSION_DIFFERENCES = (
-    "manifest.task_ids", "manifest.benchmark_asset_hash",
-    "runtime.system_sha256", "runtime.tools_sha256", "runtime.messages_sha256",
-    "runtime.tools_bytes", "runtime.combined_runtime_hash",
-)
-
-
-def _specs() -> list[ClaimSpec]:
+def _specs(*, include_multi: bool = True) -> list[ClaimSpec]:
     specs: list[ClaimSpec] = []
     mcp_runs = ("mcp-formal-eager", "mcp-formal-deferred")
     for aggregation in ("median", "p95"):
@@ -90,45 +83,25 @@ def _specs() -> list[ClaimSpec]:
             "dangerous_command_interception_rate", "pooled_rate", "ratio", 15, run,
             f"Dangerous-operation interception rate for {strategy}",
         ))
-    for mode in ("single", "multi"):
-        run = (f"multi-formal-{mode}",)
-        for metric, aggregation, unit in (
-            ("multi_agent_task_success_rate", "pooled_rate", "ratio"),
-            ("successful_task_wall_time_seconds", "median", "seconds"),
-            ("successful_task_wall_time_seconds", "p95", "seconds"),
-            ("trial_input_tokens", "sum", "tokens"),
-            ("trial_output_tokens", "sum", "tokens"),
-            ("provider_request_count", "sum", "requests"),
-            ("actual_cost_cny", "sum", "CNY"),
-            ("integration_conflict_count", "sum", "count"),
-            ("maximum_parallel_children", "p95", "workers"),
-        ):
-            specs.append(ClaimSpec(
-                f"multi-{mode}-{metric}-{aggregation}", metric, aggregation, unit, 25,
-                run, f"Cross-file {mode} mode measured {metric} ({aggregation})",
-                limitations=("Controlled five-task cross-file fixture corpus.",),
-            ))
-    long_runs = ("long-pilot-1", "long-formal-1", "long-formal-2", "long-formal-3")
-    specs.append(ClaimSpec(
-        "long-session-checkpoint-recovery", "checkpoint_recovery_rate",
-        "pooled_rate", "ratio", 4, long_runs,
-        "Post-restart checkpoint recovery across one 2h and three 8h sessions",
-        LONG_SESSION_DIFFERENCES,
-    ))
-    specs.extend([
-        ClaimSpec(
-            "swe-formal-resolve-rate", "rate", "pooled_rate", "ratio", 20,
-            ("swe-formal",), "Official SWE-bench-Live formal 20-instance resolve rate",
-            limitations=("Python-only lite subset; not a full leaderboard score.",),
-        ),
-        ClaimSpec(
-            "swe-repeat-resolve-rate", "rate", "pooled_rate", "ratio", 10,
-            ("swe-repeat-1", "swe-repeat-2"),
-            "Official SWE-bench-Live repeated-subset resolve rate",
-            allowed_differences=("runtime.messages_sha256", "runtime.combined_runtime_hash"),
-            limitations=("Five frozen instances repeated twice; no significance claim.",),
-        ),
-    ])
+    if include_multi:
+        for mode in ("single", "multi"):
+            run = (f"multi-formal-{mode}",)
+            for metric, aggregation, unit in (
+                ("multi_agent_task_success_rate", "pooled_rate", "ratio"),
+                ("successful_task_wall_time_seconds", "median", "seconds"),
+                ("successful_task_wall_time_seconds", "p95", "seconds"),
+                ("trial_input_tokens", "sum", "tokens"),
+                ("trial_output_tokens", "sum", "tokens"),
+                ("provider_request_count", "sum", "requests"),
+                ("actual_cost_cny", "sum", "CNY"),
+                ("integration_conflict_count", "sum", "count"),
+                ("maximum_parallel_children", "p95", "workers"),
+            ):
+                specs.append(ClaimSpec(
+                    f"multi-{mode}-{metric}-{aggregation}", metric, aggregation, unit, 25,
+                    run, f"Cross-file {mode} mode measured {metric} ({aggregation})",
+                    limitations=("Controlled five-task cross-file fixture corpus.",),
+                ))
     return specs
 
 
@@ -172,10 +145,12 @@ def _conditions(
     }
 
 
-def generate_claim_document(runs_dir: Path) -> ClaimDocument:
+def generate_claim_document(
+    runs_dir: Path, *, include_multi: bool = True,
+) -> ClaimDocument:
     claims: list[dict[str, Any]] = []
     commits: set[str] = set()
-    for spec in _specs():
+    for spec in _specs(include_multi=include_multi):
         manifests = [_manifest(runs_dir, run_id) for run_id in spec.run_ids]
         commits.update(str(item.get("git_commit")) for item in manifests)
         claims.append({
@@ -188,6 +163,18 @@ def generate_claim_document(runs_dir: Path) -> ClaimDocument:
             "source_run_ids": list(spec.run_ids), "status": "draft",
             "limitations": list(spec.limitations),
         })
+    claims.append({
+        "claim_id": "long-session-formal-checkpoint-recovery",
+        "description_zh": "三次 8 小时正式长会话 checkpoint recovery",
+        "description_en": "Three 8-hour formal long-session checkpoint recoveries",
+        "metric_name": "checkpoint_recovery_rate", "aggregation": "pooled_rate",
+        "unit": "ratio", "sample_size": 3, "experiment_conditions": None,
+        "source_run_ids": [], "status": "insufficient-data",
+        "limitations": [
+            "Deferred to a follow-up Goal; no 8-hour formal session was run.",
+            "long-pilot-1 is a 2-hour diagnostic Pilot and is excluded from this formal Claim.",
+        ],
+    })
     if len(commits) != 1:
         raise ValueError("Goal 2 Claims require one frozen experiment commit")
     return ClaimDocument.model_validate({"schema_version": 2, "claims": claims})
@@ -198,9 +185,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("command", choices=["generate"])
     parser.add_argument("--runs-dir", type=Path, default=Path("evals/.runs/goal2"))
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--exclude-multi", action="store_true")
     args = parser.parse_args(argv)
     try:
-        document = generate_claim_document(args.runs_dir)
+        document = generate_claim_document(args.runs_dir, include_multi=not args.exclude_multi)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(
             yaml.safe_dump(document.model_dump(mode="json"), sort_keys=False),

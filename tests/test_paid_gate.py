@@ -8,8 +8,14 @@ import pytest
 from evals.costing import load_pricing, pricing_snapshot_hash
 from evals.paid_gate import (
     BudgetAuthorization,
+    BudgetLedger,
     PaidRunGate,
+    StageCBudgetAllocation,
     actual_cost,
+    authorization_hash,
+    ledger_fingerprint,
+    load_authorization,
+    rebind_ledger_authorization,
     worst_case_reservation,
 )
 
@@ -167,3 +173,76 @@ def test_gate_lock_prevents_concurrent_paid_sessions(tmp_path: Path) -> None:
     gate.lock_path.write_text("held", encoding="utf-8")
     with pytest.raises(ValueError, match="holds the budget lock"), gate.locked():
         pass
+
+
+def test_stage_c_disabled_category_fails_before_any_provider_request(tmp_path: Path) -> None:
+    authorization_path = tmp_path / "authorization.json"
+    allocation_path = tmp_path / "allocation.json"
+    ledger_path = tmp_path / "ledger.json"
+    _authorization(authorization_path, "600")
+    authorization = load_authorization(authorization_path)
+    ledger = BudgetLedger(
+        authorization_hash=authorization_hash(authorization),
+        updated_at="2026-07-13T00:00:00Z",
+    )
+    ledger_path.write_text(ledger.model_dump_json(indent=2), encoding="utf-8")
+    allocation = StageCBudgetAllocation(
+        experiment_commit=COMMIT,
+        pricing_snapshot_hash=authorization.pricing_snapshot_hash,
+        baseline_ledger_sha256=ledger_fingerprint(ledger),
+        baseline_authorization_hash=ledger.authorization_hash,
+        baseline_spent_cny="0",
+        baseline_request_charge_count=0,
+        baseline_settlement_count=0,
+        baseline_rebind_count=0,
+        safety_reserve_cny="90",
+        spendable_total_cny="510",
+        category_limits_cny={
+            "swe": "0", "mcp": "10", "retention": "0",
+            "permission": "0", "multi_agent": "0", "long_session": "0",
+        },
+    )
+    allocation_path.write_text(allocation.model_dump_json(indent=2), encoding="utf-8")
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ):
+        gate = PaidRunGate(
+            root=tmp_path, authorization_path=authorization_path, ledger_path=ledger_path,
+            pricing=load_pricing(PRICING_PATH), stage="C", allocation_path=allocation_path,
+        )
+        with gate.locked(), pytest.raises(ValueError, match="Stage C swe category budget"):
+            gate.reserve(
+                "swe/formal/blocked", maximum_requests=1,
+                maximum_input_tokens_per_request=1000,
+                maximum_output_tokens_per_request=500,
+            )
+
+
+def test_authorization_rebind_preserves_settled_request_evidence(tmp_path: Path) -> None:
+    old_path = tmp_path / "old-authorization.json"
+    replacement_path = tmp_path / "replacement-authorization.json"
+    _authorization(old_path, "600")
+    old = load_authorization(old_path)
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ):
+        gate = PaidRunGate(
+            root=tmp_path, authorization_path=old_path,
+            ledger_path=tmp_path / "ledger.json", pricing=load_pricing(PRICING_PATH), stage="A",
+        )
+        with gate.locked():
+            reservation = gate.reserve(
+                "mcp/pilot/1", maximum_requests=1,
+                maximum_input_tokens_per_request=1000,
+                maximum_output_tokens_per_request=500,
+            )
+            gate.settle(reservation, request_usages=[(1000, 500)])
+    replacement = old.model_copy(update={"experiment_commit": "b" * 40})
+    replacement_path.write_text(replacement.model_dump_json(indent=2), encoding="utf-8")
+    rebound = rebind_ledger_authorization(
+        tmp_path / "ledger.json", previous=old, replacement=replacement,
+    )
+    assert rebound.spent_cny == Decimal("0.030000")
+    assert len(rebound.request_charges) == len(rebound.settlements) == 1
+    assert rebound.authorization_hash == authorization_hash(replacement)
+    assert len(rebound.authorization_rebinds) == 1
