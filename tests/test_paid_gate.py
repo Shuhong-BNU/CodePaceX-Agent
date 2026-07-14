@@ -108,7 +108,7 @@ def test_gate_enforces_stage_limit_before_total_authorization(tmp_path: Path) ->
         )
 
 
-def test_gate_rejects_request_usage_that_exceeds_per_request_ceiling(tmp_path: Path) -> None:
+def test_gate_settles_provider_overage_when_total_cost_remains_reserved(tmp_path: Path) -> None:
     gate = _gate(tmp_path)
     with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
         "evals.paid_gate._git_is_clean", return_value=True,
@@ -118,8 +118,22 @@ def test_gate_rejects_request_usage_that_exceeds_per_request_ceiling(tmp_path: P
             maximum_input_tokens_per_request=1000,
             maximum_output_tokens_per_request=500,
         )
-        with pytest.raises(ValueError, match="per-request token ceiling"):
-            gate.settle(reservation, request_usages=[(1001, 1)])
+        settlement = gate.settle(reservation, request_usages=[(1001, 1)])
+    assert settlement.actual_cny == Decimal("0.012048")
+
+
+def test_gate_rejects_provider_usage_when_actual_cost_exceeds_reservation(tmp_path: Path) -> None:
+    gate = _gate(tmp_path)
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ), gate.locked():
+        reservation = gate.reserve(
+            "too-expensive-after-provider-usage", maximum_requests=1,
+            maximum_input_tokens_per_request=1000,
+            maximum_output_tokens_per_request=500,
+        )
+        with pytest.raises(ValueError, match="observed token cost exceeded"):
+            gate.settle(reservation, request_usages=[(1000, 501)])
 
 
 def test_gate_fails_closed_when_worst_next_trial_exceeds_remaining_budget(tmp_path: Path) -> None:

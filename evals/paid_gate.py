@@ -320,11 +320,9 @@ class PaidRunGate:
         for request_index, (input_tokens, output_tokens) in enumerate(request_usages, 1):
             if input_tokens < 0 or output_tokens < 0:
                 raise ValueError("provider request token usage cannot be negative")
-            if (
-                input_tokens > active.maximum_input_tokens_per_request
-                or output_tokens > active.maximum_output_tokens_per_request
-            ):
-                raise ValueError("provider request exceeded the per-request token ceiling")
+            # Provider Usage can include reasoning tokens beyond the requested
+            # output limit. Record the observed values exactly; the aggregate
+            # reservation check below remains the fail-closed budget boundary.
             request_charges.append(RequestCharge(
                 reservation_id=active.reservation_id,
                 trial_id=active.trial_id,
