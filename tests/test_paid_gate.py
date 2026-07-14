@@ -399,3 +399,19 @@ def test_multi_request_reservation_is_refused(tmp_path: Path) -> None:
             maximum_input_tokens_per_request=1000,
             maximum_output_tokens_per_request=500,
         )
+
+
+def test_run_scoped_trial_ids_do_not_mix_request_accounting(tmp_path: Path) -> None:
+    gate = _gate(tmp_path)
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ):
+        for trial_id in ("mcp/run-a/eager/task/1", "mcp/run-b/eager/task/1"):
+            reservation = gate.reserve(
+                trial_id, maximum_requests=1,
+                maximum_input_tokens_per_request=1000,
+                maximum_output_tokens_per_request=500,
+            )
+            gate.settle(reservation, request_usages=[(1, 1)])
+    assert gate.trial_accounting("mcp/run-a/eager/task/1")["request_count"] == 1
+    assert gate.trial_accounting("mcp/run-b/eager/task/1")["request_count"] == 1

@@ -301,7 +301,10 @@ def _run_arm(
         for repetition in range(1, repetitions + 1):
             for task in selected_tasks:
                 attempt_id = 1
-                trial_id = f"mcp/{profile.tool_loading.value}/{task.id}/{repetition}"
+                trial_id = (
+                    f"mcp/{recorder.run_id}/{profile.tool_loading.value}/"
+                    f"{task.id}/{repetition}"
+                )
                 recorder.event("trial_started", {
                     "task_id": task.id, "repetition_id": str(repetition),
                     "attempt_id": attempt_id,

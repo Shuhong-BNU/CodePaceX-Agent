@@ -329,7 +329,10 @@ def _run_profile(
         tasks, repetitions = scoped_tasks(studies, scope=scope)
         for repetition in range(1, repetitions + 1):
             for task in tasks:
-                trial_id = f"multi/{profile.agent_mode.value}/{task.id}/{repetition}"
+                trial_id = (
+                    f"multi/{recorder.run_id}/{profile.agent_mode.value}/"
+                    f"{task.id}/{repetition}"
+                )
                 recorder.event("trial_started", {
                     "task_id": task.id, "repetition_id": str(repetition),
                     "attempt_id": 1, "budget_mode": "per_provider_request",

@@ -260,7 +260,10 @@ def _run_profile(
         tasks, repetitions = scoped_tasks(studies, scope=scope)
         for repetition in range(1, repetitions + 1):
             for task in tasks:
-                trial_id = f"permission/{profile.permission_strategy.value}/{task.id}/{repetition}"
+                trial_id = (
+                    f"permission/{recorder.run_id}/{profile.permission_strategy.value}/"
+                    f"{task.id}/{repetition}"
+                )
                 attempt_id = 1
                 recorder.event("trial_started", {
                     "task_id": task.id, "repetition_id": str(repetition),

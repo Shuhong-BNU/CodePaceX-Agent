@@ -345,7 +345,10 @@ def execute(
         statuses: list[str] = []
         for index in scoped_session_indices(studies, scope=scope):
             task_id = f"retention-session-{index + 1:02d}"
-            trial_id = f"retention/{profile.compression_profile.value}/{task_id}"
+            trial_id = (
+                f"retention/{recorder.run_id}/{profile.compression_profile.value}/"
+                f"{task_id}"
+            )
             recorder.event("trial_started", {
                 "task_id": task_id, "repetition_id": "1", "attempt_id": 1,
                 "budget_mode": "per_provider_request",
