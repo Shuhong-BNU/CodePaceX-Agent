@@ -36,6 +36,10 @@ from evals.pilot import (
     trace_request_usages,
 )
 
+MAXIMUM_REQUESTS_PER_TRIAL = 50
+MAXIMUM_INPUT_TOKENS_PER_REQUEST = 128_000
+MAXIMUM_OUTPUT_TOKENS_PER_REQUEST = 8192
+
 
 class MCPTask(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -299,9 +303,9 @@ def _run_arm(
                 attempt_id = 1
                 reservation = gate.reserve(
                     f"mcp/{profile.tool_loading.value}/{task.id}/{repetition}",
-                    maximum_requests=50,
-                    maximum_input_tokens_per_request=128_000,
-                    maximum_output_tokens_per_request=8192,
+                    maximum_requests=MAXIMUM_REQUESTS_PER_TRIAL,
+                    maximum_input_tokens_per_request=MAXIMUM_INPUT_TOKENS_PER_REQUEST,
+                    maximum_output_tokens_per_request=MAXIMUM_OUTPUT_TOKENS_PER_REQUEST,
                 )
                 recorder.event("trial_started", {
                     "task_id": task.id, "repetition_id": str(repetition),

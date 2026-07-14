@@ -13,7 +13,18 @@ from pathlib import Path
 
 from evals.costing import load_pricing, pricing_snapshot_hash
 from evals.goal2_studies import load_studies
-from evals.mcp_study import load_study, top_level_trial_count
+from evals.mcp_study import (
+    MAXIMUM_INPUT_TOKENS_PER_REQUEST as MCP_MAXIMUM_INPUT,
+    MAXIMUM_OUTPUT_TOKENS_PER_REQUEST as MCP_MAXIMUM_OUTPUT,
+    MAXIMUM_REQUESTS_PER_TRIAL as MCP_MAXIMUM_REQUESTS,
+    load_study,
+    top_level_trial_count,
+)
+from evals.multi_agent_study import (
+    MAXIMUM_INPUT_TOKENS_PER_REQUEST as MULTI_MAXIMUM_INPUT,
+    MAXIMUM_OUTPUT_TOKENS_PER_REQUEST as MULTI_MAXIMUM_OUTPUT,
+    MAXIMUM_REQUESTS_PER_TRIAL as MULTI_MAXIMUM_REQUESTS,
+)
 from evals.paid_gate import (
     BudgetLedger,
     StageCBudgetAllocation,
@@ -23,12 +34,29 @@ from evals.paid_gate import (
     ledger_fingerprint,
     load_authorization,
     stage_c_category,
+    worst_case_reservation,
+)
+from evals.permission_study import (
+    MAXIMUM_INPUT_TOKENS_PER_REQUEST as PERMISSION_MAXIMUM_INPUT,
+    MAXIMUM_OUTPUT_TOKENS_PER_REQUEST as PERMISSION_MAXIMUM_OUTPUT,
+    MAXIMUM_REQUESTS_PER_TRIAL as PERMISSION_MAXIMUM_REQUESTS,
+)
+from evals.retention_study import (
+    MAXIMUM_INPUT_TOKENS_PER_REQUEST as RETENTION_MAXIMUM_INPUT,
+    MAXIMUM_OUTPUT_TOKENS_PER_REQUEST as RETENTION_MAXIMUM_OUTPUT,
+    MAXIMUM_REQUESTS_PER_SESSION as RETENTION_MAXIMUM_REQUESTS,
 )
 
 SAFETY_RESERVE_RATIO = Decimal("0.15")
 FORECAST_MULTIPLIER = Decimal("2")
 DISABLED_CATEGORIES = {"swe", "long_session"}
 NON_STAGE_C_PREFIXES = {"pilot"}
+_RESERVATION_SHAPES = {
+    "mcp": (MCP_MAXIMUM_REQUESTS, MCP_MAXIMUM_INPUT, MCP_MAXIMUM_OUTPUT),
+    "retention": (RETENTION_MAXIMUM_REQUESTS, RETENTION_MAXIMUM_INPUT, RETENTION_MAXIMUM_OUTPUT),
+    "permission": (PERMISSION_MAXIMUM_REQUESTS, PERMISSION_MAXIMUM_INPUT, PERMISSION_MAXIMUM_OUTPUT),
+    "multi_agent": (MULTI_MAXIMUM_REQUESTS, MULTI_MAXIMUM_INPUT, MULTI_MAXIMUM_OUTPUT),
+}
 
 
 def formal_trial_counts(*, studies_path: Path, mcp_study_path: Path) -> dict[str, int]:
@@ -84,10 +112,16 @@ def derive_allocation(
         observed_trials = len(trials[category])
         if observed_trials == 0:
             raise ValueError(f"cannot forecast {category} without retained Pilot usage")
-        limits[category] = _money(
+        forecast = _money(
             costs[category] / Decimal(observed_trials)
             * Decimal(formal_trials) * FORECAST_MULTIPLIER
         )
+        requests, maximum_input, maximum_output = _RESERVATION_SHAPES[category]
+        limits[category] = max(forecast, worst_case_reservation(
+            pricing, maximum_requests=requests,
+            maximum_input_tokens_per_request=maximum_input,
+            maximum_output_tokens_per_request=maximum_output,
+        ))
     safety_reserve = _money(authorization.authorized_total_cny * SAFETY_RESERVE_RATIO)
     spendable_total = authorization.authorized_total_cny - safety_reserve
     return StageCBudgetAllocation(
