@@ -12,6 +12,7 @@ from typing import Any
 import yaml
 
 from evals.claims import ClaimDocument
+from evals.mcp_cohort import load_mcp_cohort, summarize_mcp_cohort
 
 
 @dataclass(frozen=True)
@@ -176,14 +177,52 @@ def generate_claim_document(
     return ClaimDocument.model_validate({"schema_version": 2, "claims": claims})
 
 
+def generate_mcp_evidence(*, cohort_index: Path, runs_dir: Path) -> dict[str, Any]:
+    """Compile MCP Claim evidence from the frozen Trial-level cohort.
+
+    This intentionally does not use the monolithic deferred Run's top-level
+    ``scorable`` flag: the retained mcp_one_08/1 infrastructure error excludes
+    only its Token pair while remaining visible in counts and cost.
+    """
+    cohort = load_mcp_cohort(cohort_index)
+    metrics = summarize_mcp_cohort(cohort, runs_dir)
+    return {
+        "schema_version": 1,
+        "evidence_kind": "goal2-mcp-trial-level-cohort",
+        "cohort_index_sha256": cohort["sha256"],
+        "source_manifest_sha256": cohort["source_manifest_sha256"],
+        "ledger_sha256": cohort["ledger_sha256"],
+        "summary": cohort["summary"],
+        "metrics": metrics,
+        "limitations": [
+            "Controlled local MCP corpus; no production MCP traffic.",
+            "mcp_one_08/1 remains an infrastructure error with unknown final Provider Usage; it is retained in counts/cost and excluded from Token pairs.",
+        ],
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate Goal 2 Claims from Run manifests")
-    parser.add_argument("command", choices=["generate"])
+    parser.add_argument("command", choices=["generate", "mcp-evidence"])
     parser.add_argument("--runs-dir", type=Path, default=Path("evals/.runs/goal2"))
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--exclude-multi", action="store_true")
+    parser.add_argument("--cohort-index", type=Path)
     args = parser.parse_args(argv)
     try:
+        if args.command == "mcp-evidence":
+            if args.cohort_index is None:
+                raise ValueError("mcp-evidence requires --cohort-index")
+            evidence = generate_mcp_evidence(
+                cohort_index=args.cohort_index, runs_dir=args.runs_dir,
+            )
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(
+                json.dumps(evidence, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            print(args.output)
+            return 0
         document = generate_claim_document(args.runs_dir, include_multi=not args.exclude_multi)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(

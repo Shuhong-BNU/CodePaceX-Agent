@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from evals.benchmark import RunManifest, RunRecorder
-from evals.goal2_claims import generate_claim_document
+from evals.goal2_claims import generate_claim_document, generate_mcp_evidence
 
 
 RUN_IDS = {
@@ -65,3 +65,23 @@ def test_goal2_claim_generator_can_exclude_multi_after_no_go_gate(tmp_path: Path
     _write_manifests(tmp_path)
     document = generate_claim_document(tmp_path, include_multi=False)
     assert not any(claim.claim_id.startswith("multi-") for claim in document.claims)
+
+
+def test_mcp_evidence_uses_trial_level_cohort_not_run_scorability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cohort = {
+        "sha256": "cohort", "source_manifest_sha256": "manifest",
+        "ledger_sha256": "ledger", "summary": {
+            "planned_trials": 300, "terminal_trials": 300,
+            "usage_complete_trials": 299, "valid_matched_pairs": 149,
+        },
+    }
+    monkeypatch.setattr("evals.goal2_claims.load_mcp_cohort", lambda _: cohort)
+    monkeypatch.setattr("evals.goal2_claims.summarize_mcp_cohort", lambda *_: {
+        "valid_matched_pairs": 149,
+        "excluded_pairs": {"mcp_one_08/1": "infrastructure_error_usage_unknown"},
+    })
+    evidence = generate_mcp_evidence(cohort_index=tmp_path / "cohort.json", runs_dir=tmp_path)
+    assert evidence["summary"]["valid_matched_pairs"] == 149
+    assert "mcp_one_08/1" in evidence["metrics"]["excluded_pairs"]
