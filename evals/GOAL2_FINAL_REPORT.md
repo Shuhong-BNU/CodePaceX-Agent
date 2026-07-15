@@ -7,7 +7,8 @@ Formal artifacts are local and Git-ignored under `evals/.runs/goal2/` and
 
 ## Frozen identities and budget
 
-- Current evidence-control commit: `bba605a607920cb09c6ca0f7ef313ff25151ca28`.
+- Claims evidence-control commit: `142e4ce`; the full ID is recorded in Git
+  history. The paid MCP agent execution commit remains distinct below.
 - MCP agent execution commit: `b09b1849d74d8873ecf287fc2af6e63712adbe62`;
   budget control was recorded separately and is not represented as the Agent
   execution commit.
