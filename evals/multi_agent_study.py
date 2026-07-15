@@ -224,6 +224,28 @@ def grader_preflight(*, studies_path: Path) -> dict[str, Any]:
     }
 
 
+def persist_grader_preflight(
+    *, root: Path, studies_path: Path, runs_dir: Path, run_id: str,
+) -> tuple[RunRecorder, dict[str, Any]]:
+    """Persist the no-model formal grader gate as an unscorable control Run."""
+    studies = load_studies(studies_path)
+    profile = next(item for item in profiles(studies) if item.agent_mode is AgentMode.MULTI)
+    recorder = RunRecorder(
+        runs_dir, build_manifest(
+            root=root, studies_path=studies_path, studies=studies,
+            profile=profile, scope="formal",
+        ), run_id=run_id, repo_root=root,
+    )
+    result = grader_preflight(studies_path=studies_path)
+    recorder.event("grader_preflight", result)
+    recorder.finalize({
+        "status": "dry_run", "execution_mode": "deterministic_control",
+        "scorable": False, "grader_gate_status": result["status"],
+        "model_called": False, "network_called": False,
+    })
+    return recorder, result
+
+
 def success_rate_fields(status: str) -> dict[str, int]:
     return {"numerator": int(status == "success"), "denominator": 1}
 
@@ -558,7 +580,12 @@ def main(argv: list[str] | None = None) -> int:
             "asset_hash": asset_hash(args.studies),
         }
         if args.command == "grader-preflight":
-            payload["grader_preflight"] = grader_preflight(studies_path=args.studies)
+            recorder, preflight = persist_grader_preflight(
+                root=root, studies_path=args.studies, runs_dir=args.runs_dir,
+                run_id=f"{args.run_prefix}-grader-preflight",
+            )
+            payload["grader_preflight"] = preflight
+            payload["run_paths"] = [str(recorder.path)]
         elif args.command == "dry-run":
             payload["run_paths"] = [str(item.path) for item in dry_run(
                 root=root, studies_path=args.studies, runs_dir=args.runs_dir,
