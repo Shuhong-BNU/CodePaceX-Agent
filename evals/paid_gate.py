@@ -786,6 +786,27 @@ class PaidRunGate:
             self._write_ledger(ledger)
             return settlement
 
+    def conservatively_settle_active_trial_unknown_usage(
+        self, *, trial_id: str, evidence_gap: str,
+    ) -> Settlement:
+        """Conservatively settle the one active reservation for a known Trial.
+
+        This is intentionally narrower than the historical reconciliation
+        helper: a live runner may use it only after it has established that its
+        own terminal request has no durable Provider Usage.  It cannot target a
+        different Trial or create a charge/Token record.
+        """
+        with self.locked():
+            ledger = self._load_ledger()
+            active = ledger.active_reservation
+            if active is None or active.trial_id != trial_id:
+                raise ValueError("active paid reservation does not belong to the Trial")
+            settlement = _conservative_settlement(
+                ledger, active, evidence_gap=evidence_gap,
+            )
+            self._write_ledger(ledger)
+            return settlement
+
     def trial_accounting(self, trial_id: str) -> dict[str, Any]:
         """Read durable per-request accounting for a completed or blocked Trial."""
         with self.locked():

@@ -423,6 +423,29 @@ def test_unknown_usage_is_conservatively_settled_without_fabricating_tokens(tmp_
         )
 
 
+def test_active_trial_unknown_usage_reconciliation_cannot_target_another_trial(tmp_path: Path) -> None:
+    gate = _gate(tmp_path)
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ):
+        reservation = gate.reserve(
+            "retention/run/summary_only/session-01", maximum_requests=1,
+            maximum_input_tokens_per_request=1000,
+            maximum_output_tokens_per_request=500,
+        )
+    with pytest.raises(ValueError, match="does not belong"):
+        gate.conservatively_settle_active_trial_unknown_usage(
+            trial_id="retention/run/summary_only/session-02", evidence_gap="missing Usage",
+        )
+    settlement = gate.conservatively_settle_active_trial_unknown_usage(
+        trial_id=reservation.trial_id, evidence_gap="missing durable Provider Usage",
+    )
+    ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
+    assert settlement.status == "conservative_settled"
+    assert ledger.active_reservation is None
+    assert not ledger.request_charges
+
+
 def test_conservative_settlement_debits_stage_c_category_before_next_request(tmp_path: Path) -> None:
     authorization_path = tmp_path / "authorization.json"
     allocation_path = tmp_path / "allocation.json"

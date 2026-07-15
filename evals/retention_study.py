@@ -38,6 +38,15 @@ FILLER_MESSAGE_COUNT = 8
 FILLER_MESSAGE_CHARACTERS = 4000
 
 
+class RetentionUsageIncomplete(ValueError):
+    """A Retention session ended after a request with no durable Usage."""
+
+    def __init__(self, *, request_count: int, usage_count: int) -> None:
+        super().__init__("retention provider request usage is incomplete")
+        self.request_count = request_count
+        self.usage_count = usage_count
+
+
 def profiles(studies: Goal2Studies) -> list[ExperimentProfile]:
     return [ExperimentProfile(
         tool_loading="deferred", compression_profile=name,
@@ -276,7 +285,10 @@ async def _run_session(
     })
     status = "success" if passed and read_used and telemetry.compression_count >= minimum_compactions else "task_failure"
     if len(telemetry.request_usages) != telemetry.request_count:
-        raise ValueError("retention provider request usage is incomplete")
+        raise RetentionUsageIncomplete(
+            request_count=telemetry.request_count,
+            usage_count=len(telemetry.request_usages),
+        )
     return (
         status, grade, telemetry.request_usages,
     )
@@ -388,6 +400,44 @@ def execute(
                             context_window=studies.retention.context_window,
                             recorder=recorder, task_id=task_id,
                         ))
+            except RetentionUsageIncomplete as exc:
+                try:
+                    settlement = gate.conservatively_settle_active_trial_unknown_usage(
+                        trial_id=trial_id,
+                        evidence_gap=(
+                            "Retention session ended with a runtime request but no durable "
+                            "Provider Usage; no Provider retry was performed"
+                        ),
+                    )
+                except Exception as reconciliation_exc:
+                    recorder.event("trial_completed", {
+                        "task_id": task_id, "repetition_id": "1", "attempt_id": 1,
+                        "status": "infrastructure_error",
+                        "duration_seconds": time.monotonic() - started,
+                        "budget_reconciliation_required": True,
+                        "error_category": type(exc).__name__,
+                        "reconciliation_error_category": type(reconciliation_exc).__name__,
+                        "runtime_request_count": exc.request_count,
+                        "usage_event_count": exc.usage_count,
+                    })
+                else:
+                    accounting = gate.trial_accounting(trial_id)
+                    recorder.event("trial_completed", {
+                        "task_id": task_id, "repetition_id": "1", "attempt_id": 1,
+                        "status": "infrastructure_error",
+                        "duration_seconds": time.monotonic() - started,
+                        "error_category": type(exc).__name__,
+                        "runtime_request_count": exc.request_count,
+                        "usage_event_count": exc.usage_count,
+                        "budget_reconciled_conservatively": True,
+                        "actual_cny": accounting["actual_cny"],
+                        "provider_request_count": accounting["request_count"],
+                        "settlement_reservation_id": settlement.reservation_id,
+                        "usage_unknown": accounting["usage_unknown"],
+                        "claim_exclusion_reason": accounting["claim_exclusion_reason"],
+                    })
+                statuses.append("infrastructure_error")
+                break
             except Exception as exc:
                 recorder.event("trial_completed", {
                     "task_id": task_id, "repetition_id": "1", "attempt_id": 1,
