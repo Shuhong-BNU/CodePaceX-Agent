@@ -5,6 +5,9 @@ not a claim that every planned study produced a comparable effect estimate.
 Formal artifacts are local and Git-ignored under `evals/.runs/goal2/` and
 `evals/.runs/goal2-control/`.
 
+For a safe continuation boundary and exact non-rerun rules, see
+[`GOAL2_HANDOFF.md`](GOAL2_HANDOFF.md).
+
 ## Frozen identities and budget
 
 - Claims evidence-control commit: `142e4ce`; the full ID is recorded in Git
