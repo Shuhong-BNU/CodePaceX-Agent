@@ -37,20 +37,26 @@ MCP_RUNTIME_DIFFERENCES = (
     "runtime.experiment_profile_hash", "runtime.runtime_contract_hash",
     "runtime.combined_runtime_hash",
 )
-def _specs(*, include_multi: bool = True) -> list[ClaimSpec]:
+def _specs(
+    *, include_multi: bool = True,
+    mcp_run_ids: tuple[str, str] = ("mcp-formal-eager", "mcp-formal-deferred"),
+    mcp_summary: dict[str, Any] | None = None,
+) -> list[ClaimSpec]:
     specs: list[ClaimSpec] = []
-    mcp_runs = ("mcp-formal-eager", "mcp-formal-deferred")
+    mcp_runs = mcp_run_ids
+    mcp_pair_count = int((mcp_summary or {}).get("valid_matched_pairs", 150))
+    mcp_usage_complete = int((mcp_summary or {}).get("usage_complete_trials", 300))
     for aggregation in ("median", "p95"):
         specs.append(ClaimSpec(
             f"mcp-input-reduction-{aggregation}", "ab_reduction_percent",
-            aggregation, "percent", 150, mcp_runs,
+            aggregation, "percent", mcp_pair_count, mcp_runs,
             f"MCP deferred tool loading input-token reduction ({aggregation})",
             MCP_RUNTIME_DIFFERENCES,
-            ("mcp-formal-eager",), ("mcp-formal-deferred",),
+            (mcp_runs[0],), (mcp_runs[1],),
             ("Controlled local MCP corpus; no production MCP traffic.",),
         ))
-    for arm in ("eager", "deferred"):
-        run = (f"mcp-formal-{arm}",)
+    for arm, run_id in zip(("eager", "deferred"), mcp_runs, strict=True):
+        run = (run_id,)
         for metric, aggregation, unit in (
             ("provider_input_tokens", "sum", "tokens"),
             ("provider_output_tokens", "sum", "tokens"),
@@ -59,8 +65,15 @@ def _specs(*, include_multi: bool = True) -> list[ClaimSpec]:
             ("rate", "pooled_rate", "ratio"),
             ("actual_cost_cny", "sum", "CNY"),
         ):
+            sample_size = 150
+            if mcp_summary is not None and metric in {
+                "provider_input_tokens", "provider_output_tokens", "provider_cache_tokens",
+            }:
+                # The one deferred infrastructure error is retained in cost/counts
+                # but excluded from Usage-dependent Token metrics.
+                sample_size = 150 if arm == "eager" else mcp_usage_complete - 150
             specs.append(ClaimSpec(
-                f"mcp-{arm}-{metric}", metric, aggregation, unit, 150, run,
+                f"mcp-{arm}-{metric}", metric, aggregation, unit, sample_size, run,
                 f"MCP {arm} measured {metric}",
                 limitations=("Controlled local MCP corpus.",),
             ))
@@ -148,9 +161,28 @@ def _conditions(
 
 def generate_claim_document(
     runs_dir: Path, *, include_multi: bool = True,
+    cohort_index: Path | None = None,
 ) -> ClaimDocument:
+    mcp_run_ids = ("mcp-formal-eager", "mcp-formal-deferred")
+    mcp_summary: dict[str, Any] | None = None
+    if cohort_index is not None:
+        cohort = load_mcp_cohort(cohort_index)
+        mcp_run_ids = (
+            "mcp-formal-run-scoped-eager",
+            "mcp-formal-run-scoped-deferred",
+        )
+        mcp_summary = dict(cohort["summary"])
     claims: list[dict[str, Any]] = []
-    for spec in _specs(include_multi=include_multi):
+    retention_partial = any(
+        not (runs_dir / run_id / "manifest.json").is_file()
+        for run_id in ("retention-formal-summary_only", "retention-formal-recovery_v1")
+    )
+    for spec in _specs(
+        include_multi=include_multi, mcp_run_ids=mcp_run_ids,
+        mcp_summary=mcp_summary,
+    ):
+        if retention_partial and spec.claim_id.startswith("retention-"):
+            continue
         manifests = [_manifest(runs_dir, run_id) for run_id in spec.run_ids]
         claims.append({
             "claim_id": spec.claim_id,
@@ -161,6 +193,26 @@ def generate_claim_document(
             "experiment_conditions": _conditions(manifests[0], spec),
             "source_run_ids": list(spec.run_ids), "status": "draft",
             "limitations": list(spec.limitations),
+        })
+    if retention_partial:
+        retained_run = "retention-formal-summary_only"
+        retained_manifest = _manifest(runs_dir, retained_run)
+        retained_spec = ClaimSpec(
+            "retention-formal-partial", "canary_retention_rate", "pooled_rate",
+            "ratio", 1, (retained_run,), "Retention formal partial evidence",
+        )
+        claims.append({
+            "claim_id": "retention-formal-partial",
+            "description_zh": "Retention 正式实验为可审计 partial，不能声明 profile 比较结果",
+            "description_en": "Retention formal evidence is partial; no profile comparison is claimed.",
+            "metric_name": "canary_retention_rate", "aggregation": "pooled_rate",
+            "unit": "ratio", "sample_size": 1,
+            "experiment_conditions": _conditions(retained_manifest, retained_spec),
+            "source_run_ids": [retained_run], "status": "insufficient-data",
+            "limitations": [
+                "recovery_v1 formal Run was not executed.",
+                "summary_only session-01 is terminal infrastructure_error with unknown final Provider Usage and is retained for audit only.",
+            ],
         })
     claims.append({
         "claim_id": "long-session-formal-checkpoint-recovery",
@@ -223,7 +275,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(args.output)
             return 0
-        document = generate_claim_document(args.runs_dir, include_multi=not args.exclude_multi)
+        document = generate_claim_document(
+            args.runs_dir, include_multi=not args.exclude_multi,
+            cohort_index=args.cohort_index,
+        )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(
             yaml.safe_dump(document.model_dump(mode="json"), sort_keys=False),
