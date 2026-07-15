@@ -1,0 +1,92 @@
+# Goal 2 Final Evidence Report
+
+This report records the final Goal 2 evidence boundary. It is intentionally
+not a claim that every planned study produced a comparable effect estimate.
+Formal artifacts are local and Git-ignored under `evals/.runs/goal2/` and
+`evals/.runs/goal2-control/`.
+
+## Frozen identities and budget
+
+- Current evidence-control commit: `bba605a607920cb09c6ca0f7ef313ff25151ca28`.
+- MCP agent execution commit: `b09b1849d74d8873ecf287fc2af6e63712adbe62`;
+  budget control was recorded separately and is not represented as the Agent
+  execution commit.
+- Model for paid formal requests: `qwen3.7-max-2026-06-08`, with retry `0`
+  and fallback disabled.
+- Ledger checkpoint: CNY `92.579316` spent, `1225` request charges, `1114`
+  settlements, and no active reservation. The CNY `90` safety reserve was not
+  used.
+- PR #16 remains Open and Draft. It must not be marked ready or merged as part
+  of this Goal.
+
+## Study status
+
+| Study | Result | Evidence boundary |
+| --- | --- | --- |
+| MCP tool loading | Complete: eager 150/150 and deferred 150/150 terminal | 299 Usage-complete Trials and 149 valid Token pairs. `mcp_one_08/1` remains one terminal infrastructure error, is included in attempted count and settled cost, and is excluded from Usage-derived Token measures. |
+| Retention | Auditable partial | `summary_only` session 01 is a terminal infrastructure error with unknown final Provider Usage; it was conservatively settled and is not rerun. `recovery_v1` formal sessions were not run, so no profile comparison is claimed. |
+| Permission | Complete terminal matrix | `default` 44 success/6 task failure; `session_allow` 38/12; `explicit_rules` 42/8; `sandbox_auto_allow` 41 success/8 task failure/1 infrastructure error. Results are limited to Darwin arm64. |
+| Multi-Agent | Insufficient data | The zero-model grader gate returned NO-GO. No formal Multi-Agent Provider Trial was sent and no effect is claimed. |
+| Formal SWE | Infrastructure-blocked | No formal resolved-rate Claim is produced. |
+| Three 8-hour sessions | Deferred | No formal long-session Claim is produced; the two-hour diagnostic Pilot is not a substitute. |
+
+## Verified MCP measurements
+
+The hash-pinned Trial cohort index is
+`mcp-formal-cohort-index.json` with SHA-256
+`7a53933596b20d2933840e01f363800db7b981cc5ef66bd401ec0092e0ea4594`.
+The compiled cohort evidence verifies:
+
+| Measurement | Value |
+| --- | ---: |
+| eager input / output / cache Tokens | 2,277,984 / 36,255 / 1,689,344 |
+| deferred input / output / cache Tokens | 1,594,316 / 39,603 / 744,960 |
+| matched-pair input reduction median / p95 | 16.013311% / 57.331863% (n=149) |
+| eager / deferred settled cost | CNY 28.640988 / CNY 22.488144 |
+| eager task-success rate | 0.333333 (n=150) |
+
+The source runtime records did not persist `tools_bytes`, so both MCP schema
+byte Claims remain `insufficient-data`. Deferred task-success rate is also
+`insufficient-data`: the retained infrastructure-error Trial has no durable
+score numerator/denominator. Those omissions are not filled with inferred
+values.
+
+## Claims and artifact index
+
+- `mcp-claims-evidence.json`: Trial-level recomputation from the frozen cohort.
+- `claims.goal2.yaml`: declarative Claim input.
+- `claims.goal2.compiled.yaml`: compiler output; it includes source Run IDs,
+  cohort/provenance hashes, sample sizes, limitations and the Multi-Agent
+  NO-GO Claim.
+- The compiler reports 23 verified Claims and 10 `insufficient-data` Claims.
+  The latter are evidence boundaries, not negative results.
+
+The compilation path is:
+
+```bash
+uv run --offline python -m evals.goal2_claims generate \
+  --runs-dir evals/.runs/goal2 --exclude-multi \
+  --cohort-index evals/.runs/goal2-control/mcp-formal-cohort-index.json \
+  --output evals/.runs/goal2-control/claims.goal2.yaml
+uv run --offline python -m evals.goal2_claims compile \
+  --runs-dir evals/.runs/goal2 \
+  --claims evals/.runs/goal2-control/claims.goal2.yaml \
+  --cohort-index evals/.runs/goal2-control/mcp-formal-cohort-index.json \
+  --output evals/.runs/goal2-control/claims.goal2.compiled.yaml
+```
+
+The Goal-specific compiler keeps the generic Run-level compiler fail-closed.
+Only MCP uses its separately hash-pinned, Trial-level selection because the
+formal deferred cohort contains one known infrastructure-error Trial. It
+re-reads every selected terminal event, Usage record, settlement amount and
+provenance hash before it verifies an MCP measurement.
+
+## What must not be claimed
+
+- No causality, significance, production-MCP behavior, cross-platform
+  permission generalization, Multi-Agent comparison, formal SWE score, or
+  eight-hour durability result.
+- No Token or cost-efficiency result for Trials with unknown Provider Usage.
+- No Provider bill is implied by a `conservative_reserved_amount` settlement.
+  Such a settlement is budget accounting only, preserves unknown Tokens, and
+  retains the original evidence gap.

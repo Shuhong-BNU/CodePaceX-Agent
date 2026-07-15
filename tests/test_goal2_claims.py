@@ -4,7 +4,11 @@ from pathlib import Path
 import pytest
 
 from evals.benchmark import RunManifest, RunRecorder
-from evals.goal2_claims import generate_claim_document, generate_mcp_evidence
+from evals.goal2_claims import (
+    compile_goal2_claims,
+    generate_claim_document,
+    generate_mcp_evidence,
+)
 
 
 RUN_IDS = {
@@ -64,7 +68,10 @@ def test_goal2_claim_generator_requires_every_run_but_allows_cross_study_commits
 def test_goal2_claim_generator_can_exclude_multi_after_no_go_gate(tmp_path: Path) -> None:
     _write_manifests(tmp_path)
     document = generate_claim_document(tmp_path, include_multi=False)
-    assert not any(claim.claim_id.startswith("multi-") for claim in document.claims)
+    multi = [claim for claim in document.claims if claim.claim_id.startswith("multi-")]
+    assert [claim.claim_id for claim in multi] == ["multi-agent-formal-no-go"]
+    assert multi[0].status == "insufficient-data"
+    assert multi[0].source_run_ids == []
 
 
 def test_goal2_claim_generator_uses_cohort_scoped_mcp_manifests(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -118,3 +125,46 @@ def test_mcp_evidence_uses_trial_level_cohort_not_run_scorability(
     evidence = generate_mcp_evidence(cohort_index=tmp_path / "cohort.json", runs_dir=tmp_path)
     assert evidence["summary"]["valid_matched_pairs"] == 149
     assert "mcp_one_08/1" in evidence["metrics"]["excluded_pairs"]
+
+
+def test_goal2_compiler_verifies_trial_level_mcp_metrics_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_manifests(tmp_path)
+    for run_id in ("mcp-formal-run-scoped-eager", "mcp-formal-run-scoped-deferred"):
+        RunRecorder(tmp_path, RunManifest(
+            provider="p", protocol="openai-compat", model_id="m", git_commit="a" * 40,
+            prompt_version="v", model_parameters={}, retry_budget=0, fallback_enabled=False,
+            task_ids=["task"], repetitions=1, feature_flags={},
+            experiment_profile={"schema_version": 1, "tool_loading": "deferred", "compression_profile": "recovery_v1", "permission_strategy": "default", "agent_mode": "single"},
+            experiment_profile_hash="profile", runtime_contract_hash="runtime",
+            benchmark_asset_hash="assets", max_iterations=50,
+        ), run_id=run_id)
+    cohort = {
+        "sha256": "cohort", "source_manifest_sha256": "manifest", "ledger_sha256": "ledger",
+        "summary": {"valid_matched_pairs": 149, "usage_complete_trials": 299},
+        "entries": [
+            {"run_id": "mcp-formal-run-scoped-eager", "arm": "eager"},
+            {"run_id": "mcp-formal-run-scoped-deferred", "arm": "deferred"},
+        ],
+    }
+    metrics = {
+        "valid_matched_pairs": 149,
+        "input_reduction_percent": {"median": 10.0, "p95": 30.0},
+        "source_runs": {
+            "mcp-formal-run-scoped-eager": {"git_commit": "a" * 40, "experiment_profile_hash": "profile", "runtime_contract_hash": "runtime", "benchmark_asset_hash": "assets"},
+            "mcp-formal-run-scoped-deferred": {"git_commit": "a" * 40, "experiment_profile_hash": "profile", "runtime_contract_hash": "runtime", "benchmark_asset_hash": "assets"},
+        },
+        "arms": {
+            "eager": {"input_tokens": 100, "output_tokens": 10, "cache_tokens": 1, "usage_complete_trials": 150, "runtime_tool_schema_bytes_median": None, "runtime_tool_schema_sample_size": 0, "rate": 0.5, "rate_trial_count": 150, "settled_cny": 1.0, "terminal_trials": 150},
+            "deferred": {"input_tokens": 80, "output_tokens": 8, "cache_tokens": 1, "usage_complete_trials": 149, "runtime_tool_schema_bytes_median": None, "runtime_tool_schema_sample_size": 0, "rate": 0.5, "rate_trial_count": 149, "settled_cny": 1.0, "terminal_trials": 150},
+        },
+    }
+    monkeypatch.setattr("evals.goal2_claims.load_mcp_cohort", lambda _: cohort)
+    monkeypatch.setattr("evals.goal2_claims.summarize_mcp_cohort", lambda *_: metrics)
+    document = generate_claim_document(tmp_path, cohort_index=tmp_path / "cohort.json")
+    compiled = compile_goal2_claims(document, tmp_path, cohort_index=tmp_path / "cohort.json")
+    by_id = {claim["claim_id"]: claim for claim in compiled["claims"]}
+    assert by_id["mcp-input-reduction-p95"]["status"] == "verified"
+    assert by_id["mcp-deferred-provider_input_tokens"]["generated_value"] == 80.0
+    assert by_id["mcp-deferred-runtime_tool_schema_bytes"]["status"] == "insufficient-data"
+    assert by_id["mcp-deferred-rate"]["status"] == "insufficient-data"
+    assert by_id["mcp-eager-actual_cost_cny"]["evidence_summary"]["trial_level_cohort"] is True

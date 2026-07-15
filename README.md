@@ -172,9 +172,9 @@ Agent：总结主调用链
 
 Eval 产物默认写入 `evals/.runs/`，该目录是本地 artifact 并被 Git 忽略。Baseline v1 已在正常 Mac Terminal 中完成完整 suite：6/6 PASS，0 FAIL，0 ERROR，0 WARNING，Task Success Rate 100%。详细任务、状态分类和边界见 [`evals/README.md`](evals/README.md) / [`evals/README.en.md`](evals/README.en.md)。
 
-除既有 deterministic Eval 外，Goal 2 已加入冻结 Qwen Pilot、真实 runtime-mapped `ExperimentProfile`、逐 Provider request 的 fail-closed reservation/settlement ledger、Stage B 成对最小 Pilot scope、MCP/Retention/Permission/Multi-Agent/Hook/长会话研究 runner、官方 SWE-bench-Live `python-only` 适配，以及由真实 Artifact 生成 Claims 的路径。每个请求发出前独立检查总预算、Stage C 类别额度和安全余量；Usage 缺失时先保留 active reservation，只有无法恢复可审计 Provider 证据时才可全额保守计提，Token 保持 unknown，绝不按零成本结算。Stage A/B 最小 Pilot、Hook 和一个 2 小时长会话 Pilot 已完成；SWE Pilot recovery 为真实 0/3 resolved，但 formal 20 题因 emulated evaluator control 失败而 `infrastructure-blocked`，不生成 SWE Claim。三次 8 小时正式长会话延期。完整顺序、预算风险和发布边界见 [`evals/GOAL2_RUNBOOK.md`](evals/GOAL2_RUNBOOK.md)。
+除既有 deterministic Eval 外，Goal 2 已完成正式 MCP（300/300 terminal）与 Permission（200/200 terminal）矩阵，并保留了逐 Provider request 的 fail-closed reservation/settlement ledger、runtime-mapped `ExperimentProfile` 和由 Artifact 编译的 Claims。MCP 的 hash-pinned cohort 保留 `mcp_one_08/1` 为 infrastructure error：它计入尝试数和结算成本，但因最终 Provider Usage unknown 而不进入 Token 配对。Retention 以一个已保守结算的 `summary_only` infrastructure-error session 合法 partial 收口；Multi-Agent 零模型 gate 为 NO-GO，因此没有发送正式 Provider Trial。Formal SWE 保持 `infrastructure-blocked`，三次 8 小时正式长会话保持 deferred。完整的结果、不可声明范围、成本检查点和 Artifact 索引见 [`evals/GOAL2_FINAL_REPORT.md`](evals/GOAL2_FINAL_REPORT.md)。
 
-当前工程基线来自已合并的 PR #13（`e44f3a1`）及其 correctness closure。Goal 2 的真实 Pilot 只作为诊断或最小证据，后续正式 Claims 必须来自同一个新冻结 commit；AgentRouter 仍未运行。正式 MCP、Retention、Permission 与可能放行的 Multi-Agent 仍受 allocation、CI 和 Artifact 闸门约束。
+每个付费请求在发出前独立检查总预算、类别额度和 CNY 90 safety reserve；若无 durable Provider evidence，才可一次性按 reservation 全额作保守预算结算，Token 维持 unknown，绝不伪造 request charge、Usage 或 Provider 实际账单。PR #16 仍保持 Draft，不能 Ready 或 merge。
 
 ## 🧰 环境要求
 
@@ -612,7 +612,7 @@ Roadmap：
 
 - TUI、Remote 和 `-p` 当前共享 provider/client、核心 ToolRegistry、权限检查、项目指令、`ToolSearch`、`InstallSkill`、Agent loop 与上下文遥测。TUI/Remote 额外具有会话、记忆、Skill loader/`LoadSkill` 和 MCP 生命周期；TUI 还装配文件历史、交互提问、Plan 退出及 worktree/team UI；TUI 与 `-p` 都装配子 Agent、worktree-backed delegation 和 Team 工具，而 Remote 当前没有；`-p` 保持非交互输出和拒绝式审批。下一阶段将以显式 capability profile 和共享 RuntimeBuilder 收口公共装配，并用入口级测试锁定合理差异。由于这会同时改变同步和异步入口的创建/清理生命周期，本轮不做局部伪统一。
 - Worktree inspect → approve → integrate 属于后续新功能：先输出分支、commit、diffstat 和冲突预检，再由用户显式选择集成或保留；不得自动覆盖脏主工作区。
-- Goal 2 已用 `ExperimentProfile` 实现 eager/deferred tools、compression、permission strategy 与 single/multi-agent 的真实 runtime mapping，并记录 effective profile、Runtime hash 与工具 Schema 字节数；legacy `feature_flags` 仍拒绝进入 live Run，避免只改标签的伪实验。
-- MCP、Retention、Permission、Multi-Agent、Hook、长会话和 SWE-bench-Live 的 runner 已就绪，但真实指标仍以 [`evals/GOAL2_RUNBOOK.md`](evals/GOAL2_RUNBOOK.md) 中的预算、官方依赖和 Artifact 闸门为准。
+- Goal 2 已用 `ExperimentProfile` 实现 eager/deferred tools、compression、permission strategy 与 single/multi-agent 的真实 runtime mapping；legacy `feature_flags` 仍拒绝进入 live Run，避免只改标签的伪实验。
+- 正式 MCP 与 Permission 的 Artifact、partial Retention、Multi-Agent NO-GO、SWE/长会话边界和 Claims 状态见 [`evals/GOAL2_FINAL_REPORT.md`](evals/GOAL2_FINAL_REPORT.md)；运行和复核命令见 [`evals/GOAL2_RUNBOOK.md`](evals/GOAL2_RUNBOOK.md)。
 
 详细修改建议见 [`CODE_CHANGE_PROPOSALS.md`](CODE_CHANGE_PROPOSALS.md)。

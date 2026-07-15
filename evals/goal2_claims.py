@@ -11,7 +11,7 @@ from typing import Any
 
 import yaml
 
-from evals.claims import ClaimDocument
+from evals.claims import ClaimDocument, compile_claims, load_claims
 from evals.mcp_cohort import load_mcp_cohort, summarize_mcp_cohort
 
 
@@ -37,6 +37,153 @@ MCP_RUNTIME_DIFFERENCES = (
     "runtime.experiment_profile_hash", "runtime.runtime_contract_hash",
     "runtime.combined_runtime_hash",
 )
+
+
+def _mcp_measurement(claim_id: str, metrics: dict[str, Any]) -> tuple[float | None, int]:
+    """Return the exact Trial-level measurement for a registered MCP Claim."""
+    if claim_id == "mcp-input-reduction-median":
+        return float(metrics["input_reduction_percent"]["median"]), int(metrics["valid_matched_pairs"])
+    if claim_id == "mcp-input-reduction-p95":
+        return float(metrics["input_reduction_percent"]["p95"]), int(metrics["valid_matched_pairs"])
+    parts = claim_id.split("-")
+    if len(parts) < 3 or parts[0] != "mcp" or parts[1] not in {"eager", "deferred"}:
+        return None, 0
+    arm, metric = parts[1], "-".join(parts[2:])
+    summary = metrics["arms"][arm]
+    if metric == "provider_input_tokens":
+        return float(summary["input_tokens"]), int(summary["usage_complete_trials"])
+    if metric == "provider_output_tokens":
+        return float(summary["output_tokens"]), int(summary["usage_complete_trials"])
+    if metric == "provider_cache_tokens":
+        return float(summary["cache_tokens"]), int(summary["usage_complete_trials"])
+    if metric == "runtime_tool_schema_bytes":
+        value = summary["runtime_tool_schema_bytes_median"]
+        return (float(value), int(summary["runtime_tool_schema_sample_size"])) if value is not None else (None, 0)
+    if metric == "rate":
+        value = summary["rate"]
+        return (float(value), int(summary["rate_trial_count"])) if value is not None else (None, 0)
+    if metric == "actual_cost_cny":
+        return float(summary["settled_cny"]), int(summary["terminal_trials"])
+    return None, 0
+
+
+def _mcp_source_summary(cohort: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
+    source_runs = metrics["source_runs"]
+    source_run_arms: dict[str, str] = {}
+    for entry in cohort["entries"]:
+        run_id, arm = str(entry["run_id"]), str(entry["arm"])
+        previous = source_run_arms.setdefault(run_id, arm)
+        if previous != arm:
+            raise ValueError("MCP cohort source Run occurs in more than one arm")
+    def values_by_arm(field: str) -> dict[str, list[str]]:
+        return {
+            arm: sorted({str(source_runs[run_id][field]) for run_id, value in source_run_arms.items() if value == arm})
+            for arm in ("eager", "deferred")
+        }
+    return {
+        "trial_level_cohort": True,
+        "cohort_index_sha256": cohort["sha256"],
+        "source_manifest_sha256": cohort["source_manifest_sha256"],
+        "ledger_sha256": cohort["ledger_sha256"],
+        "cohort_source_run_ids": sorted(source_runs),
+        "cohort_source_run_arms": source_run_arms,
+        "cohort_execution_commits": sorted({str(item["git_commit"]) for item in source_runs.values()}),
+        "cohort_profile_hashes": sorted({str(item["experiment_profile_hash"]) for item in source_runs.values()}),
+        "cohort_profile_hashes_by_arm": values_by_arm("experiment_profile_hash"),
+        "cohort_runtime_contract_hashes": sorted({str(item["runtime_contract_hash"]) for item in source_runs.values()}),
+        "cohort_runtime_contract_hashes_by_arm": values_by_arm("runtime_contract_hash"),
+        "cohort_benchmark_asset_hashes": sorted({str(item["benchmark_asset_hash"]) for item in source_runs.values()}),
+    }
+
+
+def _mcp_claim_compatibility_problems(
+    declared: Any, source_summary: dict[str, Any],
+) -> list[str]:
+    """Check that a MCP Claim still names the cohort it is allowed to use."""
+    claim_id = declared.claim_id
+    if claim_id.startswith("mcp-input-reduction-"):
+        expected_run_ids = {
+            "mcp-formal-run-scoped-eager", "mcp-formal-run-scoped-deferred",
+        }
+        required_arms = {"eager"}
+    else:
+        parts = claim_id.split("-", 2)
+        if len(parts) != 3 or parts[1] not in {"eager", "deferred"}:
+            return ["MCP Claim ID is not registered for Trial-level compilation."]
+        arm = parts[1]
+        expected_run_ids = {f"mcp-formal-run-scoped-{arm}"}
+        required_arms = {arm}
+    if set(declared.source_run_ids) != expected_run_ids:
+        return ["MCP Claim source Run IDs do not match the frozen cohort aliases."]
+    source_runs = source_summary["cohort_source_run_arms"]
+    selected = [
+        run_id for run_id, arm in source_runs.items() if arm in required_arms
+    ]
+    if not selected:
+        return ["MCP Claim has no selected Trial-level cohort sources."]
+    conditions = declared.experiment_conditions
+    if any(commit != conditions.git_commit for commit in source_summary["cohort_execution_commits"]):
+        return ["MCP cohort execution commit does not match Claim conditions."]
+    source_profiles = source_summary["cohort_profile_hashes_by_arm"]
+    source_contracts = source_summary["cohort_runtime_contract_hashes_by_arm"]
+    problems: list[str] = []
+    for arm in required_arms:
+        if source_profiles.get(arm) != [conditions.experiment_profile_hash]:
+            problems.append("MCP cohort profile hash does not match Claim conditions.")
+        if source_contracts.get(arm) != [conditions.runtime_contract_hash]:
+            problems.append("MCP cohort runtime contract hash does not match Claim conditions.")
+    if source_summary["cohort_benchmark_asset_hashes"] != [conditions.benchmark_asset_hash]:
+        problems.append("MCP cohort benchmark asset hash does not match Claim conditions.")
+    return problems
+
+
+def compile_goal2_claims(
+    document: ClaimDocument, runs_dir: Path, *, cohort_index: Path,
+) -> dict[str, Any]:
+    """Compile Goal 2 Claims, replacing only MCP with its frozen trial cohort.
+
+    Generic Claims remain Run-level and fail closed on an unscorable Run.  The
+    MCP formal cohort deliberately has one terminal infrastructure error in a
+    mixed-status deferred collection, so it is validated Trial-by-Trial here.
+    """
+    compiled = compile_claims(document, runs_dir)
+    cohort = load_mcp_cohort(cohort_index)
+    metrics = summarize_mcp_cohort(cohort, runs_dir)
+    source_summary = _mcp_source_summary(cohort, metrics)
+    for declared, output in zip(document.claims, compiled["claims"], strict=True):
+        if not declared.claim_id.startswith("mcp-"):
+            continue
+        output.update({
+            "generated_value": None,
+            "generation_command": "python -m evals.goal2_claims compile",
+            "status": "insufficient-data",
+            "limitations": list(declared.limitations),
+            "evidence_summary": {
+                "source_run_count": len(source_summary["cohort_source_run_ids"]),
+                "measured_sample_size": 0,
+                "allowed_differences": declared.experiment_conditions.allowed_differences,
+                "observed_differences": [],
+                **source_summary,
+            },
+        })
+        problems = _mcp_claim_compatibility_problems(declared, source_summary)
+        value, sample_size = _mcp_measurement(declared.claim_id, metrics)
+        output["evidence_summary"]["measured_sample_size"] = sample_size
+        if problems:
+            output["limitations"].extend(problems)
+        elif value is None:
+            output["limitations"].append(
+                "Required Trial-level runtime telemetry is unavailable."
+            )
+        elif sample_size != declared.sample_size:
+            output["limitations"].append(
+                "Declared sample_size does not exactly match the measured Trial or pair count."
+            )
+        else:
+            output["generated_value"] = value
+            output["status"] = "verified"
+        output["limitations"] = list(dict.fromkeys(output["limitations"]))
+    return compiled
 def _specs(
     *, include_multi: bool = True,
     mcp_run_ids: tuple[str, str] = ("mcp-formal-eager", "mcp-formal-deferred"),
@@ -214,6 +361,19 @@ def generate_claim_document(
                 "summary_only session-01 is terminal infrastructure_error with unknown final Provider Usage and is retained for audit only.",
             ],
         })
+    if not include_multi:
+        claims.append({
+            "claim_id": "multi-agent-formal-no-go",
+            "description_zh": "Multi-Agent 正式实验未通过零模型 gate",
+            "description_en": "Multi-Agent formal study did not pass its zero-model gate.",
+            "metric_name": "multi_agent_task_success_rate", "aggregation": "pooled_rate",
+            "unit": "ratio", "sample_size": 50, "experiment_conditions": None,
+            "source_run_ids": [], "status": "insufficient-data",
+            "limitations": [
+                "The frozen zero-model Multi-Agent gate returned NO-GO.",
+                "No formal Multi-Agent Provider Trial was run; no comparative effect is claimed.",
+            ],
+        })
     claims.append({
         "claim_id": "long-session-formal-checkpoint-recovery",
         "description_zh": "三次 8 小时正式长会话 checkpoint recovery",
@@ -255,9 +415,10 @@ def generate_mcp_evidence(*, cohort_index: Path, runs_dir: Path) -> dict[str, An
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate Goal 2 Claims from Run manifests")
-    parser.add_argument("command", choices=["generate", "mcp-evidence"])
+    parser.add_argument("command", choices=["generate", "compile", "mcp-evidence"])
     parser.add_argument("--runs-dir", type=Path, default=Path("evals/.runs/goal2"))
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--claims", type=Path)
     parser.add_argument("--exclude-multi", action="store_true")
     parser.add_argument("--cohort-index", type=Path)
     args = parser.parse_args(argv)
@@ -271,6 +432,22 @@ def main(argv: list[str] | None = None) -> int:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(
                 json.dumps(evidence, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            print(args.output)
+            return 0
+        if args.command == "compile":
+            if args.cohort_index is None:
+                raise ValueError("compile requires --cohort-index")
+            if args.claims is None:
+                raise ValueError("compile requires --claims")
+            compiled = compile_goal2_claims(
+                load_claims(args.claims), args.runs_dir,
+                cohort_index=args.cohort_index,
+            )
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(
+                yaml.safe_dump(compiled, allow_unicode=True, sort_keys=False),
                 encoding="utf-8",
             )
             print(args.output)
