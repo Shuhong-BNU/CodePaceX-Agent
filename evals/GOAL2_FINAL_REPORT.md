@@ -62,6 +62,16 @@ values.
 - The compiler reports 23 verified Claims and 10 `insufficient-data` Claims.
   The latter are evidence boundaries, not negative results.
 
+Current local Artifact file SHA-256 values are:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `budget-ledger.json` | `9c583fb3ed09d7125812d1a3b72afe0d64b7b33cbb78a7a2ca65a39df07d24a4` |
+| `mcp-formal-cohort-index.json` | `fedda1d55f758addf2b2ade46849ec7afbf708270577e7b08138c20e19233da8` |
+| `mcp-claims-evidence.json` | `22aafd8be11481b757b93ceb5a66b5ef6fae477de276ae4c05e5a9a3f060f1fe` |
+| `claims.goal2.yaml` | `2517f90dec7dba29bb2edbc67bb774f04896fd17b71a1f5904e390b222d618b3` |
+| `claims.goal2.compiled.yaml` | `027f9f98e0edfe3ff34643879b0f3cd9ed956737fc74880c62d91d0327352a01` |
+
 The compilation path is:
 
 ```bash
