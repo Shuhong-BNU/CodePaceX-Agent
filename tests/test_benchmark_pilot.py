@@ -110,6 +110,10 @@ def test_resume_requires_matching_identity_and_resumable_status(tmp_path: Path) 
     assert resumed.completed_trials() == {("one", "1")}
     with pytest.raises(ValueError, match="mismatch"):
         RunRecorder.resume(tmp_path, "resume", _manifest(model_id="other"))
+    with pytest.raises(ValueError, match="experiment_profile_hash"):
+        RunRecorder.resume(
+            tmp_path, "resume", _manifest(experiment_profile_hash="different-profile"),
+        )
 
 
 def test_success_and_dry_run_are_not_resumable(tmp_path: Path) -> None:

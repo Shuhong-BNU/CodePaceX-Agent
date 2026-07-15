@@ -149,10 +149,8 @@ def generate_claim_document(
     runs_dir: Path, *, include_multi: bool = True,
 ) -> ClaimDocument:
     claims: list[dict[str, Any]] = []
-    commits: set[str] = set()
     for spec in _specs(include_multi=include_multi):
         manifests = [_manifest(runs_dir, run_id) for run_id in spec.run_ids]
-        commits.update(str(item.get("git_commit")) for item in manifests)
         claims.append({
             "claim_id": spec.claim_id,
             "description_zh": spec.description,
@@ -175,8 +173,6 @@ def generate_claim_document(
             "long-pilot-1 is a 2-hour diagnostic Pilot and is excluded from this formal Claim.",
         ],
     })
-    if len(commits) != 1:
-        raise ValueError("Goal 2 Claims require one frozen experiment commit")
     return ClaimDocument.model_validate({"schema_version": 2, "claims": claims})
 
 

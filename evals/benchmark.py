@@ -243,7 +243,9 @@ class RunRecorder:
         payload = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
         identity = (
             "experiment_config_hash", "git_commit", "provider", "model_id",
-            "system_prompt_hash", "tool_schema_hash",
+            "system_prompt_hash", "tool_schema_hash", "experiment_profile_hash",
+            "runtime_contract_hash", "benchmark_asset_hash", "model_parameters",
+            "retry_budget", "fallback_enabled",
         )
         expected_payload = expected.to_dict()
         mismatches = [key for key in identity if payload.get(key) != expected_payload.get(key)]
@@ -476,6 +478,47 @@ class RunRecorder:
             if event.get("type") == "trial_completed":
                 completed.add((str(event.get("task_id")), str(event.get("repetition_id"))))
         return completed
+
+    def incomplete_trial_attempts(self) -> set[tuple[str, str, int]]:
+        """Return started Trial attempts that have no terminal event.
+
+        A paid runner must not invoke a Provider again for one of these
+        attempts.  Callers seal the attempt as an infrastructure error during
+        an explicit resume, preserving its original identity for audit.
+        """
+        started: set[tuple[str, str, int]] = set()
+        completed: set[tuple[str, str, int]] = set()
+        for event in self._jsonl_records("events.jsonl"):
+            if event.get("type") not in {"trial_started", "trial_completed"}:
+                continue
+            task_id, repetition_id, attempt_id = self._attempt_identity(event)
+            identity = (str(task_id), str(repetition_id), attempt_id)
+            if event["type"] == "trial_started":
+                started.add(identity)
+            else:
+                completed.add(identity)
+        return started - completed
+
+    def terminal_trial_statuses(self) -> dict[tuple[str, str], str]:
+        """Return the sole terminal status for each Trial identity.
+
+        Duplicate terminal events are invalid evidence and are rejected rather
+        than silently choosing one.  Attempts are intentionally collapsed here:
+        a Trial is terminal after its first terminal attempt and may not be
+        rerun by a resume command.
+        """
+        statuses: dict[tuple[str, str], str] = {}
+        for event in self._jsonl_records("events.jsonl"):
+            if event.get("type") != "trial_completed":
+                continue
+            identity = (str(event.get("task_id")), str(event.get("repetition_id")))
+            if identity in statuses:
+                raise ValueError(
+                    "duplicate terminal Trial event: "
+                    f"{identity[0]}/{identity[1]}"
+                )
+            statuses[identity] = str(event.get("status", "infrastructure_error"))
+        return statuses
 
     def successful_trials(self) -> set[tuple[str, str]]:
         successful: set[tuple[str, str]] = set()

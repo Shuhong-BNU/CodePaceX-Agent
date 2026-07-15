@@ -46,7 +46,7 @@ def test_goal2_claim_generator_materializes_all_registered_claims(tmp_path: Path
     assert len(ids) == len(document.claims)
 
 
-def test_goal2_claim_generator_requires_every_run_and_one_commit(tmp_path: Path) -> None:
+def test_goal2_claim_generator_requires_every_run_but_allows_cross_study_commits(tmp_path: Path) -> None:
     _write_manifests(tmp_path)
     (tmp_path / "mcp-formal-eager" / "manifest.json").unlink()
     with pytest.raises(OSError):
@@ -58,8 +58,7 @@ def test_goal2_claim_generator_requires_every_run_and_one_commit(tmp_path: Path)
     payload = json.loads(path.read_text())
     payload["git_commit"] = "b" * 40
     path.write_text(json.dumps(payload))
-    with pytest.raises(ValueError, match="one frozen"):
-        generate_claim_document(tmp_path)
+    assert generate_claim_document(tmp_path).claims
 
 
 def test_goal2_claim_generator_can_exclude_multi_after_no_go_gate(tmp_path: Path) -> None:

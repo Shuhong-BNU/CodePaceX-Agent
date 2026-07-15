@@ -319,6 +319,7 @@ def execute(
     budget_allocation: Path | None = None,
     confirmed: bool, budget_stage: Literal["A", "B", "C"] = "C",
     scope: Literal["pilot", "formal"] = "formal",
+    resume: bool = False,
 ) -> list[RunRecorder]:
     studies = load_studies(studies_path)
     pilot = load_pilot_config(root / "evals" / "pilot.qwen.yaml")
@@ -337,14 +338,33 @@ def execute(
             profile=profile, scope=scope,
         )
         manifest.pricing_snapshot_hash = pricing_snapshot_hash(pricing)
-        recorder = RunRecorder(
-            runs_dir, manifest,
-            run_id=f"{run_prefix}-{profile.compression_profile.value}",
-            repo_root=root, secrets=_runtime_secrets(pilot),
-        )
-        statuses: list[str] = []
+        run_id = f"{run_prefix}-{profile.compression_profile.value}"
+        run_path = runs_dir / run_id
+        if resume:
+            if not run_path.is_dir():
+                raise ValueError(f"resume Run does not exist: {run_id}")
+            recorder = RunRecorder.resume(
+                runs_dir, run_id, manifest, secrets=_runtime_secrets(pilot),
+            )
+        else:
+            recorder = RunRecorder(
+                runs_dir, manifest, run_id=run_id,
+                repo_root=root, secrets=_runtime_secrets(pilot),
+            )
+        statuses: list[str] = list(recorder.terminal_trial_statuses().values())
+        for task_id, repetition_id, attempt_id in sorted(recorder.incomplete_trial_attempts()):
+            recorder.event("trial_completed", {
+                "task_id": task_id, "repetition_id": repetition_id,
+                "attempt_id": attempt_id, "status": "infrastructure_error",
+                "budget_reconciliation_required": True,
+                "resume_sealed_without_provider_retry": True,
+            })
+            statuses.append("infrastructure_error")
+        terminal = recorder.completed_trials()
         for index in scoped_session_indices(studies, scope=scope):
             task_id = f"retention-session-{index + 1:02d}"
+            if (task_id, "1") in terminal:
+                continue
             trial_id = (
                 f"retention/{recorder.run_id}/{profile.compression_profile.value}/"
                 f"{task_id}"
@@ -422,7 +442,7 @@ def execute(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Goal 2 retention study")
-    parser.add_argument("command", choices=["validate", "dry-run", "execute"])
+    parser.add_argument("command", choices=["validate", "dry-run", "execute", "resume"])
     parser.add_argument("--studies", type=Path, default=Path("evals/goal2/studies.yaml"))
     parser.add_argument("--runs-dir", type=Path, default=Path("evals/.runs/goal2-retention"))
     parser.add_argument("--run-prefix", default="retention-dry")
@@ -455,7 +475,7 @@ def main(argv: list[str] | None = None) -> int:
                 root=root, studies_path=args.studies, runs_dir=args.runs_dir,
                 run_prefix=args.run_prefix, scope=scope,
             )]
-        elif args.command == "execute":
+        elif args.command in {"execute", "resume"}:
             required = [args.pricing_snapshot, args.budget_authorization, args.budget_ledger, args.budget_stage, args.scope]
             if any(item is None for item in required):
                 raise ValueError("execute requires pricing, budget authorization, and ledger paths")
@@ -466,7 +486,7 @@ def main(argv: list[str] | None = None) -> int:
                 budget_ledger=args.budget_ledger, confirmed=args.confirm_paid_run,
                 budget_allocation=args.budget_allocation,
                 budget_stage=args.budget_stage,
-                scope=args.scope,
+                scope=args.scope, resume=args.command == "resume",
             )]
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         return 0
