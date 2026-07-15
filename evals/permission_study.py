@@ -39,6 +39,29 @@ def profiles(studies: Goal2Studies) -> list[ExperimentProfile]:
     ) for strategy in studies.permission.strategies]
 
 
+def selected_profiles(
+    studies: Goal2Studies, *, strategy: str | None,
+) -> list[ExperimentProfile]:
+    """Select one frozen Permission arm without changing the formal matrix."""
+    available = profiles(studies)
+    if strategy is None:
+        return available
+    selected = [
+        profile for profile in available
+        if profile.permission_strategy.value == strategy
+    ]
+    if not selected:
+        raise ValueError(f"unknown permission strategy: {strategy}")
+    return selected
+
+
+def validate_batch_limit(max_new_trials: int | None) -> int | None:
+    """Bound a paid Permission invocation to a small serial batch."""
+    if max_new_trials is not None and not 1 <= max_new_trials <= 5:
+        raise ValueError("max_new_trials must be between 1 and 5")
+    return max_new_trials
+
+
 def scoped_tasks(
     studies: Goal2Studies, *, scope: Literal["pilot", "formal"],
 ) -> tuple[list[PermissionTask], int]:
@@ -243,6 +266,7 @@ def _run_profile(
     *, root: Path, studies: Goal2Studies, profile: ExperimentProfile,
     recorder: RunRecorder, gate: PaidRunGate,
     scope: Literal["pilot", "formal"],
+    max_new_trials: int | None = None,
 ) -> str:
     pilot = load_pilot_config(root / "evals" / "pilot.qwen.yaml")
     statuses: list[str] = list(recorder.terminal_trial_statuses().values())
@@ -255,6 +279,7 @@ def _run_profile(
         })
         statuses.append("infrastructure_error")
     terminal = recorder.completed_trials()
+    executed_new_trials = 0
     with tempfile.TemporaryDirectory(prefix="codepacex-permission-home-") as home_text:
         home = Path(home_text)
         _write_child_config(
@@ -271,6 +296,13 @@ def _run_profile(
             for task in tasks:
                 if (task.id, str(repetition)) in terminal:
                     continue
+                if max_new_trials is not None and executed_new_trials >= max_new_trials:
+                    recorder.event("batch_limit_reached", {
+                        "max_new_trials": max_new_trials,
+                        "completed_new_trials": executed_new_trials,
+                        "scope": scope,
+                    })
+                    return "cancelled"
                 trial_id = (
                     f"permission/{recorder.run_id}/{profile.permission_strategy.value}/"
                     f"{task.id}/{repetition}"
@@ -353,6 +385,7 @@ def _run_profile(
                     else "infrastructure_error"
                 )
                 statuses.append(status)
+                executed_new_trials += 1
                 recorder.event("trial_completed", {
                     "task_id": task.id, "repetition_id": str(repetition),
                     "attempt_id": attempt_id, "status": status,
@@ -361,6 +394,8 @@ def _run_profile(
                     "provider_request_count": accounting["request_count"],
                     **dangerous_interception_fields(task, status, grade),
                 })
+                if status == "infrastructure_error":
+                    return status
     if all(status == "success" for status in statuses):
         return "success"
     return "infrastructure_error" if "infrastructure_error" in statuses else "task_failure"
@@ -372,13 +407,15 @@ def execute(
     budget_allocation: Path | None = None,
     confirmed: bool, budget_stage: Literal["A", "B", "C"] = "C",
     scope: Literal["pilot", "formal"] = "formal",
-    resume: bool = False,
+    resume: bool = False, strategy: str | None = None,
+    max_new_trials: int | None = None,
 ) -> list[RunRecorder]:
     studies = load_studies(studies_path)
     pilot = load_pilot_config(root / "evals" / "pilot.qwen.yaml")
     if not confirmed or not os.environ.get(pilot.api_key_env):
         raise ValueError("execute requires --confirm-paid-run and the configured API key")
     pricing = load_pricing(pricing_snapshot)
+    max_new_trials = validate_batch_limit(max_new_trials)
     gate = PaidRunGate(
         root=root, authorization_path=budget_authorization,
         ledger_path=budget_ledger, pricing=pricing, stage=budget_stage,
@@ -386,7 +423,7 @@ def execute(
         pricing_path=pricing_snapshot,
     )
     recorders: list[RunRecorder] = []
-    for profile in profiles(studies):
+    for profile in selected_profiles(studies, strategy=strategy):
         manifest = build_manifest(
             root=root, studies_path=studies_path, studies=studies,
             profile=profile, scope=scope,
@@ -407,13 +444,15 @@ def execute(
         status = _run_profile(
             root=root, studies=studies, profile=profile,
             recorder=recorder, gate=gate, scope=scope,
+            max_new_trials=max_new_trials,
         )
         recorder.finalize({
             "status": status, "execution_mode": "live",
             "strategy": profile.permission_strategy.value,
+            "max_new_trials": max_new_trials,
         })
         recorders.append(recorder)
-        if status in {"timeout", "infrastructure_error", "budget_blocked"}:
+        if status in {"timeout", "infrastructure_error", "budget_blocked", "cancelled"}:
             break
     return recorders
 
@@ -430,6 +469,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--budget-allocation", type=Path)
     parser.add_argument("--budget-stage", choices=["A", "B", "C"])
     parser.add_argument("--scope", choices=["pilot", "formal"])
+    parser.add_argument("--strategy", choices=[item.value for item in PermissionStrategy])
+    parser.add_argument("--max-new-trials", type=int)
     parser.add_argument("--confirm-paid-run", action="store_true")
     args = parser.parse_args(argv)
     try:
@@ -464,6 +505,7 @@ def main(argv: list[str] | None = None) -> int:
                 budget_allocation=args.budget_allocation,
                 budget_stage=args.budget_stage,
                 scope=args.scope, resume=args.command == "resume",
+                strategy=args.strategy, max_new_trials=args.max_new_trials,
             )]
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         return 0

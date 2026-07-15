@@ -1,12 +1,15 @@
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from codepacex.experiments import PermissionStrategy
+from evals.benchmark import RunRecorder
 from evals.goal2_studies import load_studies
 from evals.permission_study import (
-    dangerous_interception_fields, dry_run, grade_trace, profiles, scoped_tasks,
-    trace_usage,
+    _run_profile, build_manifest, dangerous_interception_fields, dry_run, grade_trace,
+    profiles, scoped_tasks, selected_profiles, trace_usage, validate_batch_limit,
 )
 
 
@@ -26,6 +29,74 @@ def test_permission_pilot_scope_pairs_one_safe_and_one_dangerous_task() -> None:
     tasks, repetitions = scoped_tasks(load_studies(STUDIES), scope="pilot")
     assert repetitions == 1
     assert [task.dangerous for task in tasks] == [False, True]
+
+
+def test_permission_batch_selection_preserves_the_frozen_strategy_coordinate() -> None:
+    studies = load_studies(STUDIES)
+    assert [item.permission_strategy.value for item in selected_profiles(
+        studies, strategy="explicit_rules",
+    )] == ["explicit_rules"]
+    assert len(selected_profiles(studies, strategy=None)) == 4
+    with pytest.raises(ValueError, match="unknown permission strategy"):
+        selected_profiles(studies, strategy="not-a-strategy")
+
+
+def test_permission_batch_limit_is_small_positive_or_unbounded() -> None:
+    assert validate_batch_limit(None) is None
+    assert validate_batch_limit(1) == 1
+    assert validate_batch_limit(5) == 5
+    for value in (0, 6):
+        with pytest.raises(ValueError, match="between 1 and 5"):
+            validate_batch_limit(value)
+
+
+def test_permission_batch_limit_stops_after_one_terminal_trial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    studies = load_studies(STUDIES)
+    profile = profiles(studies)[0]
+    recorder = RunRecorder(
+        tmp_path, build_manifest(
+            root=Path.cwd(), studies_path=STUDIES, studies=studies,
+            profile=profile, scope="formal",
+        ), run_id="permission-batch",
+    )
+
+    class FakeGate:
+        def trial_accounting(self, _trial_id: str) -> dict[str, object]:
+            return {
+                "budget_blocked": False, "budget_block_reasons": [],
+                "active_reservation": None, "request_count": 1,
+                "actual_cny": "0.001000",
+            }
+
+    first_task = studies.permission.tasks[0]
+    trace = "\n".join([
+        json.dumps({"type": "tool_use", "tool_name": first_task.tool, "tool_use_id": "tool-1"}),
+        json.dumps({
+            "type": "permission_decision", "tool_name": first_task.tool,
+            "tool_use_id": "tool-1", "final_effect": "deny", "executed": False,
+            "hitl_required": False,
+        }),
+        json.dumps({"type": "usage", "request_input_tokens": 10, "request_output_tokens": 1}),
+    ])
+    monkeypatch.setattr("evals.permission_study._child_environment", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr("evals.permission_study.provider_request_budget_environment", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        "evals.permission_study.subprocess.run",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout=trace, returncode=0),
+    )
+    assert _run_profile(
+        root=Path.cwd(), studies=studies, profile=profile, recorder=recorder,
+        gate=FakeGate(), scope="formal", max_new_trials=1,
+    ) == "cancelled"
+    assert recorder.terminal_trial_statuses() == {(first_task.id, "1"): "success"}
+    events = [json.loads(line) for line in (recorder.path / "events.jsonl").read_text().splitlines()]
+    assert events[-1] == {
+        "type": "batch_limit_reached", "max_new_trials": 1,
+        "completed_new_trials": 1, "scope": "formal", "schema_version": 2,
+        "timestamp": events[-1]["timestamp"],
+    }
 
 
 def test_permission_grader_rejects_dangerous_execution() -> None:
