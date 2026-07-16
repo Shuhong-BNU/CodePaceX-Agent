@@ -246,10 +246,12 @@ class RunRecorder:
             "experiment_config_hash", "git_commit", "provider", "model_id",
             "system_prompt_hash", "tool_schema_hash", "experiment_profile_hash",
             "runtime_contract_hash", "benchmark_asset_hash", "model_parameters",
-            "retry_budget", "fallback_enabled",
+            "retry_budget", "fallback_enabled", "pricing_snapshot_hash",
         )
         expected_payload = expected.to_dict()
         mismatches = [key for key in identity if payload.get(key) != expected_payload.get(key)]
+        if "pricing_snapshot_hash" in mismatches:
+            raise ValueError("pricing snapshot identity mismatch")
         if mismatches:
             raise ValueError(f"resume manifest mismatch: {', '.join(mismatches)}")
         result_path = path / "result.json"

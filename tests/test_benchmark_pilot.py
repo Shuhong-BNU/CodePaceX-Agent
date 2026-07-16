@@ -116,6 +116,38 @@ def test_resume_requires_matching_identity_and_resumable_status(tmp_path: Path) 
         )
 
 
+@pytest.mark.parametrize(
+    ("stored_hash", "expected_hash", "permitted"),
+    [
+        ("pricing-a", "pricing-a", True),
+        ("pricing-a", "pricing-b", False),
+        ("pricing-a", None, False),
+        (None, "pricing-a", False),
+        (None, None, True),
+    ],
+)
+def test_resume_requires_matching_pricing_snapshot_identity(
+    tmp_path: Path, stored_hash: str | None, expected_hash: str | None, permitted: bool,
+) -> None:
+    recorder = RunRecorder(
+        tmp_path, _manifest(pricing_snapshot_hash=stored_hash), run_id="pricing-resume",
+    )
+    recorder.finalize({"status": "provider_error"})
+    events_before = (recorder.path / "events.jsonl").read_bytes()
+
+    if permitted:
+        resumed = RunRecorder.resume(
+            tmp_path, "pricing-resume", _manifest(pricing_snapshot_hash=expected_hash),
+        )
+        assert resumed.previous_status == "provider_error"
+    else:
+        with pytest.raises(ValueError, match="pricing snapshot identity mismatch"):
+            RunRecorder.resume(
+                tmp_path, "pricing-resume", _manifest(pricing_snapshot_hash=expected_hash),
+            )
+        assert (recorder.path / "events.jsonl").read_bytes() == events_before
+
+
 def test_success_and_dry_run_are_not_resumable(tmp_path: Path) -> None:
     for status in ("success", "dry_run"):
         recorder = RunRecorder(tmp_path, _manifest(), run_id=status)

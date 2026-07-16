@@ -165,6 +165,34 @@ def recovery_rate_fields(status: str, *, recovery_probe: bool) -> dict[str, int]
     return {"numerator": int(status == "success"), "denominator": 1}
 
 
+def _aggregate_cycle_statuses(statuses: list[str], *, cycle_count: int) -> str:
+    if len(statuses) == cycle_count and all(item == "success" for item in statuses):
+        return "success"
+    if "budget_blocked" in statuses:
+        return "budget_blocked"
+    if "infrastructure_error" in statuses:
+        return "infrastructure_error"
+    return "task_failure"
+
+
+def _resumed_cycle_statuses(
+    recorder: RunRecorder, *, task_id: str, completed_cycle: int,
+) -> list[str]:
+    """Recover checkpointed cycle statuses, rejecting incomplete evidence."""
+    terminal = recorder.terminal_trial_statuses()
+    expected = [(task_id, str(cycle)) for cycle in range(1, completed_cycle + 1)]
+    expected_set = set(expected)
+    observed_set = set(terminal)
+    if observed_set != expected_set:
+        missing = sorted(expected_set - observed_set)
+        unexpected = sorted(observed_set - expected_set)
+        raise ValueError(
+            "long-session checkpoint/event cycle mismatch: "
+            f"missing={missing}, unexpected={unexpected}"
+        )
+    return [terminal[identity] for identity in expected]
+
+
 def _git_dirty(root: Path) -> bool | None:
     result = subprocess.run(
         ["git", "-C", str(root), "status", "--porcelain"],
@@ -364,6 +392,16 @@ def execute(
         completed_before = 0
         started_at = _utc_now()
         restart_completed = False
+    cycle_count = int(spec["cycle_count"])
+    if not 0 <= completed_before <= cycle_count:
+        raise ValueError("long-session checkpoint completed cycle is out of range")
+    historical_statuses = (
+        _resumed_cycle_statuses(
+            recorder, task_id=task_id, completed_cycle=completed_before,
+        ) if resume and completed_before else []
+    )
+    if resume and not latest and recorder.terminal_trial_statuses():
+        raise ValueError("long-session resume requires a checkpoint for terminal cycles")
     profile = frozen_profile()
     workspace = checkpoint_path.parent / f"{run_id}-workspace"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -372,7 +410,7 @@ def execute(
     # The client acquires and settles a ledger reservation for each Provider request.
     # Keep the supervisor outside the ledger lock while an in-process cycle runs.
     with nullcontext():
-        for cycle in range(next_cycle, int(spec["cycle_count"]) + 1):
+        for cycle in range(next_cycle, cycle_count + 1):
             recovery_probe = (
                 restart_completed
                 and cycle == int(spec["restart_after_cycle"]) + 1
@@ -440,7 +478,7 @@ def execute(
             })
             checkpoint_due = cycle % int(spec["checkpoint_every_cycles"]) == 0
             restart_due = cycle == int(spec["restart_after_cycle"]) and not restart_completed
-            if checkpoint_due or restart_due or cycle == int(spec["cycle_count"]):
+            if checkpoint_due or restart_due or cycle == cycle_count:
                 checkpoint = _write_checkpoint(checkpoint_path, {
                     "schema_version": 1, "run_id": run_id, "task_id": task_id,
                     "started_at": started_at, "checkpointed_at": _utc_now(),
@@ -474,12 +512,8 @@ def execute(
                     "task_id": task_id, "after_cycle": cycle,
                     "checkpoint_hash": latest["checkpoint_hash"],
                 })
-        aggregate = (
-            "success" if completed_before + len(statuses) == int(spec["cycle_count"])
-            and all(item == "success" for item in statuses)
-            else "budget_blocked" if "budget_blocked" in statuses
-            else "infrastructure_error" if "infrastructure_error" in statuses
-            else "task_failure"
+        aggregate = _aggregate_cycle_statuses(
+            [*historical_statuses, *statuses], cycle_count=cycle_count,
         )
         recorder.finalize({
             "status": aggregate, "execution_mode": "live",
