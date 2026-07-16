@@ -159,6 +159,42 @@ async def _run_prompt(
     *,
     experiment_profile: ExperimentProfile | None = None,
 ) -> None:
+    mcp_manager = None
+
+    def set_mcp_manager(manager) -> None:
+        nonlocal mcp_manager
+        mcp_manager = manager
+
+    try:
+        await _run_prompt_impl(
+            config,
+            permission_mode,
+            hook_engine,
+            prompt,
+            output_format,
+            experiment_profile=experiment_profile,
+            _set_mcp_manager=set_mcp_manager,
+        )
+    finally:
+        if mcp_manager is not None:
+            try:
+                await mcp_manager.shutdown()
+            except Exception:
+                logging.getLogger(__name__).debug(
+                    "Error shutting down MCP manager", exc_info=True,
+                )
+
+
+async def _run_prompt_impl(
+    config,
+    permission_mode,
+    hook_engine,
+    prompt: str,
+    output_format: str = "text",
+    *,
+    experiment_profile: ExperimentProfile | None = None,
+    _set_mcp_manager,
+) -> None:
     from codepacex.agent import (
         Agent,
         CompactNotification,
@@ -255,6 +291,7 @@ async def _run_prompt(
     mcp_instructions: list[str] = []
     if config.mcp_servers:
         mcp_manager = MCPManager()
+        _set_mcp_manager(mcp_manager)
         mcp_manager.load_configs(config.mcp_servers)
         connected = await mcp_manager.register_all_tools(
             registry,
@@ -264,7 +301,6 @@ async def _run_prompt(
             ),
         )
         if experiment_profile is not None and connected.errors:
-            await mcp_manager.shutdown()
             raise RuntimeError(
                 "benchmark MCP initialization failed: " + "; ".join(connected.errors)
             )
@@ -509,8 +545,6 @@ async def _run_prompt(
     # 如果有 team 在运行，轮询等待 teammate 完成
     if not team_manager._teams:
         emit_agent_experiment_summary()
-        if mcp_manager is not None:
-            await mcp_manager.shutdown()
         return
 
     for i in range(90):
@@ -537,8 +571,6 @@ async def _run_prompt(
             print(last_result, flush=True)
 
     emit_agent_experiment_summary()
-    if mcp_manager is not None:
-        await mcp_manager.shutdown()
 
 
 if __name__ == "__main__":

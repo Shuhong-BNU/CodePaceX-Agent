@@ -36,9 +36,16 @@ For a safe continuation boundary and exact non-rerun rules, see
 
 ## Verified MCP measurements
 
-The hash-pinned Trial cohort index is
-`mcp-formal-cohort-index.json` with SHA-256
+The hash-pinned Trial cohort index is `mcp-formal-cohort-index.json`. Its
+canonical content SHA-256 / evidence identity is
 `7a53933596b20d2933840e01f363800db7b981cc5ef66bd401ec0092e0ea4594`.
+As implemented by `load_mcp_cohort()` and `canonical_hash()` in
+`evals/mcp_cohort.py`, this identity is computed after removing the top-level,
+self-referential `sha256` field and canonicalizing the remaining JSON content.
+It is distinct from the full-file byte SHA-256 `fedda1d55f758addf2b2ade46849ec7afbf708270577e7b08138c20e19233da8`
+listed in the Artifact table below. Both values are reproducible and serve
+different integrity purposes; their difference does not indicate Artifact
+drift.
 The compiled cohort evidence verifies:
 
 | Measurement | Value |
