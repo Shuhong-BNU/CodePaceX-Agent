@@ -293,3 +293,25 @@ def test_runtime_and_permission_identity_is_scoped_to_trial_attempt(tmp_path: Pa
     recorder.capture_event({**permission, "task_id": "task-two"})
     with pytest.raises(ValueError, match="duplicate permission"):
         recorder.capture_event(permission)
+
+
+def test_budget_blocked_is_terminal_unscorable_and_not_resumable(tmp_path: Path) -> None:
+    recorder = RunRecorder(tmp_path, _manifest(), run_id="budget-blocked")
+    recorder.event("trial_started", {
+        "task_id": "one", "repetition_id": "1", "attempt_id": 1,
+    })
+    recorder.event("trial_completed", {
+        "task_id": "one", "repetition_id": "1", "attempt_id": 1,
+        "status": "budget_blocked", "budget_block_reasons": ["stage_limit"],
+        "actual_cny": "0.000000",
+    })
+    recorder.finalize({"status": "budget_blocked", "execution_mode": "live"})
+
+    result = json.loads((recorder.path / "result.json").read_text())
+    assert result["status"] == "budget_blocked"
+    assert result["scorable"] is False
+    assert result["unscorable_trial_count"] == 1
+    assert result["error_category_summary"] == {"budget_blocked": 1}
+    assert recorder.terminal_trial_statuses() == {("one", "1"): "budget_blocked"}
+    with pytest.raises(ValueError, match="not resumable: budget_blocked"):
+        RunRecorder.resume(tmp_path, "budget-blocked", _manifest())

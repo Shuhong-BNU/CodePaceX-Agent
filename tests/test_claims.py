@@ -10,6 +10,7 @@ from evals.benchmark import RunManifest, RunRecorder
 from codepacex.experiments import ExperimentProfile, combined_runtime_hash
 from evals.claims import (
     ClaimDocument,
+    _rate_trials,
     claims_schema,
     compile_claims,
     nearest_rank_p95,
@@ -288,6 +289,16 @@ def test_rate_uses_pooled_numerator_and_denominator(tmp_path: Path) -> None:
     assert claim["status"] == "verified"
     assert claim["generated_value"] == pytest.approx(10 / 12)
     assert claim["generated_value"] != pytest.approx((0.5 + 0.9) / 2)
+
+
+def test_budget_blocked_trial_is_excluded_from_capability_rate_denominator(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "events.jsonl").write_text(json.dumps({
+        "type": "trial_completed", "task_id": "blocked", "repetition_id": "1",
+        "status": "budget_blocked", "numerator": 0, "denominator": 1,
+    }) + "\n", encoding="utf-8")
+    assert _rate_trials(run) == {}
 
 
 def test_ab_requires_exact_pairs_and_explicit_runtime_difference(tmp_path: Path) -> None:

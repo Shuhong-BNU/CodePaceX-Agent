@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from codepacex.experiments import ExperimentProfile
 from evals.benchmark import RunManifest, RunRecorder, canonical_hash, current_git_commit, sanitize_origin
 from evals.costing import load_pricing
-from evals.paid_gate import PaidRunGate, billable_request_usage
+from evals.paid_gate import PaidRunGate, billable_request_usage, provider_request_budget_environment
 
 FROZEN_PROVIDER = "bailian-qwen37-max"
 FROZEN_PROTOCOL = "openai-compat"
@@ -42,6 +42,7 @@ _PROXY_NAMES = {
 _EXIT_CODES = {
     "success": 0, "dry_run": 0, "task_failure": 1, "configuration_error": 2,
     "timeout": 3, "provider_error": 3, "infrastructure_error": 3, "cancelled": 3,
+    "budget_blocked": 3,
 }
 
 
@@ -241,6 +242,7 @@ def _write_validated_provider_config(config: PilotConfig, path: Path) -> None:
 def _aggregate_status(statuses: list[str]) -> str:
     for status in (
         "configuration_error", "provider_error", "timeout", "infrastructure_error",
+        "budget_blocked",
         "task_failure",
     ):
         if status in statuses:
@@ -442,25 +444,25 @@ def _run_trials(
                     "--experiment-profile", str(profile_path),
                 ]
                 started = time.monotonic()
-                reservation = gate.reserve(
-                    f"pilot/{recorder.run_id}/{task_id}/{repetition}/{attempt_id}",
-                    maximum_requests=config.max_iterations,
+                trial_id = f"pilot/{recorder.run_id}/{task_id}/{repetition}/{attempt_id}"
+                request_environment = dict(env)
+                request_environment.update(provider_request_budget_environment(
+                    gate, trial_id=trial_id,
                     maximum_input_tokens_per_request=128_000,
                     maximum_output_tokens_per_request=(
                         config.model_parameters.max_output_tokens or 8192
                     ),
-                )
+                ))
                 recorder.event("trial_started", {
                     "task_id": task_id, "repetition_id": str(repetition),
                     "attempt_id": attempt_id,
-                    "budget_reservation_id": reservation.reservation_id,
+                    "budget_mode": "per_provider_request",
                 })
                 requests = 0
                 input_tokens = 0
                 output_tokens = 0
-                request_usages: list[tuple[int, int]] = []
                 try:
-                    process = subprocess.run(command, cwd=root, env=env, text=True, capture_output=True, timeout=config.timeout_seconds)
+                    process = subprocess.run(command, cwd=root, env=request_environment, text=True, capture_output=True, timeout=config.timeout_seconds)
                     status = _suite_status(report_dir, task_id, process.returncode)
                     evidence = _trial_evidence(report_dir, task_id)
                     if evidence:
@@ -468,9 +470,6 @@ def _run_trials(
                     stdout_chunks.append(process.stdout or "")
                     stderr_chunks.append(process.stderr or "")
                     for trace_path in report_dir.glob("*/**/trace.ndjson"):
-                        request_usages.extend(trace_request_usages(
-                            trace_path.read_text(encoding="utf-8"),
-                        ))
                         usage = _ingest_trace(
                             recorder, trace_path, task_id, str(repetition), attempt_id,
                         )
@@ -487,7 +486,18 @@ def _run_trials(
                 except (ValueError, json.JSONDecodeError) as exc:
                     status = "infrastructure_error"
                     stderr_chunks.append(f"trace ingestion failed: {exc}")
-                if requests == 0:
+                accounting = gate.trial_accounting(trial_id)
+                if accounting["budget_blocked"]:
+                    recorder.event("trial_completed", {
+                        "task_id": task_id, "repetition_id": str(repetition),
+                        "attempt_id": attempt_id, "status": "budget_blocked",
+                        "duration_seconds": time.monotonic() - started,
+                        "budget_block_reasons": accounting["budget_block_reasons"],
+                        "actual_cny": accounting["actual_cny"],
+                    })
+                    statuses.append("budget_blocked")
+                    break
+                if accounting["active_reservation"] is not None or requests == 0 or accounting["request_count"] != requests:
                     ambiguous_status = status if status == "timeout" else "infrastructure_error"
                     recorder.event("trial_completed", {
                         "task_id": task_id, "repetition_id": str(repetition),
@@ -497,9 +507,6 @@ def _run_trials(
                     })
                     statuses.append(ambiguous_status)
                     break
-                settlement = gate.settle(
-                    reservation, request_usages=request_usages,
-                )
                 statuses.append(status)
                 recorder.event("trial_completed", {
                     "task_id": task_id,
@@ -507,9 +514,9 @@ def _run_trials(
                     "attempt_id": attempt_id,
                     "status": status,
                     "duration_seconds": time.monotonic() - started,
-                    "actual_cny": str(settlement.actual_cny),
+                    "actual_cny": accounting["actual_cny"],
                 })
-            if statuses and statuses[-1] in {"infrastructure_error", "timeout"}:
+            if statuses and statuses[-1] in {"infrastructure_error", "timeout", "budget_blocked"}:
                 break
     if stdout_chunks:
         recorder.write_artifact("stdout.txt", "\n".join(_as_text(item) for item in stdout_chunks))
@@ -540,8 +547,7 @@ def execute(
     # The only live backend deliberately reuses the deterministic 6-task harness.
     # Tests mock this subprocess; this module never calls it during dry-run or CI.
     try:
-        with gate.locked():
-            statuses = _run_trials(config, root, recorder, gate)
+        statuses = _run_trials(config, root, recorder, gate)
         provider_requests = _provider_request_count(recorder)
         recorder.finalize({
             "status": _aggregate_status(statuses), "execution_mode": "live",
@@ -576,8 +582,7 @@ def resume(
         secrets=_runtime_secrets(config),
     )
     try:
-        with gate.locked():
-            statuses = _run_trials(config, root, recorder, gate)
+        statuses = _run_trials(config, root, recorder, gate)
         status = _aggregate_status(statuses) if statuses else (
             recorder.previous_status or "infrastructure_error"
         )
@@ -634,6 +639,7 @@ def main(argv: list[str] | None = None) -> int:
                 ledger_path=args.budget_ledger,
                 pricing=load_pricing(args.pricing_snapshot),
                 stage=args.budget_stage,
+                pricing_path=args.pricing_snapshot,
             )
         if args.command == "resume":
             if not args.run_id:

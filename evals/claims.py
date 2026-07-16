@@ -14,7 +14,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from codepacex.experiments import ExperimentProfile, combined_runtime_hash
-from evals.benchmark import RUN_ID_RE, canonical_hash, reduction_percent
+from evals.benchmark import RUN_ID_RE, SCORABLE_STATUSES, canonical_hash, reduction_percent
 
 REGISTERED_METRICS = {
     "provider_input_tokens",
@@ -502,6 +502,8 @@ def _successful_wall_trials(run: Path) -> dict[tuple[str, str], float]:
 def _rate_trials(run: Path) -> dict[tuple[str, str], tuple[float, float]]:
     values: dict[tuple[str, str], tuple[float, float]] = {}
     for key, event in _completed_trials(run).items():
+        if event.get("status") not in SCORABLE_STATUSES:
+            continue
         numerator, denominator = event.get("numerator"), event.get("denominator")
         if (
             isinstance(numerator, (int, float))

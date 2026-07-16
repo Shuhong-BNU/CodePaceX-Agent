@@ -18,17 +18,28 @@ from codepacex.experiments import combined_runtime_hash
 class _TestGate:
     def __init__(self):
         self.last_trial_id: str | None = None
+        self.lock_entries = 0
+        self.root = Path.cwd()
+        self.authorization_path = Path("/tmp/authorization.json")
+        self.ledger_path = Path("/tmp/ledger.json")
+        self.pricing_path = Path("/tmp/pricing.json")
+        self.stage = "A"
+        self.allocation_path = None
 
     @contextmanager
     def locked(self):
+        self.lock_entries += 1
         yield
 
-    def reserve(self, trial_id, *args, **kwargs):
+    def trial_accounting(self, trial_id: str) -> dict[str, object]:
         self.last_trial_id = trial_id
-        return SimpleNamespace(reservation_id="test-reservation")
-
-    def settle(self, *args, **kwargs):
-        return SimpleNamespace(actual_cny="0.000000")
+        return {
+            "budget_blocked": False,
+            "budget_block_reasons": [],
+            "active_reservation": None,
+            "request_count": 1,
+            "actual_cny": "0.000000",
+        }
 
 
 TEST_GATE = _TestGate()
@@ -194,6 +205,7 @@ def test_live_execute_is_mockable_and_child_env_excludes_other_provider_keys(tmp
     assert "SSH_AUTH_SOCK" not in captured["env"]
     assert captured["env"]["HTTPS_PROXY"].startswith("https://proxy-user")
     assert captured["env"]["PYTHONPATH"] == str(Path.cwd().resolve())
+    assert captured["env"]["CODEPACEX_EXPERIMENT_REQUEST_BUDGET"] == "1"
     all_output = "\n".join(
         path.read_text(encoding="utf-8", errors="replace")
         for path in recorder.path.rglob("*") if path.is_file()
@@ -208,10 +220,18 @@ def test_live_execute_is_mockable_and_child_env_excludes_other_provider_keys(tmp
     assert result["attempted_trial_count"] == 1
     assert result["completed_trial_count"] == 1
     assert result["unscorable_trial_count"] == 0
+    assert TEST_GATE.lock_entries == 0
     evidence = (recorder.path / "artifacts" / "test-output.txt").read_text()
     assert '"suite_status": "PASS"' in evidence
     assert "inner report" in evidence
     assert not (recorder.path / "artifacts" / "task-runs").exists()
+
+
+def test_pilot_fifty_iteration_ceiling_uses_request_bridge_not_trial_reservation() -> None:
+    source = Path(pilot.__file__).read_text(encoding="utf-8")
+    assert "maximum_requests=config.max_iterations" not in source
+    assert "provider_request_budget_environment(" in source
+    assert "with gate.locked():\n            statuses = _run_trials" not in source
 
 
 def test_resume_requires_a_resumable_matching_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

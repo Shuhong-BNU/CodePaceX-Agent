@@ -24,9 +24,10 @@ RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 RESULT_STATUSES = {
     "success", "task_failure", "timeout", "provider_error",
     "configuration_error", "infrastructure_error", "cancelled", "dry_run",
+    "budget_blocked",
 }
 SCORABLE_STATUSES = {"success", "task_failure"}
-RESUMABLE_STATUSES = RESULT_STATUSES - {"success", "dry_run"}
+RESUMABLE_STATUSES = RESULT_STATUSES - {"success", "dry_run", "budget_blocked"}
 OPTIONAL_JSON = {"usage.json"}
 OPTIONAL_STREAMS = {
     "permission-events.jsonl", "compression-events.jsonl", "runtime-events.jsonl",

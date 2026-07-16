@@ -22,7 +22,7 @@ from codepacex.experiments import ExperimentProfile
 from evals.benchmark import RunManifest, RunRecorder, canonical_hash, current_git_commit, sanitize_origin
 from evals.costing import load_pricing, pricing_snapshot_hash
 from evals.goal2_studies import load_studies
-from evals.paid_gate import PaidRunGate
+from evals.paid_gate import PaidRunGate, provider_request_budget_environment
 from evals.permission_study import trace_usage
 from evals.pilot import (
     _child_environment, _ingest_trace, _provider_payload, _runtime_secrets,
@@ -388,6 +388,7 @@ def execute(
         root=root, authorization_path=budget_authorization,
         ledger_path=budget_ledger, pricing=pricing, stage=budget_stage,
         allocation_path=budget_allocation,
+        pricing_path=pricing_snapshot,
     )
     manifest = build_manifest(
         root=root, matrix_path=matrix_path, matrix=matrix,
@@ -401,7 +402,7 @@ def execute(
     predictions: list[dict[str, Any]] = []
     pending: list[dict[str, Any]] = []
     profile = frozen_profile()
-    with gate.locked(), tempfile.TemporaryDirectory(prefix="codepacex-swe-home-") as home_text:
+    with tempfile.TemporaryDirectory(prefix="codepacex-swe-home-") as home_text:
         home = Path(home_text)
         _write_child_config(pilot=pilot, home=home)
         profile_path = home / "profile.yaml"
@@ -414,15 +415,16 @@ def execute(
             with tempfile.TemporaryDirectory(prefix=f"codepacex-swe-{instance_id}-") as text:
                 workspace = Path(text) / "repo"
                 materialize_instance(instance, workspace)
-                reservation = gate.reserve(
-                    f"swe/{stage}/{repeat_index}/{instance_id}",
-                    maximum_requests=MAXIMUM_REQUESTS_PER_INSTANCE,
+                trial_id = f"swe/{stage}/{repeat_index}/{instance_id}"
+                request_environment = dict(environment)
+                request_environment.update(provider_request_budget_environment(
+                    gate, trial_id=trial_id,
                     maximum_input_tokens_per_request=MAXIMUM_INPUT_TOKENS_PER_REQUEST,
                     maximum_output_tokens_per_request=MAXIMUM_OUTPUT_TOKENS_PER_REQUEST,
-                )
+                ))
                 recorder.event("trial_started", {
                     "task_id": instance_id, "repetition_id": str(repeat_index or 1),
-                    "attempt_id": 1, "budget_reservation_id": reservation.reservation_id,
+                    "attempt_id": 1, "budget_mode": "per_provider_request",
                 })
                 started = time.monotonic()
                 try:
@@ -431,7 +433,7 @@ def execute(
                             sys.executable, "-m", "codepacex", "-p",
                             inference_prompt(instance), "--output-format", "stream-json",
                             "--experiment-profile", str(profile_path),
-                        ], cwd=workspace, env=environment,
+                        ], cwd=workspace, env=request_environment,
                         text=True, capture_output=True, timeout=1800, check=False,
                     )
                 except subprocess.TimeoutExpired:
@@ -446,16 +448,25 @@ def execute(
                     })
                     return recorder
                 requests, input_tokens, output_tokens = trace_usage(process.stdout or "")
-                request_usages = trace_request_usages(process.stdout or "")
-                if requests == 0:
+                accounting = gate.trial_accounting(trial_id)
+                if accounting["budget_blocked"]:
+                    recorder.event("trial_completed", {
+                        "task_id": instance_id, "repetition_id": str(repeat_index or 1),
+                        "attempt_id": 1, "status": "budget_blocked",
+                        "budget_block_reasons": accounting["budget_block_reasons"],
+                        "actual_cny": accounting["actual_cny"],
+                    })
+                    recorder.finalize({
+                        "status": "budget_blocked", "execution_mode": "live",
+                        "official_evaluator_completed": False,
+                    })
+                    return recorder
+                if accounting["active_reservation"] is not None or requests == 0 or accounting["request_count"] != requests:
                     recorder.finalize({
                         "status": "infrastructure_error", "execution_mode": "live",
                         "official_evaluator_completed": False,
                     })
                     return recorder
-                settlement = gate.settle(
-                    reservation, request_usages=request_usages,
-                )
                 with tempfile.NamedTemporaryFile("w", suffix=".ndjson", encoding="utf-8") as trace:
                     trace.write(process.stdout or "")
                     trace.flush()
@@ -472,7 +483,7 @@ def execute(
                 pending.append({
                     "instance_id": instance_id,
                     "duration_seconds": time.monotonic() - started,
-                    "actual_cny": str(settlement.actual_cny),
+                    "actual_cny": accounting["actual_cny"],
                     "process_returncode": process.returncode,
                     "empty_patch": not bool(patch.strip()),
                 })

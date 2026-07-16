@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import time
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -25,7 +26,7 @@ from codepacex.tools import create_default_registry
 from evals.benchmark import RunManifest, RunRecorder, canonical_hash, current_git_commit, sanitize_origin
 from evals.costing import load_pricing, pricing_snapshot_hash
 from evals.goal2_studies import Goal2Studies, load_studies
-from evals.paid_gate import PaidRunGate, billable_request_usage
+from evals.paid_gate import PaidRunGate, billable_request_usage, provider_request_budget_scope
 from evals.pilot import _runtime_secrets, load_config as load_pilot_config
 
 MAXIMUM_INPUT_TOKENS_PER_REQUEST = 128_000
@@ -324,6 +325,7 @@ def execute(
         root=root, authorization_path=budget_authorization,
         ledger_path=budget_ledger, pricing=pricing, stage=budget_stage,
         allocation_path=budget_allocation,
+        pricing_path=pricing_snapshot,
     )
     manifest = build_manifest(
         root=root, studies_path=studies_path, studies=studies,
@@ -367,7 +369,9 @@ def execute(
     workspace.mkdir(parents=True, exist_ok=True)
     agent = _new_runtime(pilot=pilot, workspace=workspace, profile=profile)
     statuses: list[str] = []
-    with gate.locked():
+    # The client acquires and settles a ledger reservation for each Provider request.
+    # Keep the supervisor outside the ledger lock while an in-process cycle runs.
+    with nullcontext():
         for cycle in range(next_cycle, int(spec["cycle_count"]) + 1):
             recovery_probe = (
                 restart_completed
@@ -380,25 +384,25 @@ def execute(
             delay = due - time.time()
             if delay > 0:
                 time.sleep(delay)
-            reservation = gate.reserve(
-                f"long_session/{task_id}/cycle-{cycle}",
-                maximum_requests=int(spec["maximum_provider_requests_per_cycle"]),
-                maximum_input_tokens_per_request=MAXIMUM_INPUT_TOKENS_PER_REQUEST,
-                maximum_output_tokens_per_request=MAXIMUM_OUTPUT_TOKENS_PER_REQUEST,
-            )
+            trial_id = f"long_session/{task_id}/cycle-{cycle}"
             recorder.event("trial_started", {
                 "task_id": task_id, "repetition_id": str(cycle), "attempt_id": 1,
-                "budget_reservation_id": reservation.reservation_id,
+                "budget_mode": "per_provider_request",
                 "scheduled_at": datetime.fromtimestamp(due, timezone.utc).isoformat(),
             })
             started = time.monotonic()
             try:
-                status, grade, request_usages = asyncio.run(
-                    _run_cycle(
-                        agent=agent, conversation=conversation, recorder=recorder,
-                        task_id=task_id, cycle=cycle, marker=marker,
+                with provider_request_budget_scope(
+                    gate, trial_id=trial_id,
+                    maximum_input_tokens_per_request=MAXIMUM_INPUT_TOKENS_PER_REQUEST,
+                    maximum_output_tokens_per_request=MAXIMUM_OUTPUT_TOKENS_PER_REQUEST,
+                ):
+                    status, grade, request_usages = asyncio.run(
+                        _run_cycle(
+                            agent=agent, conversation=conversation, recorder=recorder,
+                            task_id=task_id, cycle=cycle, marker=marker,
+                        )
                     )
-                )
             except Exception as exc:
                 recorder.event("trial_completed", {
                     "task_id": task_id, "repetition_id": str(cycle), "attempt_id": 1,
@@ -408,14 +412,29 @@ def execute(
                 })
                 statuses.append("infrastructure_error")
                 break
-            settlement = gate.settle(
-                reservation, request_usages=request_usages,
-            )
+            accounting = gate.trial_accounting(trial_id)
+            if accounting["budget_blocked"]:
+                recorder.event("trial_completed", {
+                    "task_id": task_id, "repetition_id": str(cycle), "attempt_id": 1,
+                    "status": "budget_blocked",
+                    "budget_block_reasons": accounting["budget_block_reasons"],
+                    "actual_cny": accounting["actual_cny"],
+                })
+                statuses.append("budget_blocked")
+                break
+            if accounting["active_reservation"] is not None or accounting["request_count"] != len(request_usages):
+                recorder.event("trial_completed", {
+                    "task_id": task_id, "repetition_id": str(cycle), "attempt_id": 1,
+                    "status": "infrastructure_error",
+                    "budget_reconciliation_required": True,
+                })
+                statuses.append("infrastructure_error")
+                break
             statuses.append(status)
             recorder.event("trial_completed", {
                 "task_id": task_id, "repetition_id": str(cycle), "attempt_id": 1,
                 "status": status, "duration_seconds": time.monotonic() - started,
-                "actual_cny": str(settlement.actual_cny), "grade": grade,
+                "actual_cny": accounting["actual_cny"], "grade": grade,
                 "post_restart_recovery_probe": recovery_probe,
                 **recovery_rate_fields(status, recovery_probe=recovery_probe),
             })
@@ -458,6 +477,7 @@ def execute(
         aggregate = (
             "success" if completed_before + len(statuses) == int(spec["cycle_count"])
             and all(item == "success" for item in statuses)
+            else "budget_blocked" if "budget_blocked" in statuses
             else "infrastructure_error" if "infrastructure_error" in statuses
             else "task_failure"
         )

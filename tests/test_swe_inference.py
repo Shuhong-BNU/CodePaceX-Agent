@@ -1,4 +1,5 @@
 import json
+import inspect
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -14,6 +15,7 @@ from evals.swe_inference import (
     official_evaluator_preflight,
     stage_instance_ids,
 )
+import evals.swe_inference as swe_inference
 
 
 OFFICIAL_ENVIRONMENT = Path("evals/goal2/swe_official_environment.json")
@@ -110,3 +112,10 @@ def test_preflight_rejects_wrong_installed_official_revision(tmp_path: Path) -> 
     assert result["official_evaluator_module_available"] is True
     assert result["evaluator_revision_matches"] is False
     assert result["official_evaluator_available"] is False
+
+
+def test_swe_request_ceiling_uses_child_request_bridge_not_trial_reservation() -> None:
+    source = inspect.getsource(swe_inference.execute)
+    assert "maximum_requests=MAXIMUM_REQUESTS_PER_INSTANCE" not in source
+    assert "provider_request_budget_environment(" in source
+    assert "with gate.locked()" not in source

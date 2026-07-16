@@ -1,4 +1,5 @@
 import json
+import inspect
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from evals.long_session_study import (
     strict_cycle_grade,
     validate_checkpoint_chain,
 )
+import evals.long_session_study as long_session_study
 from evals.benchmark import RunManifest, RunRecorder
 from codepacex.experiments import combined_runtime_hash
 
@@ -95,3 +97,10 @@ def test_long_session_dry_run_is_not_real_wall_clock_evidence(tmp_path: Path) ->
     )
     result = json.loads((recorder.path / "result.json").read_text())
     assert result["status"] == "dry_run" and result["scorable"] is False
+
+
+def test_long_session_uses_in_process_request_bridge_without_parent_lock() -> None:
+    source = inspect.getsource(long_session_study.execute)
+    assert "maximum_requests=int(spec[\"maximum_provider_requests_per_cycle\"])" not in source
+    assert "provider_request_budget_scope(" in source
+    assert "with gate.locked()" not in source
