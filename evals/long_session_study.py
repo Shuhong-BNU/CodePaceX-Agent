@@ -33,6 +33,11 @@ MAXIMUM_INPUT_TOKENS_PER_REQUEST = 128_000
 MAXIMUM_OUTPUT_TOKENS_PER_REQUEST = 8192
 
 
+def budget_trial_id(*, run_id: str, task_id: str, cycle: int) -> str:
+    """Return the run-scoped accounting identity for one long-session cycle."""
+    return f"long_session/{run_id}/{task_id}/cycle-{cycle}"
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -422,7 +427,9 @@ def execute(
             delay = due - time.time()
             if delay > 0:
                 time.sleep(delay)
-            trial_id = f"long_session/{task_id}/cycle-{cycle}"
+            trial_id = budget_trial_id(
+                run_id=recorder.run_id, task_id=task_id, cycle=cycle,
+            )
             recorder.event("trial_started", {
                 "task_id": task_id, "repetition_id": str(cycle), "attempt_id": 1,
                 "budget_mode": "per_provider_request",

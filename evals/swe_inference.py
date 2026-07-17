@@ -137,6 +137,13 @@ def stage_instance_ids(
     return ids
 
 
+def budget_trial_id(
+    *, run_id: str, stage: str, repeat_index: int | None, instance_id: str,
+) -> str:
+    """Return the run-scoped accounting identity for one SWE inference task."""
+    return f"swe/{run_id}/{stage}/{repeat_index or 1}/{instance_id}"
+
+
 def load_official_environment(path: Path = DEFAULT_OFFICIAL_ENVIRONMENT) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
@@ -415,7 +422,10 @@ def execute(
             with tempfile.TemporaryDirectory(prefix=f"codepacex-swe-{instance_id}-") as text:
                 workspace = Path(text) / "repo"
                 materialize_instance(instance, workspace)
-                trial_id = f"swe/{stage}/{repeat_index}/{instance_id}"
+                trial_id = budget_trial_id(
+                    run_id=recorder.run_id, stage=stage,
+                    repeat_index=repeat_index, instance_id=instance_id,
+                )
                 request_environment = dict(environment)
                 request_environment.update(provider_request_budget_environment(
                     gate, trial_id=trial_id,

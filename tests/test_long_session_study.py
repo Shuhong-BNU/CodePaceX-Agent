@@ -12,6 +12,7 @@ from evals.long_session_study import (
     _aggregate_cycle_statuses,
     _resumed_cycle_statuses,
     _write_checkpoint,
+    budget_trial_id,
     dry_run,
     frozen_profile,
     load_latest_checkpoint,
@@ -26,6 +27,13 @@ from codepacex.experiments import combined_runtime_hash
 
 
 STUDIES = Path("evals/goal2/studies.yaml")
+
+
+def test_budget_trial_id_is_run_scoped_and_resume_stable() -> None:
+    first = budget_trial_id(run_id="run-a", task_id="formal-1", cycle=2)
+    assert first == "long_session/run-a/formal-1/cycle-2"
+    assert first == budget_trial_id(run_id="run-a", task_id="formal-1", cycle=2)
+    assert first != budget_trial_id(run_id="run-b", task_id="formal-1", cycle=2)
 
 
 def test_long_session_schedule_freezes_all_four_real_sessions() -> None:

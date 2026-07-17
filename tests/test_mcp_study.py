@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import sys
 
@@ -7,6 +8,7 @@ from codepacex.config import MCPServerConfig
 from codepacex.mcp.client import MCPClient
 
 from evals.mcp_study import (
+    MCPTask,
     dry_run,
     execute,
     grade_trace,
@@ -85,22 +87,67 @@ def test_mcp_dry_run_creates_two_unscorable_v2_arm_manifests(tmp_path: Path) -> 
         assert result["status"] == "dry_run" and result["scorable"] is False
 
 
-def test_trace_grader_requires_exact_mcp_tool_set_and_answer() -> None:
+def _trace(tools: list[str], answer: str) -> str:
+    events = [{"type": "tool_use", "tool_name": tool} for tool in tools]
+    events.append({"type": "result", "result": answer})
+    return "\n".join(json.dumps(event) for event in events)
+
+
+def test_trace_grader_requires_exact_mcp_tool_multiset_and_answer() -> None:
     _, manifest = load_study(STUDY)
     task = next(task for task in manifest.tasks if task.id == "mcp_one_01")
-    valid = "\n".join([
-        '{"type":"tool_use","tool_name":"ToolSearch"}',
-        '{"type":"tool_use","tool_name":"mcp_fixture_tool_01"}',
-        '{"type":"result","result":"tool_01:one-01"}',
-    ])
+    valid = _trace(["ToolSearch", "mcp_fixture_tool_01"], "tool_01:one-01")
     passed, grade = grade_trace(task, valid)
-    assert passed and grade["answer_match"] is True
+    assert passed and grade["tools_match"] is True and grade["answer_match"] is True
 
-    unexpected = valid.replace(
-        '{"type":"result"',
-        '{"type":"tool_use","tool_name":"mcp_fixture_tool_02"}\n{"type":"result"',
+    unexpected = _trace(
+        ["mcp_fixture_tool_01", "mcp_fixture_tool_01"], "tool_01:one-01",
     )
-    assert grade_trace(task, unexpected)[0] is False
+    passed, grade = grade_trace(task, unexpected)
+    assert not passed and grade["tools_match"] is False and grade["answer_match"] is True
+
+
+def test_trace_grader_accepts_reordered_calls_and_repeated_expected_tools() -> None:
+    task = MCPTask(
+        id="multiplicity", category="multi_mcp", prompt="fixture",
+        expected_tools=["mcp_fixture_tool_01", "mcp_fixture_tool_01"],
+        expected_answer="tool_01:one-01|tool_01:one-01",
+    )
+    passed, grade = grade_trace(
+        task,
+        _trace(["mcp_fixture_tool_01", "mcp_fixture_tool_01"], "tool_01:one-01"),
+    )
+    assert passed and grade["observed_mcp_tools"] == task.expected_tools
+
+    reordered = task.model_copy(update={
+        "expected_tools": ["mcp_fixture_tool_01", "mcp_fixture_tool_02"],
+        "expected_answer": "tool_01:one-01|tool_02:one-02",
+    })
+    assert grade_trace(
+        reordered,
+        _trace(["mcp_fixture_tool_02", "mcp_fixture_tool_01"], "tool_01:one-01 tool_02:one-02"),
+    )[0]
+
+
+@pytest.mark.parametrize("tools", [
+    [],
+    ["mcp_fixture_tool_02"],
+    ["mcp_fixture_tool_01", "mcp_fixture_tool_02"],
+])
+def test_trace_grader_rejects_missing_or_different_mcp_calls(tools: list[str]) -> None:
+    _, manifest = load_study(STUDY)
+    task = next(task for task in manifest.tasks if task.id == "mcp_one_01")
+    passed, grade = grade_trace(task, _trace(tools, "tool_01:one-01"))
+    assert not passed and grade["tools_match"] is False and grade["answer_match"] is True
+
+
+def test_trace_grader_keeps_no_mcp_answer_matching_strict() -> None:
+    task = MCPTask(
+        id="no-tools", category="no_mcp", prompt="fixture",
+        expected_tools=[], expected_answer="exact",
+    )
+    assert grade_trace(task, _trace([], "exact"))[0]
+    assert not grade_trace(task, _trace([], "exact plus"))[0]
 
 
 def test_paid_execute_is_blocked_without_confirmation_or_key(

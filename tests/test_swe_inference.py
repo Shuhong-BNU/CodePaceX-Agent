@@ -8,6 +8,7 @@ import pytest
 
 from evals.swe_bench_live import select_formal_instances, select_pilot_instances, select_repeated_subset
 from evals.swe_inference import (
+    budget_trial_id,
     collect_official_outcomes,
     freeze_matrix,
     load_validated_matrix,
@@ -19,6 +20,19 @@ import evals.swe_inference as swe_inference
 
 
 OFFICIAL_ENVIRONMENT = Path("evals/goal2/swe_official_environment.json")
+
+
+def test_budget_trial_id_is_run_scoped() -> None:
+    first = budget_trial_id(
+        run_id="run-a", stage="formal", repeat_index=None, instance_id="instance-1",
+    )
+    assert first == "swe/run-a/formal/1/instance-1"
+    assert first != budget_trial_id(
+        run_id="run-b", stage="formal", repeat_index=None, instance_id="instance-1",
+    )
+    assert first != budget_trial_id(
+        run_id="run-a", stage="formal", repeat_index=2, instance_id="instance-1",
+    )
 
 
 def _patch(count: int) -> str:

@@ -56,8 +56,6 @@ class MCPTask(BaseModel):
         low, high = expected[self.category]
         if not low <= len(self.expected_tools) <= high:
             raise ValueError(f"{self.category} task has an invalid MCP tool count")
-        if len(self.expected_tools) != len(set(self.expected_tools)):
-            raise ValueError("task repeats an expected MCP tool")
         if any(not name.startswith("mcp_fixture_tool_") for name in self.expected_tools):
             raise ValueError("task references a tool outside the controlled fixture")
         return self
@@ -248,7 +246,9 @@ def grade_trace(task: MCPTask, trace_text: str) -> tuple[bool, dict[str, Any]]:
     results = [event for event in events if event.get("type") == "result"]
     answer = str(results[-1].get("result", "")) if results else ""
     required_answers = task.expected_answer.split("|")
-    tools_match = set(observed_mcp) == set(task.expected_tools)
+    # MCP tool order is not part of the study contract, but every expected call
+    # must occur exactly once per declared occurrence.
+    tools_match = Counter(observed_mcp) == Counter(task.expected_tools)
     answer_match = (
         answer.strip() == task.expected_answer
         if task.category == "no_mcp"
@@ -258,6 +258,7 @@ def grade_trace(task: MCPTask, trace_text: str) -> tuple[bool, dict[str, Any]]:
     return passed, {
         "expected_tools": task.expected_tools,
         "observed_mcp_tools": observed_mcp,
+        "tools_match": tools_match,
         "answer_match": answer_match,
         "result_event_count": len(results),
     }
@@ -346,7 +347,8 @@ def _run_arm(
                     except subprocess.TimeoutExpired:
                         status, grade = "timeout", {
                             "expected_tools": task.expected_tools,
-                            "observed_mcp_tools": [], "answer_match": False,
+                            "observed_mcp_tools": [], "tools_match": False,
+                            "answer_match": False,
                             "result_event_count": 0,
                         }
                         recorder.event("trial_completed", {
@@ -358,7 +360,8 @@ def _run_arm(
                     except (OSError, ValueError, json.JSONDecodeError):
                         status, grade = "infrastructure_error", {
                             "expected_tools": task.expected_tools,
-                            "observed_mcp_tools": [], "answer_match": False,
+                            "observed_mcp_tools": [], "tools_match": False,
+                            "answer_match": False,
                             "result_event_count": 0,
                         }
                         recorder.event("trial_completed", {

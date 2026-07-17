@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from evals.costing import load_pricing, pricing_snapshot_hash
+from evals.long_session_study import budget_trial_id as long_session_trial_id
 from evals.paid_gate import (
     BudgetAuthorization,
     BudgetLedger,
@@ -19,6 +20,7 @@ from evals.paid_gate import (
     rebind_ledger_authorization,
     worst_case_reservation,
 )
+from evals.swe_inference import budget_trial_id as swe_trial_id
 
 
 PRICING_PATH = Path("evals/goal2/pricing_bailian_qwen37_max_2026-07-13.json")
@@ -528,3 +530,30 @@ def test_run_scoped_trial_ids_do_not_mix_request_accounting(tmp_path: Path) -> N
             gate.settle(reservation, request_usages=[(1, 1)])
     assert gate.trial_accounting("mcp/run-a/eager/task/1")["request_count"] == 1
     assert gate.trial_accounting("mcp/run-b/eager/task/1")["request_count"] == 1
+
+
+@pytest.mark.parametrize("trial_ids", [
+    (
+        long_session_trial_id(run_id="run-a", task_id="formal-1", cycle=1),
+        long_session_trial_id(run_id="run-b", task_id="formal-1", cycle=1),
+    ),
+    (
+        swe_trial_id(run_id="run-a", stage="formal", repeat_index=None, instance_id="one-01"),
+        swe_trial_id(run_id="run-b", stage="formal", repeat_index=None, instance_id="one-01"),
+    ),
+])
+def test_run_scoped_study_trial_ids_do_not_mix_request_accounting(
+    tmp_path: Path, trial_ids: tuple[str, str],
+) -> None:
+    gate = _gate(tmp_path)
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ):
+        for trial_id in trial_ids:
+            reservation = gate.reserve(
+                trial_id, maximum_requests=1,
+                maximum_input_tokens_per_request=1000,
+                maximum_output_tokens_per_request=500,
+            )
+            gate.settle(reservation, request_usages=[(1, 1)])
+    assert all(gate.trial_accounting(trial_id)["request_count"] == 1 for trial_id in trial_ids)
