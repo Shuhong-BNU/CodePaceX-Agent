@@ -348,8 +348,9 @@ class RunRecorder:
         """Return a stable attempt scope without changing provider request IDs.
 
         ``request_index`` and ``tool_use_id`` are local to an Agent process.  A
-        Pilot starts one process per trial, so Recorder-level uniqueness must be
-        scoped to the task, repetition, and attempt that emitted the event.
+        Pilot starts one process per trial, and a foreground child Agent shares
+        that trial's stream-json trace, so runtime uniqueness is also scoped by
+        an optional child Agent identity.
         Older artifacts without ``attempt_id`` are treated as their first
         attempt for backwards-compatible inspection.
         """
@@ -390,11 +391,17 @@ class RunRecorder:
             request_index = payload.get("request_index")
             if not isinstance(request_index, int) or request_index < 1:
                 raise ValueError("runtime manifest requires a positive request_index")
+            child_agent_id = payload.get("child_agent_id")
+            if child_agent_id is not None and (
+                not isinstance(child_agent_id, str) or not child_agent_id
+            ):
+                raise ValueError("runtime manifest child_agent_id must be a non-empty string")
             identity = self._attempt_identity(payload)
             previous = self._jsonl_records("runtime-events.jsonl")
             if any(
                 self._attempt_identity(item) == identity
                 and item.get("request_index") == request_index
+                and item.get("child_agent_id") == child_agent_id
                 for item in previous
             ):
                 raise ValueError(f"duplicate runtime request index: {request_index}")

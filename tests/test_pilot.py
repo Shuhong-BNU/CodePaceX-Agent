@@ -277,6 +277,66 @@ def test_trace_ingestion_preserves_explicit_tools_bytes_for_claims(tmp_path: Pat
     assert claims._runtime_tool_schema_trials(recorder.path) == {("task", "1"): 1234.0}
 
 
+def test_trace_ingestion_persists_child_runtime_manifests_without_duplicate_usage(tmp_path: Path) -> None:
+    config = pilot.load_config(config_file(tmp_path))
+    recorder = RunRecorder(tmp_path / "runs", pilot.build_manifest(config, Path.cwd()), run_id="children")
+    trace = tmp_path / "trace.ndjson"
+    parent_runtime = _runtime_event(config, 1, tools_bytes=789)
+    parent_usage = {
+        "type": "usage", "request_index": 1,
+        "input_tokens": 10, "output_tokens": 4,
+        "request_input_tokens": 10, "request_output_tokens": 4,
+    }
+    child_one = {
+        **_runtime_event(config, 1, tools_bytes=123),
+        "child_agent_id": "child-one",
+    }
+    child_two = {
+        **_runtime_event(config, 2, tools_bytes=456),
+        "child_agent_id": "child-two",
+    }
+    trace.write_text("\n".join(json.dumps(event) for event in (
+        parent_runtime,
+        parent_usage,
+        {"type": "experiment_agent_summary", "child_request_usages": [{
+            "input_tokens": 8, "output_tokens": 2,
+        }], "child_runtime_manifests": [child_one, child_two]},
+    )))
+
+    assert pilot._ingest_trace(recorder, trace, "task", "1", 1) == (1, 10, 4)
+    records = [
+        json.loads(line)
+        for line in (recorder.path / "runtime-events.jsonl").read_text().splitlines()
+    ]
+    assert [(item.get("child_agent_id"), item["request_index"], item["tools_bytes"])
+            for item in records] == [(None, 1, 789), ("child-one", 1, 123), ("child-two", 2, 456)]
+    assert all(item["tools_sha256"] == "tools" for item in records)
+    assert all(item["combined_runtime_hash"] == child_one["combined_runtime_hash"] for item in records)
+    usage_records = json.loads((recorder.path / "usage.json").read_text())["requests"]
+    assert len(usage_records) == 1
+
+
+def test_trace_ingestion_rejects_malformed_child_runtime_telemetry(tmp_path: Path) -> None:
+    config = pilot.load_config(config_file(tmp_path))
+    trace = tmp_path / "trace.ndjson"
+    for index, child_manifests in enumerate((
+        {"not": "a-list"},
+        [{"type": "not-a-runtime-manifest"}],
+        [{**_runtime_event(config, 1), "tools_bytes": "not-an-int"}],
+        [{**_runtime_event(config, 1), "child_agent_id": ""}],
+    ), start=1):
+        recorder = RunRecorder(
+            tmp_path / "runs", pilot.build_manifest(config, Path.cwd()), run_id=f"bad-child-{index}",
+        )
+        trace.write_text(json.dumps({
+            "type": "experiment_agent_summary",
+            "child_runtime_manifests": child_manifests,
+        }))
+        with pytest.raises(ValueError, match="child runtime manifest|tools_bytes|child_agent_id"):
+            pilot._ingest_trace(recorder, trace, "task", "1", 1)
+        assert not (recorder.path / "runtime-events.jsonl").exists()
+
+
 def test_trace_ingestion_does_not_default_or_accept_invalid_tools_bytes(tmp_path: Path) -> None:
     config = pilot.load_config(config_file(tmp_path))
     missing = RunRecorder(tmp_path / "runs", pilot.build_manifest(config, Path.cwd()), run_id="missing")

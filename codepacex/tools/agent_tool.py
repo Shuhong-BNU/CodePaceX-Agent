@@ -39,6 +39,25 @@ def _billable_request_usage(event: dict[str, Any]) -> tuple[int, int]:
     return input_tokens, output_tokens
 
 
+def _capture_foreground_child_event(
+    event: dict[str, Any],
+    request_usages: list[tuple[int, int]],
+    runtime_manifests: list[dict[str, Any]],
+) -> bool:
+    """Persist only the child telemetry needed by the parent trace summary.
+
+    Returns whether *event* is one actual child tool invocation.  Usage remains
+    separate because the Multi-Agent runner already accounts for child usage
+    through ``child_request_usages``; runtime manifests add provenance only.
+    """
+    event_type = event.get("type")
+    if event_type == "usage":
+        request_usages.append(_billable_request_usage(event))
+    elif event_type == "runtime_manifest":
+        runtime_manifests.append(dict(event))
+    return event_type == "tool_use"
+
+
 # 核心实现
 class AgentToolParams(BaseModel):
     prompt: str
@@ -269,10 +288,15 @@ class AgentTool(Tool):
 
         # 前台同步执行
         request_usages: list[tuple[int, int]] = []
+        runtime_manifests: list[dict[str, Any]] = []
+        child_tool_call_count = 0
 
         def capture_usage(event: dict[str, Any]) -> None:
-            if event.get("type") == "usage":
-                request_usages.append(_billable_request_usage(event))
+            nonlocal child_tool_call_count
+            if _capture_foreground_child_event(
+                event, request_usages, runtime_manifests,
+            ):
+                child_tool_call_count += 1
 
         try:
             if is_fork:
@@ -295,7 +319,8 @@ class AgentTool(Tool):
             output_tokens=sum(item[1] for item in request_usages),
             request_count=sub_agent._runtime_request_index,
             request_usages=request_usages,
-            tool_call_count=sub_agent._loop_count,
+            runtime_manifests=runtime_manifests,
+            tool_call_count=child_tool_call_count,
         )
         self._trace_manager.complete(trace_node.agent_id, "completed")
 

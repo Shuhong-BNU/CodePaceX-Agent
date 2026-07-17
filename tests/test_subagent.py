@@ -30,6 +30,7 @@ from codepacex.agents.task_manager import BackgroundTask, TaskManager
 from codepacex.agents.notification import format_task_notification, inject_task_notifications
 from codepacex.conversation import ConversationManager, Message, ToolResultBlock, ToolUseBlock
 from codepacex.tools import ToolRegistry
+from codepacex.tools.agent_tool import _capture_foreground_child_event
 from codepacex.tools.base import Tool, ToolResult
 
 # =====================================================================
@@ -485,10 +486,17 @@ class TestTraceManager:
         tm = TraceManager()
         completed = tm.create("worker", parent_id="lead")
         failed = tm.create("worker", parent_id="lead")
+        child_runtime_manifest = {
+            "type": "runtime_manifest", "request_index": 2,
+            "system_sha256": "system", "tools_sha256": "tools",
+            "experiment_profile_hash": "profile",
+            "runtime_contract_hash": "contract",
+            "combined_runtime_hash": "combined", "tools_bytes": 321,
+        }
         tm.update(
             completed.agent_id, input_tokens=100, output_tokens=25,
             request_count=3, request_usages=[(30, 5), (30, 10), (40, 10)],
-            tool_call_count=2,
+            runtime_manifests=[child_runtime_manifest], tool_call_count=2,
         )
         tm.complete(completed.agent_id, "completed")
         tm.update(
@@ -510,9 +518,59 @@ class TestTraceManager:
                 {"input_tokens": 40, "output_tokens": 10},
                 {"input_tokens": 40, "output_tokens": 10},
             ],
+            "child_runtime_manifests": [{
+                **child_runtime_manifest, "child_agent_id": completed.agent_id,
+            }],
             "child_tool_call_count": 2,
             "maximum_parallel_children": 2,
         }
+
+    @pytest.mark.parametrize(
+        ("event_types", "expected_tool_calls"),
+        [([], 0), (["tool_use"], 1), (["tool_use", "usage", "tool_use", "tool_use"], 3)],
+    )
+    def test_foreground_child_callback_counts_actual_tool_events(
+        self, event_types: list[str], expected_tool_calls: int,
+    ) -> None:
+        request_usages: list[tuple[int, int]] = []
+        runtime_manifests: list[dict[str, object]] = []
+        child_tool_calls = sum(
+            _capture_foreground_child_event(
+                {
+                    "type": event_type,
+                    "request_input_tokens": 7,
+                    "request_output_tokens": 3,
+                },
+                request_usages,
+                runtime_manifests,
+            )
+            for event_type in event_types
+        )
+
+        assert child_tool_calls == expected_tool_calls
+        assert request_usages == ([(7, 3)] if "usage" in event_types else [])
+        assert runtime_manifests == []
+
+    def test_foreground_child_callback_keeps_runtime_manifests_separate_from_usage(self):
+        request_usages: list[tuple[int, int]] = []
+        runtime_manifests: list[dict[str, object]] = []
+        manifest = {
+            "type": "runtime_manifest", "request_index": 2,
+            "system_sha256": "child-system", "tools_sha256": "child-tools",
+            "experiment_profile_hash": "profile", "runtime_contract_hash": "contract",
+            "combined_runtime_hash": "combined", "tools_bytes": 456,
+        }
+
+        assert not _capture_foreground_child_event(manifest, request_usages, runtime_manifests)
+        assert not _capture_foreground_child_event(
+            {"type": "usage", "request_input_tokens": 5, "request_output_tokens": 2},
+            request_usages,
+            runtime_manifests,
+        )
+
+        assert request_usages == [(5, 2)]
+        assert runtime_manifests == [manifest]
+        assert runtime_manifests[0] is not manifest
 
     def test_get_nonexistent(self):
         tm = TraceManager()

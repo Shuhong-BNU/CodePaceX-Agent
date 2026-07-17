@@ -300,6 +300,32 @@ def _ingest_trace(
     requests = 0
     input_tokens = 0
     output_tokens = 0
+
+    def capture_runtime_manifest(event: dict[str, Any]) -> None:
+        runtime_event = {
+            "type": "runtime_manifest",
+            "request_index": event.get("request_index"),
+            "provider": event.get("provider"),
+            "protocol": event.get("protocol"),
+            "model_id": event.get("model_id"),
+            "system_sha256": event.get("system_sha256"),
+            "tools_sha256": event.get("tools_sha256"),
+            "messages_sha256": event.get("messages_sha256"),
+            "experiment_profile_hash": event.get("experiment_profile_hash"),
+            "runtime_contract_hash": event.get("runtime_contract_hash"),
+            "combined_runtime_hash": event.get("combined_runtime_hash"),
+            "task_id": task_id, "repetition_id": repetition_id,
+            "attempt_id": attempt_id,
+        }
+        if "child_agent_id" in event:
+            runtime_event["child_agent_id"] = event["child_agent_id"]
+        if "tools_bytes" in event:
+            tools_bytes = event["tools_bytes"]
+            if isinstance(tools_bytes, bool) or not isinstance(tools_bytes, int) or tools_bytes < 0:
+                raise ValueError("runtime manifest tools_bytes must be a non-negative integer")
+            runtime_event["tools_bytes"] = tools_bytes
+        recorder.capture_event(runtime_event)
+
     for line in lines:
         try:
             event = json.loads(line)
@@ -327,27 +353,20 @@ def _ingest_trace(
                 "attempt_id": attempt_id,
             })
         elif event.get("type") == "runtime_manifest":
-            runtime_event = {
-                "type": "runtime_manifest",
-                "request_index": event.get("request_index"),
-                "provider": event.get("provider"),
-                "protocol": event.get("protocol"),
-                "model_id": event.get("model_id"),
-                "system_sha256": event.get("system_sha256"),
-                "tools_sha256": event.get("tools_sha256"),
-                "messages_sha256": event.get("messages_sha256"),
-                "experiment_profile_hash": event.get("experiment_profile_hash"),
-                "runtime_contract_hash": event.get("runtime_contract_hash"),
-                "combined_runtime_hash": event.get("combined_runtime_hash"),
-                "task_id": task_id, "repetition_id": repetition_id,
-                "attempt_id": attempt_id,
-            }
-            if "tools_bytes" in event:
-                tools_bytes = event["tools_bytes"]
-                if isinstance(tools_bytes, bool) or not isinstance(tools_bytes, int) or tools_bytes < 0:
-                    raise ValueError("runtime manifest tools_bytes must be a non-negative integer")
-                runtime_event["tools_bytes"] = tools_bytes
-            recorder.capture_event(runtime_event)
+            capture_runtime_manifest(event)
+        elif event.get("type") == "experiment_agent_summary":
+            child_manifests = event.get("child_runtime_manifests")
+            if child_manifests is None:
+                continue
+            if not isinstance(child_manifests, list):
+                raise ValueError("child runtime manifests must be a list")
+            for child_manifest in child_manifests:
+                if (
+                    not isinstance(child_manifest, dict)
+                    or child_manifest.get("type") != "runtime_manifest"
+                ):
+                    raise ValueError("child runtime manifest must be a runtime_manifest object")
+                capture_runtime_manifest(child_manifest)
         elif event.get("type") == "permission_decision":
             recorder.capture_event({
                 "type": "permission_decision",
