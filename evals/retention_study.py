@@ -27,7 +27,8 @@ from evals.benchmark import RunManifest, RunRecorder, canonical_hash, current_gi
 from evals.costing import load_pricing, pricing_snapshot_hash
 from evals.goal2_studies import Goal2Studies, load_studies, retention_canaries
 from evals.paid_gate import (
-    PaidRunGate, billable_request_usage, provider_request_budget_scope,
+    PaidRunGate, ProviderUsageUnknown, billable_request_usage,
+    provider_request_budget_scope,
 )
 from evals.pilot import _provider_payload, _runtime_secrets, load_config as load_pilot_config
 
@@ -400,7 +401,8 @@ def execute(
                             context_window=studies.retention.context_window,
                             recorder=recorder, task_id=task_id,
                         ))
-            except RetentionUsageIncomplete as exc:
+            except (RetentionUsageIncomplete, ProviderUsageUnknown) as exc:
+                incomplete_usage = isinstance(exc, RetentionUsageIncomplete)
                 try:
                     settlement = gate.conservatively_settle_active_trial_unknown_usage(
                         trial_id=trial_id,
@@ -417,8 +419,11 @@ def execute(
                         "budget_reconciliation_required": True,
                         "error_category": type(exc).__name__,
                         "reconciliation_error_category": type(reconciliation_exc).__name__,
-                        "runtime_request_count": exc.request_count,
-                        "usage_event_count": exc.usage_count,
+                        "provider_usage_unknown": True,
+                        **({
+                            "runtime_request_count": exc.request_count,
+                            "usage_event_count": exc.usage_count,
+                        } if incomplete_usage else {}),
                     })
                 else:
                     accounting = gate.trial_accounting(trial_id)
@@ -427,14 +432,17 @@ def execute(
                         "status": "infrastructure_error",
                         "duration_seconds": time.monotonic() - started,
                         "error_category": type(exc).__name__,
-                        "runtime_request_count": exc.request_count,
-                        "usage_event_count": exc.usage_count,
+                        "provider_usage_unknown": True,
                         "budget_reconciled_conservatively": True,
                         "actual_cny": accounting["actual_cny"],
                         "provider_request_count": accounting["request_count"],
                         "settlement_reservation_id": settlement.reservation_id,
                         "usage_unknown": accounting["usage_unknown"],
                         "claim_exclusion_reason": accounting["claim_exclusion_reason"],
+                        **({
+                            "runtime_request_count": exc.request_count,
+                            "usage_event_count": exc.usage_count,
+                        } if incomplete_usage else {}),
                     })
                 statuses.append("infrastructure_error")
                 break

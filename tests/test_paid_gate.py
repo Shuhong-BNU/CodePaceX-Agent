@@ -446,6 +446,12 @@ def test_active_trial_unknown_usage_reconciliation_cannot_target_another_trial(t
     assert settlement.status == "conservative_settled"
     assert ledger.active_reservation is None
     assert not ledger.request_charges
+    with pytest.raises(ValueError, match="does not belong"):
+        gate.conservatively_settle_active_trial_unknown_usage(
+            trial_id=reservation.trial_id, evidence_gap="duplicate settlement",
+        )
+    ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
+    assert len(ledger.settlements) == 1
 
 
 def test_conservative_settlement_debits_stage_c_category_before_next_request(tmp_path: Path) -> None:
