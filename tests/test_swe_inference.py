@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from evals.swe_bench_live import select_formal_instances, select_pilot_instances, select_repeated_subset
+from evals.benchmark import RunManifest, RunRecorder
 from evals.swe_inference import (
     budget_trial_id,
     collect_official_outcomes,
@@ -133,3 +134,50 @@ def test_swe_request_ceiling_uses_child_request_bridge_not_trial_reservation() -
     assert "maximum_requests=MAXIMUM_REQUESTS_PER_INSTANCE" not in source
     assert "provider_request_budget_environment(" in source
     assert "with gate.locked()" not in source
+
+
+@pytest.mark.parametrize(
+    ("trace_count", "accounting", "reason"), [
+        (0, {"request_count": 0, "active_reservation": None, "usage_unknown": False, "actual_cny": "0.000000"}, "missing_trace_usage"),
+        (1, {"request_count": 1, "active_reservation": {"reservation_id": "reserved"}, "usage_unknown": False, "actual_cny": "0.000000"}, "active_reservation"),
+        (1, {"request_count": 2, "active_reservation": None, "usage_unknown": False, "actual_cny": "0.000001"}, "request_count_mismatch"),
+    ],
+)
+def test_swe_reconciliation_failure_records_one_terminal_trial(
+    tmp_path: Path, trace_count: int, accounting: dict[str, object], reason: str,
+) -> None:
+    recorder = RunRecorder(
+        tmp_path, RunManifest(experiment_kind="swe_bench_live"), run_id=f"reconcile-{reason}",
+    )
+    recorder.event("trial_started", {"task_id": "instance", "repetition_id": "1", "attempt_id": 1})
+    swe_inference._record_reconciliation_failure(
+        recorder, instance_id="instance", repeat_index=0, trial_id="swe/run/pilot/1/instance",
+        duration_seconds=1.0, trace_request_count=trace_count,
+        accounting=accounting, reason=reason,
+    )
+    recorder.finalize({"status": "infrastructure_error", "execution_mode": "live"})
+    events = [json.loads(line) for line in (recorder.path / "events.jsonl").read_text().splitlines()]
+    completed = [event for event in events if event["type"] == "trial_completed"]
+    assert len(completed) == 1
+    assert completed[0]["status"] == "infrastructure_error"
+    assert completed[0]["budget_reconciliation_required"] is True
+    assert completed[0]["reconciliation_reason"] == reason
+    result = json.loads((recorder.path / "result.json").read_text())
+    assert result["completed_trial_count"] == 1
+    assert not (recorder.path / "usage.json").exists()
+
+
+def test_swe_evaluator_failure_closes_each_pending_trial(tmp_path: Path) -> None:
+    recorder = RunRecorder(
+        tmp_path, RunManifest(experiment_kind="swe_bench_live"), run_id="evaluator-failure",
+    )
+    pending = []
+    for instance_id in ("one", "two"):
+        recorder.event("trial_started", {"task_id": instance_id, "repetition_id": "1", "attempt_id": 1})
+        pending.append({"instance_id": instance_id, "duration_seconds": 1.0, "actual_cny": "0.000001"})
+    swe_inference._complete_pending_evaluator_failure(
+        recorder, pending, repeat_index=0, reason="official_evaluator_failed",
+    )
+    recorder.finalize({"status": "infrastructure_error", "execution_mode": "live"})
+    result = json.loads((recorder.path / "result.json").read_text())
+    assert result["completed_trial_count"] == 2

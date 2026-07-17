@@ -144,6 +144,47 @@ def budget_trial_id(
     return f"swe/{run_id}/{stage}/{repeat_index or 1}/{instance_id}"
 
 
+def _record_reconciliation_failure(
+    recorder: RunRecorder, *, instance_id: str, repeat_index: int,
+    trial_id: str, duration_seconds: float, trace_request_count: int,
+    accounting: dict[str, Any], reason: str,
+) -> None:
+    """Persist an auditable terminal event without changing ledger evidence."""
+    payload: dict[str, Any] = {
+        "task_id": instance_id, "repetition_id": str(repeat_index or 1),
+        "attempt_id": 1, "status": "infrastructure_error",
+        "duration_seconds": duration_seconds,
+        "budget_reconciliation_required": True,
+        "trial_id": trial_id,
+        "trace_request_count": trace_request_count,
+        "ledger_request_count": accounting["request_count"],
+        "reconciliation_reason": reason,
+    }
+    active = accounting.get("active_reservation")
+    if isinstance(active, dict) and isinstance(active.get("reservation_id"), str):
+        payload["active_reservation_id"] = active["reservation_id"]
+    if not accounting.get("usage_unknown"):
+        payload["actual_cny"] = accounting["actual_cny"]
+    recorder.event("trial_completed", payload)
+
+
+def _complete_pending_evaluator_failure(
+    recorder: RunRecorder, pending: list[dict[str, Any]], *, repeat_index: int,
+    reason: str,
+) -> None:
+    """Close inference trials when the later official evaluator cannot finish."""
+    for trial in pending:
+        recorder.event("trial_completed", {
+            "task_id": trial["instance_id"],
+            "repetition_id": str(repeat_index or 1), "attempt_id": 1,
+            "status": "infrastructure_error",
+            "duration_seconds": trial["duration_seconds"],
+            "actual_cny": trial["actual_cny"],
+            "official_evaluator_completed": False,
+            "failure_reason": reason,
+        })
+
+
 def load_official_environment(path: Path = DEFAULT_OFFICIAL_ENVIRONMENT) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
@@ -472,6 +513,17 @@ def execute(
                     })
                     return recorder
                 if accounting["active_reservation"] is not None or requests == 0 or accounting["request_count"] != requests:
+                    if accounting["active_reservation"] is not None:
+                        reason = "active_reservation"
+                    elif requests == 0:
+                        reason = "missing_trace_usage"
+                    else:
+                        reason = "request_count_mismatch"
+                    _record_reconciliation_failure(
+                        recorder, instance_id=instance_id, repeat_index=repeat_index,
+                        trial_id=trial_id, duration_seconds=time.monotonic() - started,
+                        trace_request_count=requests, accounting=accounting, reason=reason,
+                    )
                     recorder.finalize({
                         "status": "infrastructure_error", "execution_mode": "live",
                         "official_evaluator_completed": False,
@@ -515,24 +567,56 @@ def execute(
         predictions_path = recorder.path / "predictions.json"
         report_dir = recorder.path / "evaluation_results"
         report_dir.mkdir()
-        evaluator = run_official_evaluator(
-            dataset_name=str(matrix["dataset_name"]), split=str(matrix["split"]),
-            predictions_path=predictions_path, instance_ids=ids, max_workers=1,
-            run_id=run_id, namespace=str(matrix["evaluator_namespace"]),
-            report_dir=report_dir, cwd=recorder.path,
-            evaluator_architecture=selected_evaluator_architecture(),
-        )
+        try:
+            evaluator = run_official_evaluator(
+                dataset_name=str(matrix["dataset_name"]), split=str(matrix["split"]),
+                predictions_path=predictions_path, instance_ids=ids, max_workers=1,
+                run_id=run_id, namespace=str(matrix["evaluator_namespace"]),
+                report_dir=report_dir, cwd=recorder.path,
+                evaluator_architecture=selected_evaluator_architecture(),
+            )
+        except (OSError, ValueError) as exc:
+            _complete_pending_evaluator_failure(
+                recorder, pending, repeat_index=repeat_index,
+                reason="official_evaluator_exception",
+            )
+            recorder.event("execution_error", {
+                "category": "infrastructure_error", "message": str(exc),
+            })
+            recorder.finalize({
+                "status": "infrastructure_error", "execution_mode": "live",
+                "official_evaluator_completed": False,
+            })
+            return recorder
         recorder.write_artifact(
             "test-output.txt", (evaluator.stdout or "") + "\n" + (evaluator.stderr or ""),
         )
         if evaluator.returncode != 0:
+            _complete_pending_evaluator_failure(
+                recorder, pending, repeat_index=repeat_index,
+                reason="official_evaluator_failed",
+            )
             recorder.finalize({
                 "status": "infrastructure_error", "execution_mode": "live",
                 "official_evaluator_completed": False,
                 "official_evaluator_returncode": evaluator.returncode,
             })
             return recorder
-        outcomes = collect_official_outcomes(recorder.path, set(ids))
+        try:
+            outcomes = collect_official_outcomes(recorder.path, set(ids))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            _complete_pending_evaluator_failure(
+                recorder, pending, repeat_index=repeat_index,
+                reason="official_evaluator_outcomes_incomplete",
+            )
+            recorder.event("execution_error", {
+                "category": "infrastructure_error", "message": str(exc),
+            })
+            recorder.finalize({
+                "status": "infrastructure_error", "execution_mode": "live",
+                "official_evaluator_completed": False,
+            })
+            return recorder
         for trial in pending:
             instance_id = str(trial["instance_id"])
             resolved = outcomes[instance_id]

@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codepacex.experiments import ExperimentProfile
 from evals.benchmark import RunManifest, RunRecorder, canonical_hash, current_git_commit, sanitize_origin
-from evals.costing import load_pricing
+from evals.costing import load_pricing, pricing_snapshot_hash
 from evals.paid_gate import PaidRunGate, billable_request_usage, provider_request_budget_environment
 
 FROZEN_PROVIDER = "bailian-qwen37-max"
@@ -178,6 +178,15 @@ def build_manifest(config: PilotConfig, root: Path, *, run_id: str = "") -> RunM
     )
 
 
+def _paid_manifest(
+    config: PilotConfig, root: Path, *, run_id: str, gate: PaidRunGate,
+) -> RunManifest:
+    """Bind a paid Pilot manifest to the Gate's validated pricing snapshot."""
+    manifest = build_manifest(config, root, run_id=run_id)
+    manifest.pricing_snapshot_hash = pricing_snapshot_hash(gate.pricing)
+    return manifest
+
+
 def dry_run(config: PilotConfig, root: Path, runs_dir: Path, run_id: str | None = None) -> RunRecorder:
     recorder = RunRecorder(runs_dir, build_manifest(config, root, run_id=run_id or ""), run_id=run_id, repo_root=root)
     recorder.event("dry_run", {
@@ -318,7 +327,7 @@ def _ingest_trace(
                 "attempt_id": attempt_id,
             })
         elif event.get("type") == "runtime_manifest":
-            recorder.capture_event({
+            runtime_event = {
                 "type": "runtime_manifest",
                 "request_index": event.get("request_index"),
                 "provider": event.get("provider"),
@@ -332,7 +341,13 @@ def _ingest_trace(
                 "combined_runtime_hash": event.get("combined_runtime_hash"),
                 "task_id": task_id, "repetition_id": repetition_id,
                 "attempt_id": attempt_id,
-            })
+            }
+            if "tools_bytes" in event:
+                tools_bytes = event["tools_bytes"]
+                if isinstance(tools_bytes, bool) or not isinstance(tools_bytes, int) or tools_bytes < 0:
+                    raise ValueError("runtime manifest tools_bytes must be a non-negative integer")
+                runtime_event["tools_bytes"] = tools_bytes
+            recorder.capture_event(runtime_event)
         elif event.get("type") == "permission_decision":
             recorder.capture_event({
                 "type": "permission_decision",
@@ -541,7 +556,7 @@ def execute(
     ):
         return _configuration_error(config, root, runs_dir, run_id)
     recorder = RunRecorder(
-        runs_dir, build_manifest(config, root, run_id=run_id or ""), run_id=run_id,
+        runs_dir, _paid_manifest(config, root, run_id=run_id or "", gate=gate), run_id=run_id,
         repo_root=root, secrets=_runtime_secrets(config),
     )
     # The only live backend deliberately reuses the deterministic 6-task harness.
@@ -578,7 +593,7 @@ def resume(
             "resume requires paid confirmation, tasks, API key, and budget authorization"
         )
     recorder = RunRecorder.resume(
-        runs_dir, run_id, build_manifest(config, root, run_id=run_id),
+        runs_dir, run_id, _paid_manifest(config, root, run_id=run_id, gate=gate),
         secrets=_runtime_secrets(config),
     )
     try:
