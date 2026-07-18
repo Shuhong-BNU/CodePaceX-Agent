@@ -267,6 +267,7 @@ def collect_official_outcomes(report_root: Path, required_ids: set[str]) -> dict
         for key, resolved in (
             ("resolved_ids", True), ("resolved_instances", True),
             ("unresolved_ids", False), ("unresolved_instances", False),
+            ("empty_patch_ids", False),
         ):
             values = payload.get(key)
             if isinstance(values, list):

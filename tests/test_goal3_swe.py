@@ -68,6 +68,13 @@ def test_preflight_rejects_wrong_evaluator_commit(monkeypatch: pytest.MonkeyPatc
     assert payload["valid"] is False
 
 
+def test_official_empty_patch_report_is_an_explicit_unresolved_outcome(tmp_path: Path) -> None:
+    (tmp_path / "official-report.json").write_text(
+        json.dumps({"empty_patch_ids": ["case"]}), encoding="utf-8",
+    )
+    assert goal3_swe.collect_official_outcomes(tmp_path, {"case"}) == {"case": False}
+
+
 @pytest.mark.parametrize(("control", "resolved"), [("empty", False), ("gold", True)])
 def test_controls_never_call_a_model_and_record_expected_outcome(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, control: str, resolved: bool,
