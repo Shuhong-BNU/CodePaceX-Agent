@@ -20,13 +20,21 @@ from pathlib import Path
 from typing import Any, Literal
 
 from evals.benchmark import RunManifest, RunRecorder, canonical_hash, current_git_commit
-from evals.swe_bench_live import load_jsonl, run_official_evaluator
+from evals.swe_bench_live import (
+    instance_payload_hash,
+    load_jsonl,
+    run_official_evaluator,
+    select_pilot_instances,
+)
 
 
 DEFAULT_ENVIRONMENT = Path("evals/goal3/swe_official_environment.json")
 DEFAULT_PILOT_TEMPLATE = Path("evals/goal3/pilot.template.json")
 DEFAULT_RUNS_DIR = Path("evals/.runs/goal3-swe")
 DEFAULT_CONTROL_RUNS_DIR = Path("evals/.runs/goal3-control")
+GOAL3_BUDGET_AUTHORIZATION = DEFAULT_CONTROL_RUNS_DIR / "budget-authorization.json"
+GOAL3_BUDGET_LEDGER = DEFAULT_CONTROL_RUNS_DIR / "budget-ledger.json"
+GOAL3_BUDGET_ALLOCATION = DEFAULT_CONTROL_RUNS_DIR / "budget-allocation.json"
 NATIVE_ARCHITECTURES = {"x86_64", "amd64"}
 QEMU_MARKERS = ("qemu", "tcg", "virtual cpu")
 ENVIRONMENT = {
@@ -81,6 +89,60 @@ def load_goal3_pilot_template(path: Path = DEFAULT_PILOT_TEMPLATE) -> dict[str, 
         raise ValueError("Goal 3 Pilot template requires no fallback, no retry, and serial execution")
     if payload["model_parameters"] != {"temperature": None, "top_p": None, "max_output_tokens": None}:
         raise ValueError("Goal 3 Pilot template has unrecognized model parameters")
+    return payload
+
+
+def goal3_budget_paths() -> dict[str, Path]:
+    """Name the future Goal 3 accounting files without creating any of them."""
+    return {
+        "authorization": GOAL3_BUDGET_AUTHORIZATION,
+        "ledger": GOAL3_BUDGET_LEDGER,
+        "allocation": GOAL3_BUDGET_ALLOCATION,
+    }
+
+
+def freeze_pilot_config(
+    *, dataset_jsonl: Path, output: Path, dataset_revision: str,
+    provider: str, model_id: str, model_parameters: dict[str, Any],
+    pricing_snapshot_hash: str,
+) -> dict[str, Any]:
+    """Freeze three official instances only after real execution inputs are known.
+
+    This creates configuration metadata, not an authorization, allocation, ledger,
+    prediction, Claim, or Provider request.
+    """
+    if not all(isinstance(value, str) and value.strip() for value in (
+        dataset_revision, provider, model_id,
+    )):
+        raise ValueError("Goal 3 Pilot freeze requires explicit dataset, Provider, and model identities")
+    if not re.fullmatch(r"[0-9a-f]{64}", pricing_snapshot_hash):
+        raise ValueError("Goal 3 Pilot freeze requires an explicit pricing snapshot hash")
+    if set(model_parameters) != {"temperature", "top_p", "max_output_tokens"}:
+        raise ValueError("Goal 3 Pilot freeze has unrecognized model parameters")
+    selected = select_pilot_instances(load_jsonl(dataset_jsonl))
+    instance_ids = [str(item["instance_id"]) for item in selected]
+    if len(instance_ids) != 3 or len(set(instance_ids)) != 3:
+        raise ValueError("Goal 3 Pilot freeze requires exactly three unique instances")
+    payload = {
+        "schema_version": 1,
+        "status": "frozen",
+        "experiment_kind": "goal3-swe-bench-live-pilot",
+        "provider": provider,
+        "model_id": model_id,
+        "dataset_revision": dataset_revision,
+        "pricing_snapshot_hash": pricing_snapshot_hash,
+        "instance_ids": instance_ids,
+        "instance_payload_hashes": {
+            str(instance["instance_id"]): instance_payload_hash(instance)
+            for instance in selected
+        },
+        "fallback_enabled": False,
+        "retry_budget": 0,
+        "serial": True,
+        "model_parameters": model_parameters,
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return payload
 
 

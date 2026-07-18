@@ -101,6 +101,45 @@ def test_goal3_manifest_and_default_paths_are_isolated(tmp_path: Path) -> None:
         goal3_swe.dry_run(root=tmp_path, runs_dir=tmp_path / "goal2-swe", run_id="bad")
 
 
+def _patch(file_count: int) -> str:
+    return "\n".join(
+        f"--- a/f{index}.py\n+++ b/f{index}.py\n@@ -1 +1 @@\n-a\n+b"
+        for index in range(file_count)
+    )
+
+
+def test_pilot_freeze_binds_three_fixed_official_instances_and_price_hash(tmp_path: Path) -> None:
+    dataset = tmp_path / "dataset.jsonl"
+    rows = [
+        {"instance_id": "one", "repo": "org/one", "platform": "linux", "patch": _patch(1)},
+        {"instance_id": "medium", "repo": "org/medium", "platform": "linux", "patch": _patch(3)},
+        {"instance_id": "large", "repo": "org/large", "platform": "linux", "patch": _patch(5)},
+    ]
+    dataset.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    output = tmp_path / "goal3" / "pilot.frozen.json"
+    payload = goal3_swe.freeze_pilot_config(
+        dataset_jsonl=dataset, output=output, dataset_revision="official-revision",
+        provider="verified-provider", model_id="verified-model",
+        model_parameters={"temperature": None, "top_p": None, "max_output_tokens": 8192},
+        pricing_snapshot_hash="a" * 64,
+    )
+    assert payload["status"] == "frozen"
+    assert payload["experiment_kind"] == "goal3-swe-bench-live-pilot"
+    assert payload["instance_ids"] == ["large", "medium", "one"]
+    assert set(payload["instance_payload_hashes"]) == set(payload["instance_ids"])
+    assert json.loads(output.read_text()) == payload
+
+
+def test_goal3_budget_paths_are_named_but_not_created() -> None:
+    paths = goal3_swe.goal3_budget_paths()
+    assert paths == {
+        "authorization": Path("evals/.runs/goal3-control/budget-authorization.json"),
+        "ledger": Path("evals/.runs/goal3-control/budget-ledger.json"),
+        "allocation": Path("evals/.runs/goal3-control/budget-allocation.json"),
+    }
+    assert not any(path.exists() for path in paths.values())
+
+
 def test_existing_goal3_run_is_not_overwritten(tmp_path: Path) -> None:
     runs_dir = tmp_path / "goal3-swe"
     goal3_swe.dry_run(root=tmp_path, runs_dir=runs_dir, run_id="existing")
