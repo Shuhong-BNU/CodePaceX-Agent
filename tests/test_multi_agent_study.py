@@ -166,7 +166,10 @@ def test_multi_agent_grader_preflight_is_zero_model_and_blocks_runtime_noise() -
     assert result["test_returncode"] == 0
     assert result["status"] == "GO"
     assert result["grade"]["exact_change_scope"] is True
-    assert result["grade"]["ignored_runtime_artifacts"] == [".codepacex/debug.log"]
+    assert ".codepacex/debug.log" in result["grade"]["ignored_runtime_artifacts"]
+    assert set(result["grade"]["ignored_runtime_artifacts"]) == set(
+        result["grade"]["ignored_runtime_artifact_reasons"]
+    )
 
 
 def test_multi_agent_success_rate_fields_count_every_formal_trial() -> None:
