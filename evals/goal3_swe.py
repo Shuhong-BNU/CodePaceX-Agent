@@ -341,6 +341,15 @@ def _instance(dataset_jsonl: Path, instance_id: str) -> dict[str, Any]:
     return matches[0]
 
 
+def write_control_instance(*, output: Path, instance: dict[str, Any], instance_id: str) -> None:
+    """Write one official dataset row for controls without changing its task data."""
+    if instance.get("instance_id") != instance_id:
+        raise ValueError("official control instance identity mismatch")
+    if not isinstance(instance.get("patch"), str):
+        raise ValueError("official control instance has no gold patch")
+    output.write_text(json.dumps(instance, default=str) + "\n", encoding="utf-8")
+
+
 def run_control(
     *, root: Path, dataset_jsonl: Path, instance_id: str,
     control: Literal["empty", "gold"], runs_dir: Path = DEFAULT_CONTROL_RUNS_DIR,

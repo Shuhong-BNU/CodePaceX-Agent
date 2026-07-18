@@ -65,9 +65,9 @@ jobs:
         run: |
           set -euo pipefail
           python - "$RUNNER_TEMP/goal3-control-instance.jsonl" <<'PY'
-          import json
           import sys
           from pathlib import Path
+          from evals.goal3_swe import write_control_instance
           from swebench.harness.utils import load_swebench_dataset
 
           instance_id = "amoffat__sh-744"
@@ -76,7 +76,9 @@ jobs:
           )
           if len(instances) != 1 or instances[0]["instance_id"] != instance_id:
               raise SystemExit("fixed control instance was not found in the official Lite dataset")
-          Path(sys.argv[1]).write_text(json.dumps(instances[0]) + "\n", encoding="utf-8")
+          write_control_instance(
+              output=Path(sys.argv[1]), instance=instances[0], instance_id=instance_id,
+          )
           print(instance_id)
           PY
 

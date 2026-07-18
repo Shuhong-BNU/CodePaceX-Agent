@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -73,6 +74,22 @@ def test_official_empty_patch_report_is_an_explicit_unresolved_outcome(tmp_path:
         json.dumps({"empty_patch_ids": ["case"]}), encoding="utf-8",
     )
     assert goal3_swe.collect_official_outcomes(tmp_path, {"case"}) == {"case": False}
+
+
+def test_control_instance_writer_preserves_the_official_patch_and_serializes_dates(tmp_path: Path) -> None:
+    path = tmp_path / "instance.jsonl"
+    goal3_swe.write_control_instance(
+        output=path,
+        instance={
+            "instance_id": "case", "patch": "diff --git a/a b/a\n",
+            "created_at": datetime(2026, 1, 2, tzinfo=timezone.utc),
+        },
+        instance_id="case",
+    )
+    payload = json.loads(path.read_text())
+    assert payload["instance_id"] == "case"
+    assert payload["patch"] == "diff --git a/a b/a\n"
+    assert payload["created_at"] == "2026-01-02 00:00:00+00:00"
 
 
 @pytest.mark.parametrize(("control", "resolved"), [("empty", False), ("gold", True)])
