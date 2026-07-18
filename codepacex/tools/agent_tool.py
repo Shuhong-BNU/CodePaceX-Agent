@@ -86,6 +86,61 @@ PERMISSION_MODE_MAP = {
 }
 
 
+def _child_permission_checker(
+    parent_agent: Agent, definition: Any, *, work_dir: str,
+) -> Any:
+    """Build an isolated child checker from the parent's effective profile.
+
+    An experiment profile changes the parent's permission policy at runtime,
+    rather than its agent-definition ``permissionMode``.  Preserve those
+    profile-controlled switches for every in-process child while keeping each
+    child checker (and its session approvals and path sandbox) independent.
+    Without a profile, preserve the existing definition-only child behaviour.
+    """
+    from codepacex.experiments import PermissionStrategy
+    from codepacex.permissions import (
+        DangerousCommandDetector,
+        PathSandbox,
+        PermissionChecker,
+        PermissionMode,
+        RuleEngine,
+    )
+
+    pm_enum = getattr(
+        PermissionMode,
+        PERMISSION_MODE_MAP.get(definition.permission_mode, "DEFAULT"),
+        PermissionMode.DEFAULT,
+    )
+    parent_checker = parent_agent.permission_checker
+    profile = parent_agent.experiment_profile
+    rule_engine = RuleEngine()
+    session_allow_all = False
+    sandbox_enabled = False
+
+    if profile is not None and parent_checker is not None:
+        # Explicit rules still win over a profile's preauthorization.  Clone
+        # the sources instead of sharing the checker's session-local state.
+        rule_engine = parent_checker.rule_engine.clone()
+        strategy = profile.permission_strategy
+        session_allow_all = (
+            strategy is PermissionStrategy.SESSION_ALLOW
+            and parent_checker.session_allow_all
+        )
+        sandbox_enabled = (
+            strategy is PermissionStrategy.SANDBOX_AUTO_ALLOW
+            and parent_checker.sandbox_enabled
+        )
+
+    return PermissionChecker(
+        detector=DangerousCommandDetector(),
+        sandbox=PathSandbox(work_dir),
+        rule_engine=rule_engine,
+        mode=pm_enum,
+        sandbox_enabled=sandbox_enabled,
+        session_allow_all=session_allow_all,
+    )
+
+
 TEAMMATE_ADDENDUM = (
     "\n\nIMPORTANT: You are running as an agent in a team.\n"
     "Just writing a response in text is not visible to others\n"
@@ -155,13 +210,6 @@ class AgentTool(Tool):
         from codepacex.agents.tool_filter import resolve_agent_tools
         from codepacex.agent import Agent as AgentClass
         from codepacex.conversation import ConversationManager
-        from codepacex.permissions import (
-            DangerousCommandDetector,
-            PathSandbox,
-            PermissionChecker,
-            PermissionMode,
-            RuleEngine,
-        )
 
         definition: AgentDef | None = None
         conversation: ConversationManager
@@ -220,17 +268,9 @@ class AgentTool(Tool):
         )
 
         # 为子 agent 创建权限检查器
-        pm_str = definition.permission_mode
-        pm_enum = getattr(
-            PermissionMode,
-            PERMISSION_MODE_MAP.get(pm_str, "DEFAULT"),
-            PermissionMode.DEFAULT,
-        )
-        checker = PermissionChecker(
-            detector=DangerousCommandDetector(),
-            sandbox=PathSandbox(self._parent_agent.work_dir),
-            rule_engine=RuleEngine(),
-            mode=pm_enum,
+        checker = _child_permission_checker(
+            self._parent_agent, definition,
+            work_dir=self._parent_agent.work_dir,
         )
 
         # 创建子 agent
@@ -337,13 +377,6 @@ class AgentTool(Tool):
         from codepacex.agents.tool_filter import build_teammate_tools
         from codepacex.agent import Agent as AgentClass
         from codepacex.conversation import ConversationManager
-        from codepacex.permissions import (
-            DangerousCommandDetector,
-            PathSandbox,
-            PermissionChecker,
-            PermissionMode,
-            RuleEngine,
-        )
         from codepacex.teams.models import BackendType, TeammateInfo
         from codepacex.teams.registry import AgentNameRegistry
 
@@ -442,11 +475,8 @@ class AgentTool(Tool):
         # 6. 创建子 agent 并附加队友专属指令
         instructions = (definition.system_prompt or "") + TEAMMATE_ADDENDUM
 
-        checker = PermissionChecker(
-            detector=DangerousCommandDetector(),
-            sandbox=PathSandbox(wt.path),
-            rule_engine=RuleEngine(),
-            mode=PermissionMode.BYPASS,
+        checker = _child_permission_checker(
+            self._parent_agent, definition, work_dir=wt.path,
         )
 
         sub_agent = AgentClass(
@@ -588,13 +618,6 @@ class AgentTool(Tool):
         from codepacex.agents.tool_filter import resolve_agent_tools
         from codepacex.agent import Agent as AgentClass
         from codepacex.conversation import ConversationManager
-        from codepacex.permissions import (
-            DangerousCommandDetector,
-            PathSandbox,
-            PermissionChecker,
-            PermissionMode,
-            RuleEngine,
-        )
         from codepacex.worktree.integration import (
             build_worktree_notice,
             generate_worktree_name,
@@ -640,17 +663,8 @@ class AgentTool(Tool):
             _base_registry, definition, False
         )
 
-        pm_str = definition.permission_mode
-        pm_enum = getattr(
-            PermissionMode,
-            PERMISSION_MODE_MAP.get(pm_str, "DEFAULT"),
-            PermissionMode.DEFAULT,
-        )
-        checker = PermissionChecker(
-            detector=DangerousCommandDetector(),
-            sandbox=PathSandbox(wt.path),
-            rule_engine=RuleEngine(),
-            mode=pm_enum,
+        checker = _child_permission_checker(
+            self._parent_agent, definition, work_dir=wt.path,
         )
 
         sub_agent = AgentClass(

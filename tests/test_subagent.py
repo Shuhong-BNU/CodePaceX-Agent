@@ -825,6 +825,227 @@ class TestAgentToolParams:
         assert params.name == "my-agent"
         assert params.isolation == "worktree"
 
+
+# =====================================================================
+# 11. Experiment profile permission propagation
+# =====================================================================
+
+def _permission_profile(strategy: str):
+    from codepacex.experiments import ExperimentProfile
+
+    return ExperimentProfile(
+        tool_loading="deferred", compression_profile="recovery_v1",
+        permission_strategy=strategy, agent_mode="multi",
+    )
+
+
+def _permission_parent(tmp_path: Path, *, profile, checker):
+    from codepacex.agent import Agent
+
+    return Agent(
+        client=MagicMock(), registry=make_registry("Bash"), protocol="anthropic",
+        work_dir=str(tmp_path), permission_checker=checker,
+        experiment_profile=profile,
+    )
+
+
+def _permission_checker(tmp_path: Path, *, session_allow_all: bool = False,
+                        sandbox_enabled: bool = False, rules=None):
+    from codepacex.permissions import (
+        DangerousCommandDetector, PathSandbox, PermissionChecker,
+        PermissionMode, RuleEngine,
+    )
+
+    return PermissionChecker(
+        DangerousCommandDetector(), PathSandbox(str(tmp_path)),
+        RuleEngine(project_rules_path=rules), PermissionMode.DEFAULT,
+        session_allow_all=session_allow_all, sandbox_enabled=sandbox_enabled,
+    )
+
+
+def _worker_definition(*, permission_mode: str = "acceptEdits") -> AgentDef:
+    return AgentDef(
+        agent_type="benchmark-worker", when_to_use="test", max_turns=1,
+        permission_mode=permission_mode, source="builtin",
+    )
+
+
+class TestChildExperimentPermissions:
+    @pytest.mark.parametrize(
+        ("strategy", "session_allow_all", "sandbox_enabled"),
+        [
+            ("default", False, False),
+            ("session_allow", True, False),
+            ("explicit_rules", False, False),
+            ("sandbox_auto_allow", False, True),
+        ],
+    )
+    def test_profiled_child_uses_parent_effective_strategy(
+        self, tmp_path: Path, strategy: str, session_allow_all: bool,
+        sandbox_enabled: bool,
+    ):
+        from codepacex.tools.agent_tool import _child_permission_checker
+
+        parent = _permission_parent(
+            tmp_path, profile=_permission_profile(strategy),
+            checker=_permission_checker(
+                tmp_path, session_allow_all=session_allow_all,
+                sandbox_enabled=sandbox_enabled,
+            ),
+        )
+        child = _child_permission_checker(
+            parent, _worker_definition(), work_dir=str(tmp_path),
+        )
+
+        assert child.mode.value == "acceptEdits"
+        assert child.session_allow_all is session_allow_all
+        assert child.sandbox_enabled is sandbox_enabled
+
+    def test_session_allow_foreground_child_allows_noninteractive_command(self, tmp_path: Path):
+        from codepacex.agents.task_manager import TaskManager
+        from codepacex.permissions import DangerousCommandDetector, PathSandbox, PermissionChecker, PermissionMode, RuleEngine
+        from codepacex.tools.agent_tool import AgentTool, AgentToolParams
+        from codepacex.agents.trace import TraceManager
+
+        profile = _permission_profile("session_allow")
+        parent = _permission_parent(tmp_path, profile=profile, checker=PermissionChecker(
+            DangerousCommandDetector(), PathSandbox(str(tmp_path)), RuleEngine(),
+            PermissionMode.DEFAULT, session_allow_all=True,
+        ))
+        loader = MagicMock()
+        loader.get.return_value = _worker_definition()
+        children = []
+
+        async def capture_child(self, *_args, **_kwargs):
+            children.append(self)
+            return "done"
+
+        tool = AgentTool(loader, TaskManager(), TraceManager(), parent)
+        with patch("codepacex.agent.Agent.run_to_completion", capture_child):
+            result = asyncio.run(tool.execute(AgentToolParams(
+                prompt="run echo", description="test", subagent_type="benchmark-worker",
+            )))
+
+        assert not result.is_error
+        assert len(children) == 1
+        child = children[0]
+        assert child.experiment_profile is profile
+        assert child.permission_checker.session_allow_all is True
+        from codepacex.agent import RuntimeManifestEvent
+        manifest = child._index_runtime_event(RuntimeManifestEvent(
+            "provider", "anthropic", "model", "system", "tools", "messages",
+        ))
+        assert manifest.experiment_profile_hash == profile.profile_hash()
+        assert manifest.runtime_contract_hash == profile.runtime_contract_hash()
+        assert child.permission_checker.check(
+            DummyTool("Bash", "command"), {"command": "echo approved"},
+        ).effect == "allow"
+        external = DummyTool("Bash", "command")
+        external.requires_explicit_authorization = True
+        assert child.permission_checker.check(
+            external, {"command": "echo requires explicit authorization"},
+        ).effect == "ask"
+        from codepacex.tools.write_file import WriteFile
+        assert child.permission_checker.check(
+            WriteFile(), {"file_path": "/etc/passwd", "content": "blocked"},
+        ).effect == "ask"
+
+    def test_session_allow_background_child_uses_same_effective_checker(self, tmp_path: Path):
+        from codepacex.agents.trace import TraceManager
+        from codepacex.permissions import DangerousCommandDetector, PathSandbox, PermissionChecker, PermissionMode, RuleEngine
+        from codepacex.tools.agent_tool import AgentTool, AgentToolParams
+
+        profile = _permission_profile("session_allow")
+        parent = _permission_parent(tmp_path, profile=profile, checker=PermissionChecker(
+            DangerousCommandDetector(), PathSandbox(str(tmp_path)), RuleEngine(),
+            PermissionMode.DEFAULT, session_allow_all=True,
+        ))
+        loader = MagicMock()
+        loader.get.return_value = _worker_definition()
+        task_manager = MagicMock()
+        children = []
+        task_manager.launch.side_effect = lambda *, agent, **_kwargs: children.append(agent) or "task-1"
+        tool = AgentTool(loader, task_manager, TraceManager(), parent)
+
+        result = asyncio.run(tool.execute(AgentToolParams(
+            prompt="run echo", description="test", subagent_type="benchmark-worker",
+            run_in_background=True,
+        )))
+
+        assert not result.is_error
+        assert len(children) == 1
+        child = children[0]
+        assert child.experiment_profile is profile
+        assert child.permission_checker.session_allow_all is True
+        assert child.permission_checker.check(
+            DummyTool("Bash", "command"), {"command": "echo approved"},
+        ).effect == "allow"
+
+    def test_unprofiled_child_keeps_its_definition_permission_mode(self, tmp_path: Path):
+        from codepacex.tools.agent_tool import _child_permission_checker
+
+        parent = _permission_parent(
+            tmp_path, profile=None,
+            checker=_permission_checker(tmp_path, session_allow_all=True, sandbox_enabled=True),
+        )
+        child = _child_permission_checker(
+            parent, _worker_definition(), work_dir=str(tmp_path),
+        )
+
+        assert child.mode.value == "acceptEdits"
+        assert child.session_allow_all is False
+        assert child.sandbox_enabled is False
+        assert child.check(
+            DummyTool("Bash", "command"), {"command": "echo requires approval"},
+        ).effect == "ask"
+
+    @pytest.mark.parametrize(
+        "strategy", ["default", "session_allow", "explicit_rules", "sandbox_auto_allow"],
+    )
+    def test_profiled_child_keeps_explicit_denies_and_independent_session_state(
+        self, tmp_path: Path, strategy: str,
+    ):
+        from codepacex.tools.agent_tool import _child_permission_checker
+
+        rules = tmp_path / "rules.yaml"
+        rules.write_text(
+            "- rule: Bash(echo blocked)\n  effect: deny\n",
+            encoding="utf-8",
+        )
+        parent_checker = _permission_checker(
+            tmp_path, session_allow_all=strategy == "session_allow",
+            sandbox_enabled=strategy == "sandbox_auto_allow", rules=rules,
+        )
+        parent = _permission_parent(
+            tmp_path, profile=_permission_profile(strategy), checker=parent_checker,
+        )
+        child = _child_permission_checker(
+            parent, _worker_definition(), work_dir=str(tmp_path),
+        )
+
+        assert child.rule_engine is not parent_checker.rule_engine
+        assert child.check(
+            DummyTool("Bash", "command"), {"command": "echo blocked"},
+        ).effect == "deny"
+        child.add_session_allow("Bash", "echo child-only")
+        assert not parent_checker._check_session_allowed("Bash", "echo child-only")
+
+    def test_sandbox_auto_allow_child_stays_on_existing_whitelist(self, tmp_path: Path):
+        from codepacex.tools.agent_tool import _child_permission_checker
+
+        parent = _permission_parent(
+            tmp_path, profile=_permission_profile("sandbox_auto_allow"),
+            checker=_permission_checker(tmp_path, sandbox_enabled=True),
+        )
+        child = _child_permission_checker(
+            parent, _worker_definition(), work_dir=str(tmp_path),
+        )
+
+        assert child.sandbox_enabled is True
+        assert child.check(DummyTool("Bash", "command"), {"command": "pwd"}).effect == "allow"
+        assert child.check(DummyTool("Bash", "command"), {"command": "env"}).effect == "ask"
+        assert child.check(DummyTool("Bash", "command"), {"command": "rm -rf /"}).effect == "deny"
+
 # =====================================================================
 # 11. Agent（run_to_completion 基础功能、agent_id、trace_id）
 # =====================================================================
