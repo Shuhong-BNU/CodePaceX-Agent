@@ -1,6 +1,6 @@
 # Goal 2：真实实验、正式 Benchmark 与证据闭环运行手册
 
-本手册冻结 Goal 2 的实验顺序、已完成的证据和不可变边界，不伪造结果。正式 MCP 已完成 eager/deferred 各 150 个 terminal Trial；正式 Permission 已完成四策略各 50 个 terminal Trial。Retention 以一个已保守结算、最终 Provider Usage unknown 的 `summary_only` infrastructure-error session 作可审计 partial 收口。Multi-Agent 零模型 grader gate 为 NO-GO，故没有正式 Provider Trial。当前 ledger 为 CNY `92.579316` spent、`1225` request charges、`1114` settlements、`active_reservation=null`；CNY `90` safety reserve 未动用。Formal SWE 固定为 `infrastructure-blocked`，三次 8 小时长会话固定为 deferred。完整指标、Artifact hash 和不可声明范围见 [`GOAL2_FINAL_REPORT.md`](GOAL2_FINAL_REPORT.md)。
+本手册冻结 Goal 2 的实验顺序、已完成的证据和不可变边界，不伪造结果。正式 MCP 已完成 eager/deferred 各 150 个 terminal Trial；其 299 Usage-complete、149 Usage/Token pair 仅保留为会计与配对事实，不能在冻结 source trace 缺失时表述为成功 MCP 执行证据，见 [`GOAL2_MCP_EXECUTION_EVIDENCE_ERRATUM.md`](GOAL2_MCP_EXECUTION_EVIDENCE_ERRATUM.md)。正式 Permission 已完成四策略各 50 个 terminal Trial。Retention 以一个已保守结算、最终 Provider Usage unknown 的 `summary_only` infrastructure-error session 作可审计 partial 收口。Multi-Agent 零模型 grader gate 为 NO-GO，故没有正式 Provider Trial。当前 ledger 为 CNY `92.579316` spent、`1225` request charges、`1114` settlements、`active_reservation=null`；CNY `90` safety reserve 未动用。Formal SWE 固定为 `infrastructure-blocked`，三次 8 小时长会话固定为 deferred。完整指标、Artifact hash 和不可声明范围见 [`GOAL2_FINAL_REPORT.md`](GOAL2_FINAL_REPORT.md)。
 
 ## 1. 冻结身份与不可变边界
 
@@ -153,7 +153,7 @@ python -m evals.goal2_claims compile \
 | --- | --- | --- |
 | 最小真实 Pilot | 已完成；旧/新 Pilot 仅作诊断或最小证据 | 不与新 formal baseline 混样 |
 | SWE-bench-Live | Pilot 0/3；formal `infrastructure-blocked` | 本 Goal 不生成正式 SWE Claim |
-| MCP Token / Schema | formal 300/300 terminal；299 Usage complete、149 valid pairs | Token / cost Claims 可验证；schema bytes 因原始 runtime telemetry 缺失为 `insufficient-data` |
+| MCP Token / Schema | formal 300/300 terminal；299 Usage complete、149 Usage/Token pairs | 计费与配对记录保留；由于冻结 source trace 本地缺失，MCP 成功执行与能力 Claim 为 `evidence_insufficient`；schema bytes 仍因原始 runtime telemetry 缺失为 `insufficient-data` |
 | Retention | formal auditable partial | `summary_only` session-01 不重跑；不声明 profile comparison |
 | Permission | formal 四策略各 50 terminal | 结果限 Darwin arm64；含 Usage unknown infrastructure error 的 sandbox arm 保持其 Claim 边界 |
 | Multi-Agent | zero-model gate NO-GO | 不运行 Provider Trial；生成 `insufficient-data` Claim |

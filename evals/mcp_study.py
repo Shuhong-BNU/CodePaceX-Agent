@@ -120,6 +120,32 @@ def profiles(study: MCPStudyConfig) -> list[ExperimentProfile]:
     ) for arm in study.arms]
 
 
+def fixture_permission_rules(tasks: MCPTaskManifest) -> list[dict[str, str]]:
+    """Return the only MCP commands preauthorized for this controlled study.
+
+    MCP wrappers are command-category tools.  The study deliberately uses the
+    normal permission strategy, so the fixture calls need explicit rules in
+    non-interactive runs.  Keep the allow-list tied to the frozen manifest,
+    rather than granting a wildcard for MCP tools or commands.
+    """
+    return [
+        {"rule": f"{tool_name}(*)", "effect": "allow"}
+        for tool_name in sorted({
+            tool_name for task in tasks.tasks for tool_name in task.expected_tools
+        })
+    ]
+
+
+def _write_fixture_permissions(*, workspace: Path, tasks: MCPTaskManifest) -> None:
+    """Install manifest-scoped MCP permissions in the isolated trial workspace."""
+    permissions_path = workspace / ".codepacex" / "permissions.yaml"
+    permissions_path.parent.mkdir(parents=True, exist_ok=True)
+    permissions_path.write_text(
+        yaml.safe_dump(fixture_permission_rules(tasks), sort_keys=True),
+        encoding="utf-8",
+    )
+
+
 def top_level_trial_count(
     study: MCPStudyConfig, tasks: MCPTaskManifest,
 ) -> int:
@@ -238,27 +264,66 @@ def grade_trace(task: MCPTask, trace_text: str) -> tuple[bool, dict[str, Any]]:
             continue
         if isinstance(event, dict):
             events.append(event)
-    observed_mcp = [
-        str(event.get("tool_name")) for event in events
+    fixture_prefix = "mcp_fixture_tool_"
+    mcp_uses = [
+        event for event in events
         if event.get("type") == "tool_use"
-        and str(event.get("tool_name", "")).startswith("mcp_fixture_tool_")
+        and str(event.get("tool_name", "")).startswith(fixture_prefix)
     ]
+    observed_mcp = [str(event.get("tool_name")) for event in mcp_uses]
+    use_ids = [event.get("tool_id") for event in mcp_uses]
+    valid_use_ids = all(isinstance(tool_id, str) and tool_id for tool_id in use_ids)
+    use_by_id = {
+        str(event["tool_id"]): str(event["tool_name"])
+        for event in mcp_uses
+        if isinstance(event.get("tool_id"), str) and event.get("tool_id")
+    }
+    fixture_results = [
+        event for event in events
+        if event.get("type") == "tool_result"
+        and str(event.get("tool_name", "")).startswith(fixture_prefix)
+    ]
+    result_ids = [event.get("tool_id") for event in fixture_results]
+    valid_result_ids = all(
+        isinstance(tool_id, str) and tool_id for tool_id in result_ids
+    )
+    result_names_match = all(
+        valid_result_ids
+        and str(event.get("tool_name")) == use_by_id.get(str(event.get("tool_id")))
+        for event in fixture_results
+    )
+    successful_results = all(event.get("is_error") is False for event in fixture_results)
     results = [event for event in events if event.get("type") == "result"]
     answer = str(results[-1].get("result", "")) if results else ""
     required_answers = task.expected_answer.split("|")
     # MCP tool order is not part of the study contract, but every expected call
     # must occur exactly once per declared occurrence.
     tools_match = Counter(observed_mcp) == Counter(task.expected_tools)
+    execution_match = (
+        valid_use_ids
+        and len(use_by_id) == len(mcp_uses)
+        and valid_result_ids
+        and len(set(str(tool_id) for tool_id in result_ids)) == len(fixture_results)
+        and Counter(str(event.get("tool_id")) for event in fixture_results)
+        == Counter(str(tool_id) for tool_id in use_ids)
+        and result_names_match
+        and successful_results
+    )
     answer_match = (
         answer.strip() == task.expected_answer
         if task.category == "no_mcp"
         else all(value in answer for value in required_answers)
     )
-    passed = len(results) == 1 and tools_match and answer_match
+    passed = len(results) == 1 and tools_match and execution_match and answer_match
     return passed, {
         "expected_tools": task.expected_tools,
         "observed_mcp_tools": observed_mcp,
         "tools_match": tools_match,
+        "execution_match": execution_match,
+        "successful_mcp_tools": [
+            str(event.get("tool_name")) for event in fixture_results
+            if event.get("is_error") is False
+        ],
         "answer_match": answer_match,
         "result_event_count": len(results),
     }
@@ -314,6 +379,9 @@ def _run_arm(
                 with tempfile.TemporaryDirectory(
                     prefix=f"codepacex-{task.id}-"
                 ) as workspace_text:
+                    _write_fixture_permissions(
+                        workspace=Path(workspace_text), tasks=tasks,
+                    )
                     command = [
                         sys.executable, "-m", "codepacex", "-p", task.prompt,
                         "--output-format", "stream-json",

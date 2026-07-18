@@ -8,6 +8,12 @@ Formal artifacts are local and Git-ignored under `evals/.runs/goal2/` and
 For a safe continuation boundary and exact non-rerun rules, see
 [`GOAL2_HANDOFF.md`](GOAL2_HANDOFF.md).
 
+Post-review MCP execution-evidence boundary: see
+[`GOAL2_MCP_EXECUTION_EVIDENCE_ERRATUM.md`](GOAL2_MCP_EXECUTION_EVIDENCE_ERRATUM.md).
+The preserved 299 Usage-complete Trials and 149 Usage/Token pairs are not a
+claim of successfully executed MCP fixture calls while the frozen source traces
+are unavailable for call-ID-correlated result auditing.
+
 ## Frozen identities and budget
 
 - Claims evidence-control commit: `142e4ce`; the full ID is recorded in Git
@@ -27,14 +33,14 @@ For a safe continuation boundary and exact non-rerun rules, see
 
 | Study | Result | Evidence boundary |
 | --- | --- | --- |
-| MCP tool loading | Complete: eager 150/150 and deferred 150/150 terminal | 299 Usage-complete Trials and 149 valid Token pairs. `mcp_one_08/1` remains one terminal infrastructure error, is included in attempted count and settled cost, and is excluded from Usage-derived Token measures. |
+| MCP tool loading | Terminal/accounting matrix preserved; execution evidence insufficient | 299 Usage-complete Trials and 149 valid Token pairs remain accounting facts. They are not verified successful fixture executions because the frozen source traces are unavailable for the post-review `tool_result` correlation audit. `mcp_one_08/1` remains one terminal infrastructure error, is included in attempted count and settled cost, and is excluded from Usage-derived Token measures. |
 | Retention | Auditable partial | `summary_only` session 01 is a terminal infrastructure error with unknown final Provider Usage; it was conservatively settled and is not rerun. `recovery_v1` formal sessions were not run, so no profile comparison is claimed. |
 | Permission | Complete terminal matrix | `default` 44 success/6 task failure; `session_allow` 38/12; `explicit_rules` 42/8; `sandbox_auto_allow` 41 success/8 task failure/1 infrastructure error. Results are limited to Darwin arm64. |
 | Multi-Agent | Insufficient data | The zero-model grader gate returned NO-GO. No formal Multi-Agent Provider Trial was sent and no effect is claimed. |
 | Formal SWE | Infrastructure-blocked | No formal resolved-rate Claim is produced. |
 | Three 8-hour sessions | Deferred | No formal long-session Claim is produced; the two-hour diagnostic Pilot is not a substitute. |
 
-## Verified MCP measurements
+## Preserved MCP accounting measurements
 
 The hash-pinned Trial cohort index is `mcp-formal-cohort-index.json`. Its
 canonical content SHA-256 / evidence identity is
@@ -46,7 +52,9 @@ It is distinct from the full-file byte SHA-256 `fedda1d55f758addf2b2ade46849ec7a
 listed in the Artifact table below. Both values are reproducible and serve
 different integrity purposes; their difference does not indicate Artifact
 drift.
-The compiled cohort evidence verifies:
+The compiled cohort evidence previously verified the following accounting and
+Usage/Token measurements. It does not establish successful fixture execution;
+see the post-review erratum above.
 
 | Measurement | Value |
 | --- | ---: |
