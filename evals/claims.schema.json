@@ -216,6 +216,20 @@
           "title": "Max Iterations",
           "type": "integer"
         },
+        "pricing_snapshot_hash": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Required provenance for actual_cost_cny Claims only.",
+          "title": "Pricing Snapshot Hash"
+        },
         "allowed_differences": {
           "description": "Exact registered identity paths allowed to differ; no wildcards.",
           "items": {

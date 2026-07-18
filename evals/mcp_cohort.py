@@ -127,6 +127,7 @@ def summarize_mcp_cohort(cohort: dict[str, Any], runs_dir: Path) -> dict[str, An
             "experiment_profile_hash": manifest.get("experiment_profile_hash"),
             "runtime_contract_hash": manifest.get("runtime_contract_hash"),
             "benchmark_asset_hash": manifest.get("benchmark_asset_hash"),
+            "pricing_snapshot_hash": manifest.get("pricing_snapshot_hash"),
         })
 
         completed = [item for item in _read_jsonl(events_path) if (

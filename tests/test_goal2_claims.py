@@ -34,6 +34,7 @@ def _write_manifests(root: Path, *, commit: str = "a" * 40) -> None:
             feature_flags={}, experiment_profile=profile,
             experiment_profile_hash="profile", runtime_contract_hash="runtime",
             benchmark_asset_hash="assets", max_iterations=50,
+            pricing_snapshot_hash="a" * 64,
         ), run_id=run_id)
 
 
@@ -150,8 +151,8 @@ def test_goal2_compiler_verifies_trial_level_mcp_metrics_only(tmp_path: Path, mo
         "valid_matched_pairs": 149,
         "input_reduction_percent": {"median": 10.0, "p95": 30.0},
         "source_runs": {
-            "mcp-formal-run-scoped-eager": {"git_commit": "a" * 40, "experiment_profile_hash": "profile", "runtime_contract_hash": "runtime", "benchmark_asset_hash": "assets"},
-            "mcp-formal-run-scoped-deferred": {"git_commit": "a" * 40, "experiment_profile_hash": "profile", "runtime_contract_hash": "runtime", "benchmark_asset_hash": "assets"},
+            "mcp-formal-run-scoped-eager": {"git_commit": "a" * 40, "experiment_profile_hash": "profile", "runtime_contract_hash": "runtime", "benchmark_asset_hash": "assets", "pricing_snapshot_hash": "a" * 64},
+            "mcp-formal-run-scoped-deferred": {"git_commit": "a" * 40, "experiment_profile_hash": "profile", "runtime_contract_hash": "runtime", "benchmark_asset_hash": "assets", "pricing_snapshot_hash": "a" * 64},
         },
         "arms": {
             "eager": {"input_tokens": 100, "output_tokens": 10, "cache_tokens": 1, "usage_complete_trials": 150, "runtime_tool_schema_bytes_median": None, "runtime_tool_schema_sample_size": 0, "rate": 0.5, "rate_trial_count": 150, "settled_cny": 1.0, "terminal_trials": 150},
@@ -168,3 +169,10 @@ def test_goal2_compiler_verifies_trial_level_mcp_metrics_only(tmp_path: Path, mo
     assert by_id["mcp-deferred-runtime_tool_schema_bytes"]["status"] == "insufficient-data"
     assert by_id["mcp-deferred-rate"]["status"] == "insufficient-data"
     assert by_id["mcp-eager-actual_cost_cny"]["evidence_summary"]["trial_level_cohort"] is True
+    assert by_id["mcp-eager-actual_cost_cny"]["experiment_conditions"]["pricing_snapshot_hash"] == "a" * 64
+
+    metrics["source_runs"]["mcp-formal-run-scoped-eager"]["pricing_snapshot_hash"] = None
+    missing_price = compile_goal2_claims(document, tmp_path, cohort_index=tmp_path / "cohort.json")
+    eager_cost = {claim["claim_id"]: claim for claim in missing_price["claims"]}["mcp-eager-actual_cost_cny"]
+    assert eager_cost["status"] == "insufficient-data"
+    assert any("pricing_snapshot_hash" in item for item in eager_cost["limitations"])

@@ -17,6 +17,10 @@ from evals.claims import (
 )
 
 
+PRICING_HASH = "a" * 64
+SECOND_PRICING_HASH = "b" * 64
+
+
 def _conditions(**changes: object) -> dict[str, object]:
     profile = _profile()
     conditions: dict[str, object] = {
@@ -91,6 +95,7 @@ def _successful_run(
     cache_tokens: int = 0,
     tools_bytes: int = 64,
     actual_cny: str = "0.01",
+    pricing_snapshot_hash: str | None = PRICING_HASH,
     terminal_fields: dict[str, object] | None = None,
     runtime_tools: str = "tools",
     numerator: int | None = None,
@@ -108,6 +113,7 @@ def _successful_run(
         experiment_profile_hash=profile.profile_hash(),
         runtime_contract_hash=profile.runtime_contract_hash(),
         benchmark_asset_hash="assets", max_iterations=50,
+        pricing_snapshot_hash=pricing_snapshot_hash,
     ), run_id=run_id)
     recorder.event("trial_started", {
         "task_id": task_id, "repetition_id": repetition_id,
@@ -169,6 +175,76 @@ def test_goal2_registered_measurements_use_raw_run_artifacts(
     compiled = compile_claims(_document(metric_name=metric), tmp_path)["claims"][0]
     assert compiled["status"] == "verified"
     assert compiled["generated_value"] == pytest.approx(expected)
+    if metric == "actual_cost_cny":
+        assert compiled["experiment_conditions"]["pricing_snapshot_hash"] == PRICING_HASH
+
+
+def test_cost_claim_accepts_matching_pricing_snapshot_hashes(tmp_path: Path) -> None:
+    _successful_run(tmp_path, "run")
+    _successful_run(tmp_path, "second", repetition_id="2")
+    compiled = compile_claims(_document(
+        metric_name="actual_cost_cny", unit="CNY", source_run_ids=["run", "second"],
+        sample_size=2,
+    ), tmp_path)["claims"][0]
+    assert compiled["status"] == "verified"
+    assert compiled["experiment_conditions"]["pricing_snapshot_hash"] == PRICING_HASH
+
+
+@pytest.mark.parametrize("pricing_snapshot_hash", [SECOND_PRICING_HASH, None])
+def test_cost_claim_rejects_mixed_or_missing_pricing_provenance(
+    tmp_path: Path, pricing_snapshot_hash: str | None,
+) -> None:
+    _successful_run(tmp_path, "run")
+    _successful_run(
+        tmp_path, "second", repetition_id="2",
+        pricing_snapshot_hash=pricing_snapshot_hash,
+    )
+    compiled = compile_claims(_document(
+        metric_name="actual_cost_cny", unit="CNY", source_run_ids=["run", "second"],
+        sample_size=2,
+    ), tmp_path)["claims"][0]
+    assert compiled["status"] == "insufficient-data"
+    assert any("pricing_snapshot_hash" in item for item in compiled["limitations"])
+
+
+def test_cost_claim_rejects_missing_pricing_provenance_for_positive_cost(tmp_path: Path) -> None:
+    _successful_run(tmp_path, "run", pricing_snapshot_hash=None)
+    compiled = compile_claims(_document(
+        metric_name="actual_cost_cny", unit="CNY",
+    ), tmp_path)["claims"][0]
+    assert compiled["status"] == "insufficient-data"
+    assert any("pricing_snapshot_hash" in item for item in compiled["limitations"])
+
+
+def test_cost_claim_recompile_rejects_changed_pricing_condition(tmp_path: Path) -> None:
+    _successful_run(tmp_path, "run")
+    compiled = compile_claims(_document(
+        metric_name="actual_cost_cny", unit="CNY",
+        experiment_conditions=_conditions(pricing_snapshot_hash=SECOND_PRICING_HASH),
+    ), tmp_path)["claims"][0]
+    assert compiled["status"] == "insufficient-data"
+    assert any("conditions do not match" in item for item in compiled["limitations"])
+
+
+def test_swe_cost_claim_carries_pricing_snapshot_condition(tmp_path: Path) -> None:
+    _successful_run(tmp_path, "swe-control")
+    compiled = compile_claims(_document(
+        claim_id="swe-cost", metric_name="actual_cost_cny", unit="CNY",
+        source_run_ids=["swe-control"],
+    ), tmp_path)["claims"][0]
+    assert compiled["status"] == "verified"
+    assert compiled["experiment_conditions"]["pricing_snapshot_hash"] == PRICING_HASH
+
+
+def test_non_cost_claims_do_not_require_pricing_snapshot_hash(tmp_path: Path) -> None:
+    _successful_run(tmp_path, "run", pricing_snapshot_hash=None)
+    _successful_run(
+        tmp_path, "second", repetition_id="2", pricing_snapshot_hash=SECOND_PRICING_HASH,
+    )
+    compiled = compile_claims(_document(
+        source_run_ids=["run", "second"], sample_size=2,
+    ), tmp_path)["claims"][0]
+    assert compiled["status"] == "verified"
 
 
 def test_multi_agent_terminal_measurements_are_registered(tmp_path: Path) -> None:

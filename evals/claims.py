@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import sys
 from pathlib import Path
 from statistics import median
@@ -79,6 +80,7 @@ _RUNTIME_SET_FIELDS = {
     "provider", "protocol", "model_id", "experiment_profile_hash",
     "runtime_contract_hash",
 }
+_PRICING_SNAPSHOT_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class ExperimentConditions(BaseModel):
@@ -102,6 +104,10 @@ class ExperimentConditions(BaseModel):
     runtime_contract_hash: str
     benchmark_asset_hash: str
     max_iterations: int = Field(gt=0)
+    pricing_snapshot_hash: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$",
+        description="Required provenance for actual_cost_cny Claims only.",
+    )
     allowed_differences: list[str] = Field(
         description="Exact registered identity paths allowed to differ; no wildcards."
     )
@@ -372,6 +378,28 @@ def _compatibility(
             and any(provider != manifest_provider for provider in runtime_providers)
         ):
             problems.append("Runtime Provider does not match the effective Manifest Provider.")
+    if claim.metric_name == "actual_cost_cny":
+        pricing_hashes = [manifest.get("pricing_snapshot_hash") for manifest, _, _ in runs]
+        if any(
+            not isinstance(value, str)
+            or _PRICING_SNAPSHOT_HASH_RE.fullmatch(value) is None
+            for value in pricing_hashes
+        ):
+            problems.append(
+                "Cost Claim source Runs are missing valid pricing_snapshot_hash provenance."
+            )
+        elif len(set(pricing_hashes)) != 1:
+            observed.append("manifest.pricing_snapshot_hash")
+            problems.append(
+                "Cost Claim source Runs use different pricing_snapshot_hash values."
+            )
+        elif (
+            claim.experiment_conditions.pricing_snapshot_hash is not None
+            and claim.experiment_conditions.pricing_snapshot_hash != pricing_hashes[0]
+        ):
+            problems.append(
+                "Cost Claim conditions do not match manifest.pricing_snapshot_hash."
+            )
     return not problems, observed, list(dict.fromkeys(problems))
 
 
@@ -697,6 +725,8 @@ def compile_claims(document: ClaimDocument, runs_dir: Path) -> dict[str, Any]:
             compatible, observed, problems = _compatibility(claim, usable)
             output["limitations"].extend(problems)
             if compatible:
+                if claim.metric_name == "actual_cost_cny":
+                    output["experiment_conditions"]["pricing_snapshot_hash"] = usable[0][0]["pricing_snapshot_hash"]
                 try:
                     value, actual_samples = _calculate(claim, usable)
                 except (OSError, ValueError, json.JSONDecodeError) as exc:

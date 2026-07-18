@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +38,7 @@ MCP_RUNTIME_DIFFERENCES = (
     "runtime.experiment_profile_hash", "runtime.runtime_contract_hash",
     "runtime.combined_runtime_hash",
 )
+_PRICING_SNAPSHOT_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _mcp_measurement(claim_id: str, metrics: dict[str, Any]) -> tuple[float | None, int]:
@@ -93,6 +95,10 @@ def _mcp_source_summary(cohort: dict[str, Any], metrics: dict[str, Any]) -> dict
         "cohort_runtime_contract_hashes": sorted({str(item["runtime_contract_hash"]) for item in source_runs.values()}),
         "cohort_runtime_contract_hashes_by_arm": values_by_arm("runtime_contract_hash"),
         "cohort_benchmark_asset_hashes": sorted({str(item["benchmark_asset_hash"]) for item in source_runs.values()}),
+        "cohort_pricing_snapshot_hashes": sorted({
+            str(item.get("pricing_snapshot_hash")) for item in source_runs.values()
+        }),
+        "cohort_pricing_snapshot_hashes_by_arm": values_by_arm("pricing_snapshot_hash"),
     }
 
 
@@ -134,6 +140,26 @@ def _mcp_claim_compatibility_problems(
             problems.append("MCP cohort runtime contract hash does not match Claim conditions.")
     if source_summary["cohort_benchmark_asset_hashes"] != [conditions.benchmark_asset_hash]:
         problems.append("MCP cohort benchmark asset hash does not match Claim conditions.")
+    if declared.metric_name == "actual_cost_cny":
+        pricing_hashes = sorted({
+            pricing_hash
+            for arm in required_arms
+            for pricing_hash in source_summary[
+                "cohort_pricing_snapshot_hashes_by_arm"
+            ].get(arm, [])
+        })
+        if (
+            len(pricing_hashes) != 1
+            or _PRICING_SNAPSHOT_HASH_RE.fullmatch(pricing_hashes[0]) is None
+        ):
+            problems.append(
+                "MCP cost Claim source Runs are missing or disagree on pricing_snapshot_hash provenance."
+            )
+        elif (
+            conditions.pricing_snapshot_hash is not None
+            and conditions.pricing_snapshot_hash != pricing_hashes[0]
+        ):
+            problems.append("MCP cost Claim conditions do not match pricing_snapshot_hash.")
     return problems
 
 
@@ -182,6 +208,11 @@ def compile_goal2_claims(
         else:
             output["generated_value"] = value
             output["status"] = "verified"
+            if declared.metric_name == "actual_cost_cny":
+                required_arm = declared.claim_id.split("-", 2)[1]
+                output["experiment_conditions"]["pricing_snapshot_hash"] = source_summary[
+                    "cohort_pricing_snapshot_hashes_by_arm"
+                ][required_arm][0]
         output["limitations"] = list(dict.fromkeys(output["limitations"]))
     return compiled
 def _specs(
@@ -283,7 +314,7 @@ def _manifest(runs_dir: Path, run_id: str) -> dict[str, Any]:
 def _conditions(
     manifest: dict[str, Any], spec: ClaimSpec,
 ) -> dict[str, Any]:
-    return {
+    conditions = {
         "provider": manifest.get("provider"), "protocol": manifest.get("protocol"),
         "model_id": manifest.get("model_id"),
         "base_url_origin": manifest.get("base_url_origin"),
@@ -304,6 +335,9 @@ def _conditions(
         "baseline_run_ids": list(spec.baseline_run_ids),
         "improved_run_ids": list(spec.improved_run_ids),
     }
+    if spec.metric == "actual_cost_cny":
+        conditions["pricing_snapshot_hash"] = manifest.get("pricing_snapshot_hash")
+    return conditions
 
 
 def generate_claim_document(
