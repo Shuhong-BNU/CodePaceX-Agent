@@ -679,6 +679,27 @@ class TestTaskManager:
         tm = TaskManager()
         assert tm.cancel("nope") is False
 
+    @pytest.mark.asyncio
+    async def test_event_and_completion_callbacks_preserve_terminal_status(self, mock_agent):
+        events: list[dict[str, object]] = []
+        completed: list[BackgroundTask] = []
+
+        async def emit(_task, *, event_callback):
+            event_callback({"type": "runtime_manifest", "request_index": 1})
+            return "done"
+
+        mock_agent.run_to_completion = emit
+        tm = TaskManager()
+        task_id = tm.launch(
+            mock_agent, "task", event_callback=events.append,
+            completion_callback=completed.append,
+        )
+        await asyncio.sleep(0.1)
+
+        assert events == [{"type": "runtime_manifest", "request_index": 1}]
+        assert completed == [tm.get(task_id)]
+        assert completed[0].status == "completed"
+
 # =====================================================================
 # 7. 通知
 # =====================================================================
@@ -1045,6 +1066,524 @@ class TestChildExperimentPermissions:
         assert child.check(DummyTool("Bash", "command"), {"command": "pwd"}).effect == "allow"
         assert child.check(DummyTool("Bash", "command"), {"command": "env"}).effect == "ask"
         assert child.check(DummyTool("Bash", "command"), {"command": "rm -rf /"}).effect == "deny"
+
+
+class TestTeammatePermissionContract:
+    @pytest.mark.parametrize("permission_mode", ["default", "acceptEdits"])
+    def test_in_process_teammate_keeps_legacy_bypass_checker(
+        self, tmp_path: Path, permission_mode: str,
+    ) -> None:
+        from codepacex.agent import Agent
+        from codepacex.agents.trace import TraceManager
+        from codepacex.permissions import (
+            DangerousCommandDetector, PathSandbox, PermissionChecker,
+            PermissionMode, RuleEngine,
+        )
+        from codepacex.teams.models import AgentTeam, BackendType
+        from codepacex.tools.agent_tool import AgentTool, AgentToolParams
+
+        parent_checker = PermissionChecker(
+            DangerousCommandDetector(), PathSandbox(str(tmp_path)), RuleEngine(),
+            PermissionMode.DEFAULT,
+        )
+        parent = Agent(
+            client=MagicMock(), registry=make_registry("Bash", "EditFile"),
+            protocol="anthropic", work_dir=str(tmp_path),
+            permission_checker=parent_checker,
+        )
+        definition = _worker_definition(permission_mode=permission_mode)
+        loader = MagicMock()
+        loader.get.return_value = definition
+        task_manager = MagicMock()
+        launched: list[object] = []
+        task_manager.launch.side_effect = lambda *, agent, **_kwargs: launched.append(agent) or "task-1"
+        worktree = tmp_path / "teammate-worktree"
+        worktree.mkdir()
+        worktree_manager = MagicMock()
+        worktree_manager.create = AsyncMock(
+            return_value=MagicMock(path=str(worktree), head_commit="base"),
+        )
+        team_manager = MagicMock()
+        team_manager.get_team.return_value = AgentTeam("study", "lead")
+        team_manager.detect_backend.return_value = BackendType.IN_PROCESS
+
+        tool = AgentTool(
+            loader, task_manager, TraceManager(), parent,
+            worktree_manager=worktree_manager, team_manager=team_manager,
+        )
+        result = asyncio.run(tool.execute(AgentToolParams(
+            prompt="run the assigned edit", description="test",
+            subagent_type="benchmark-worker", team_name="study",
+        )))
+
+        assert not result.is_error
+        assert len(launched) == 1
+        teammate = launched[0]
+        assert teammate.permission_checker.mode is PermissionMode.BYPASS
+        assert teammate.permission_mode is PermissionMode.BYPASS
+        assert teammate.permission_checker is not parent_checker
+        assert teammate.permission_checker.rule_engine is not parent_checker.rule_engine
+        assert teammate.permission_checker.check(
+            DummyTool("Bash", "command"), {"command": "echo teammate"},
+        ).effect == "allow"
+        teammate.permission_checker.add_session_allow("Bash", "echo teammate-only")
+        assert not parent_checker._check_session_allowed("Bash", "echo teammate-only")
+
+    def test_teammate_bypass_keeps_profile_explicit_denies(self, tmp_path: Path) -> None:
+        from codepacex.tools.agent_tool import _child_permission_checker
+
+        rules = tmp_path / "rules.yaml"
+        rules.write_text(
+            "- rule: Bash(echo blocked)\n  effect: deny\n", encoding="utf-8",
+        )
+        parent_checker = _permission_checker(tmp_path, rules=rules)
+        parent = _permission_parent(
+            tmp_path, profile=_permission_profile("explicit_rules"),
+            checker=parent_checker,
+        )
+
+        teammate = _child_permission_checker(
+            parent, _worker_definition(permission_mode="acceptEdits"),
+            work_dir=str(tmp_path), permission_mode_override="bypassPermissions",
+        )
+
+        assert teammate.mode.value == "bypassPermissions"
+        assert teammate.rule_engine is not parent_checker.rule_engine
+        assert teammate.check(
+            DummyTool("Bash", "command"), {"command": "echo blocked"},
+        ).effect == "deny"
+        assert teammate.check(
+            DummyTool("Bash", "command"), {"command": "echo allowed"},
+        ).effect == "allow"
+
+    def test_in_process_teammate_uses_background_trace_callbacks(self, tmp_path: Path) -> None:
+        from codepacex.agent import Agent
+        from codepacex.teams.models import AgentTeam, BackendType
+        from codepacex.tools.agent_tool import AgentTool, AgentToolParams
+
+        async def run_case() -> tuple[TraceManager, str, TaskManager]:
+            parent = Agent(
+                client=MagicMock(), registry=make_registry("Bash"), protocol="anthropic",
+                work_dir=str(tmp_path),
+            )
+            parent.agent_id = "parent-agent"
+            loader = MagicMock()
+            loader.get.return_value = _worker_definition(permission_mode="acceptEdits")
+            worktree = tmp_path / "teammate-worktree-trace"
+            worktree.mkdir()
+            worktree_manager = MagicMock()
+            worktree_manager.create = AsyncMock(
+                return_value=MagicMock(path=str(worktree), head_commit="base"),
+            )
+            team_manager = MagicMock()
+            team_manager.get_team.return_value = AgentTeam("study", "lead")
+            team_manager.get_mailbox.return_value = None
+            team_manager.detect_backend.return_value = BackendType.IN_PROCESS
+            tasks = TaskManager()
+            traces = TraceManager()
+            tool = AgentTool(
+                loader, tasks, traces, parent,
+                worktree_manager=worktree_manager, team_manager=team_manager,
+            )
+
+            async def emit_events(self, _task, *, event_callback):
+                event_callback({
+                    "type": "runtime_manifest", "request_index": 1,
+                    "system_sha256": "system", "tools_sha256": "tools",
+                    "experiment_profile_hash": "profile", "runtime_contract_hash": "contract",
+                    "combined_runtime_hash": "combined", "tools_bytes": 456,
+                })
+                event_callback({"type": "usage", "request_input_tokens": 9, "request_output_tokens": 4})
+                event_callback({"type": "tool_use", "tool_id": "call-1"})
+                self._runtime_request_index = 1
+                return "done"
+
+            with patch("codepacex.agent.Agent.run_to_completion", emit_events):
+                result = await tool.execute(AgentToolParams(
+                    prompt="run", description="test", subagent_type="benchmark-worker",
+                    team_name="study",
+                ))
+                assert not result.is_error
+                task_id = tasks.list_tasks()[0].id
+                await tasks._async_tasks[task_id]
+            return traces, parent.agent_id, tasks
+
+        traces, parent_id, tasks = asyncio.run(run_case())
+        task = tasks.list_tasks()[0]
+        trace = traces.get(task.agent.agent_id)
+        summary = traces.benchmark_summary(parent_id)
+        assert task.status == "completed"
+        assert trace is not None and trace.status == "completed" and trace.end_time is not None
+        assert task.agent.permission_mode.value == "bypassPermissions"
+        assert summary["child_request_usages"] == [{"input_tokens": 9, "output_tokens": 4}]
+        assert summary["child_tool_call_count"] == 1
+        assert summary["child_runtime_manifests"][0]["tools_bytes"] == 456
+
+
+class TestWorktreeChildTelemetry:
+    def test_worktree_child_records_runtime_events_and_keeps_them_after_failure(
+        self, tmp_path: Path,
+    ) -> None:
+        from codepacex.agent import Agent
+        from codepacex.agents.trace import TraceManager
+        from codepacex.tools.agent_tool import AgentTool, AgentToolParams
+
+        parent = Agent(
+            client=MagicMock(), registry=make_registry("Bash"), protocol="anthropic",
+            work_dir=str(tmp_path),
+        )
+        parent.agent_id = "parent-agent"
+        definition = _worker_definition()
+        definition.isolation = "worktree"
+        loader = MagicMock()
+        loader.get.return_value = definition
+        worktree = tmp_path / "isolated-worktree"
+        worktree.mkdir()
+        worktree_manager = MagicMock()
+        worktree_manager.create = AsyncMock(
+            return_value=MagicMock(path=str(worktree), head_commit="base"),
+        )
+        worktree_manager.auto_cleanup = AsyncMock(
+            return_value=MagicMock(kept=False),
+        )
+        traces = TraceManager()
+        tool = AgentTool(
+            loader, TaskManager(), traces, parent,
+            worktree_manager=worktree_manager,
+        )
+
+        async def emit_then_fail(self, _task, *, event_callback):
+            for event in (
+                {"type": "runtime_manifest", "request_index": 1,
+                 "system_sha256": "system-1", "tools_sha256": "tools-1",
+                 "experiment_profile_hash": "profile", "runtime_contract_hash": "contract",
+                 "combined_runtime_hash": "combined-1", "tools_bytes": 101},
+                {"type": "usage", "request_input_tokens": 7, "request_output_tokens": 3},
+                {"type": "tool_use", "tool_id": "call-1"},
+                {"type": "runtime_manifest", "request_index": 2,
+                 "system_sha256": "system-2", "tools_sha256": "tools-2",
+                 "experiment_profile_hash": "profile", "runtime_contract_hash": "contract",
+                 "combined_runtime_hash": "combined-2", "tools_bytes": 202},
+                {"type": "usage", "request_input_tokens": 11, "request_output_tokens": 5},
+                {"type": "tool_use", "tool_id": "call-2"},
+            ):
+                event_callback(event)
+            self._runtime_request_index = 2
+            raise TimeoutError("fixture timeout")
+
+        with patch("codepacex.agent.Agent.run_to_completion", emit_then_fail):
+            result = asyncio.run(tool.execute(AgentToolParams(
+                prompt="run", description="test", subagent_type="benchmark-worker",
+            )))
+
+        assert result.is_error
+        worktree_manager.auto_cleanup.assert_awaited_once()
+        summary = traces.benchmark_summary(parent.agent_id)
+        assert summary["failed_child_count"] == 1
+        assert summary["child_request_count"] == 2
+        assert summary["child_request_usages"] == [
+            {"input_tokens": 7, "output_tokens": 3},
+            {"input_tokens": 11, "output_tokens": 5},
+        ]
+        assert summary["child_tool_call_count"] == 2
+        manifests = summary["child_runtime_manifests"]
+        assert [item["request_index"] for item in manifests] == [1, 2]
+        assert [item["tools_bytes"] for item in manifests] == [101, 202]
+        assert len({item["child_agent_id"] for item in manifests}) == 1
+
+    def test_regular_and_worktree_foreground_share_summary_fields(self, tmp_path: Path) -> None:
+        from codepacex.agent import Agent
+        from codepacex.tools.agent_tool import AgentTool, AgentToolParams
+
+        async def run_case(*, worktree_isolation: bool) -> dict[str, object]:
+            parent = Agent(
+                client=MagicMock(), registry=make_registry("Bash"), protocol="anthropic",
+                work_dir=str(tmp_path),
+            )
+            parent.agent_id = "parent-agent"
+            definition = _worker_definition()
+            definition.isolation = "worktree" if worktree_isolation else ""
+            loader = MagicMock()
+            loader.get.return_value = definition
+            traces = TraceManager()
+            worktree_manager = None
+            if worktree_isolation:
+                worktree = tmp_path / "comparison-worktree"
+                worktree.mkdir(exist_ok=True)
+                worktree_manager = MagicMock()
+                worktree_manager.create = AsyncMock(
+                    return_value=MagicMock(path=str(worktree), head_commit="base"),
+                )
+                worktree_manager.auto_cleanup = AsyncMock(return_value=MagicMock(kept=False))
+            tool = AgentTool(
+                loader, TaskManager(), traces, parent, worktree_manager=worktree_manager,
+            )
+
+            async def emit_events(self, _task, *, event_callback):
+                for event in (
+                    {"type": "runtime_manifest", "request_index": 1,
+                     "system_sha256": "system", "tools_sha256": "tools",
+                     "experiment_profile_hash": "profile", "runtime_contract_hash": "contract",
+                     "combined_runtime_hash": "combined", "tools_bytes": 456},
+                    {"type": "usage", "request_input_tokens": 8, "request_output_tokens": 3},
+                    {"type": "tool_use", "tool_id": "call-1"},
+                ):
+                    event_callback(event)
+                self._runtime_request_index = 1
+                return "done"
+
+            with patch("codepacex.agent.Agent.run_to_completion", emit_events):
+                result = await tool.execute(AgentToolParams(
+                    prompt="run", description="test", subagent_type="benchmark-worker",
+                ))
+            assert not result.is_error
+            return traces.benchmark_summary(parent.agent_id)
+
+        regular, worktree = asyncio.run(run_case(worktree_isolation=False)), asyncio.run(
+            run_case(worktree_isolation=True),
+        )
+        for key in ("child_request_count", "child_request_usages", "child_tool_call_count"):
+            assert regular[key] == worktree[key]
+        regular_manifests = [
+            {key: value for key, value in manifest.items() if key != "child_agent_id"}
+            for manifest in regular["child_runtime_manifests"]
+        ]
+        worktree_manifests = [
+            {key: value for key, value in manifest.items() if key != "child_agent_id"}
+            for manifest in worktree["child_runtime_manifests"]
+        ]
+        assert regular_manifests == worktree_manifests
+
+    def test_regular_foreground_keeps_child_events_after_failure(self, tmp_path: Path) -> None:
+        from codepacex.agent import Agent
+        from codepacex.tools.agent_tool import AgentTool, AgentToolParams
+
+        async def run_case() -> tuple[TraceManager, str]:
+            parent = Agent(
+                client=MagicMock(), registry=make_registry("Bash"), protocol="anthropic",
+                work_dir=str(tmp_path),
+            )
+            parent.agent_id = "parent-agent"
+            loader = MagicMock()
+            loader.get.return_value = _worker_definition()
+            traces = TraceManager()
+            tool = AgentTool(loader, TaskManager(), traces, parent)
+
+            async def emit_then_fail(self, _task, *, event_callback):
+                event_callback({
+                    "type": "runtime_manifest", "request_index": 1,
+                    "system_sha256": "system", "tools_sha256": "tools",
+                    "experiment_profile_hash": "profile", "runtime_contract_hash": "contract",
+                    "combined_runtime_hash": "combined", "tools_bytes": 654,
+                })
+                event_callback({"type": "usage", "request_input_tokens": 6, "request_output_tokens": 2})
+                event_callback({"type": "tool_use", "tool_id": "call-1"})
+                self._runtime_request_index = 1
+                raise TimeoutError("fixture timeout")
+
+            with patch("codepacex.agent.Agent.run_to_completion", emit_then_fail):
+                result = await tool.execute(AgentToolParams(
+                    prompt="run", description="test", subagent_type="benchmark-worker",
+                ))
+            assert result.is_error
+            return traces, parent.agent_id
+
+        traces, parent_id = asyncio.run(run_case())
+        summary = traces.benchmark_summary(parent_id)
+        assert summary["failed_child_count"] == 1
+        assert summary["child_request_usages"] == [{"input_tokens": 6, "output_tokens": 2}]
+        assert summary["child_tool_call_count"] == 1
+        assert summary["child_runtime_manifests"][0]["tools_bytes"] == 654
+
+
+class TestBackgroundChildTelemetry:
+    @pytest.mark.parametrize("tool_uses", [0, 1, 3])
+    def test_background_child_collects_events_and_completes_trace(
+        self, tmp_path: Path, tool_uses: int,
+    ) -> None:
+        from codepacex.agent import Agent
+        from codepacex.tools.agent_tool import AgentTool, AgentToolParams
+
+        async def run_case() -> tuple[TraceManager, str, TaskManager]:
+            parent = Agent(
+                client=MagicMock(), registry=make_registry("Bash"), protocol="anthropic",
+                work_dir=str(tmp_path),
+            )
+            parent.agent_id = "parent-agent"
+            loader = MagicMock()
+            loader.get.return_value = _worker_definition()
+            tasks = TaskManager()
+            traces = TraceManager()
+            tool = AgentTool(loader, tasks, traces, parent)
+
+            async def emit_events(self, _task, *, event_callback):
+                event_callback({
+                    "type": "runtime_manifest", "request_index": 1,
+                    "system_sha256": "system-1", "tools_sha256": "tools-1",
+                    "experiment_profile_hash": "profile", "runtime_contract_hash": "contract",
+                    "combined_runtime_hash": "combined-1", "tools_bytes": 101,
+                })
+                event_callback({
+                    "type": "runtime_manifest", "request_index": 2,
+                    "system_sha256": "system-2", "tools_sha256": "tools-2",
+                    "experiment_profile_hash": "profile", "runtime_contract_hash": "contract",
+                    "combined_runtime_hash": "combined-2", "tools_bytes": 202,
+                })
+                event_callback({
+                    "type": "usage", "request_input_tokens": 7, "request_output_tokens": 3,
+                })
+                for index in range(tool_uses):
+                    event_callback({"type": "tool_use", "tool_id": f"call-{index}"})
+                self._runtime_request_index = 2
+                self._loop_count = 99  # Tool telemetry must not use turn count.
+                return "done"
+
+            with patch("codepacex.agent.Agent.run_to_completion", emit_events):
+                result = await tool.execute(AgentToolParams(
+                    prompt="run", description="test", subagent_type="benchmark-worker",
+                    run_in_background=True,
+                ))
+                assert not result.is_error
+                task_id = tasks.list_tasks()[0].id
+                await tasks._async_tasks[task_id]
+            return traces, parent.agent_id, tasks
+
+        traces, parent_id, tasks = asyncio.run(run_case())
+        summary = traces.benchmark_summary(parent_id)
+        task = tasks.list_tasks()[0]
+        trace = traces.get(task.agent.agent_id)
+        assert task.status == "completed"
+        assert trace is not None and trace.status == "completed" and trace.end_time is not None
+        assert summary["child_request_count"] == 2
+        assert summary["child_request_usages"] == [{"input_tokens": 7, "output_tokens": 3}]
+        assert summary["child_tool_call_count"] == tool_uses
+        manifests = summary["child_runtime_manifests"]
+        assert [item["request_index"] for item in manifests] == [1, 2]
+        assert [item["tools_bytes"] for item in manifests] == [101, 202]
+        assert {item["child_agent_id"] for item in manifests} == {task.agent.agent_id}
+
+    def test_background_failure_and_cancellation_finalize_trace_once(self, tmp_path: Path) -> None:
+        from codepacex.agent import Agent
+        from codepacex.tools.agent_tool import AgentTool, AgentToolParams
+
+        async def run_case(cancel: bool) -> tuple[TraceManager, str, TaskManager]:
+            parent = Agent(
+                client=MagicMock(), registry=make_registry("Bash"), protocol="anthropic",
+                work_dir=str(tmp_path),
+            )
+            parent.agent_id = "parent-agent"
+            loader = MagicMock()
+            loader.get.return_value = _worker_definition()
+            tasks = TaskManager()
+            traces = TraceManager()
+            tool = AgentTool(loader, tasks, traces, parent)
+            started = asyncio.Event()
+
+            async def emit_then_stop(self, _task, *, event_callback):
+                event_callback({
+                    "type": "runtime_manifest", "request_index": 1,
+                    "system_sha256": "system", "tools_sha256": "tools",
+                    "experiment_profile_hash": "profile", "runtime_contract_hash": "contract",
+                    "combined_runtime_hash": "combined", "tools_bytes": 123,
+                })
+                event_callback({"type": "usage", "request_input_tokens": 5, "request_output_tokens": 2})
+                event_callback({"type": "tool_use", "tool_id": "call-1"})
+                self._runtime_request_index = 1
+                started.set()
+                if cancel:
+                    await asyncio.Event().wait()
+                raise TimeoutError("fixture timeout")
+
+            with patch("codepacex.agent.Agent.run_to_completion", emit_then_stop):
+                result = await tool.execute(AgentToolParams(
+                    prompt="run", description="test", subagent_type="benchmark-worker",
+                    run_in_background=True,
+                ))
+                assert not result.is_error
+                task_id = tasks.list_tasks()[0].id
+                async_task = tasks._async_tasks[task_id]
+                await started.wait()
+                if cancel:
+                    assert tasks.cancel(task_id)
+                await async_task
+            return traces, parent.agent_id, tasks
+
+        for cancel in (False, True):
+            traces, parent_id, tasks = asyncio.run(run_case(cancel))
+            task = tasks.list_tasks()[0]
+            trace = traces.get(task.agent.agent_id)
+            summary = traces.benchmark_summary(parent_id)
+            assert task.status == ("cancelled" if cancel else "failed")
+            assert trace is not None and trace.status == "failed" and trace.end_time is not None
+            assert summary["child_request_usages"] == [{"input_tokens": 5, "output_tokens": 2}]
+            assert summary["child_tool_call_count"] == 1
+            assert summary["child_runtime_manifests"][0]["tools_bytes"] == 123
+
+    def test_background_children_keep_request_indexes_scoped_by_child_id(self, tmp_path: Path) -> None:
+        from codepacex.agent import Agent
+        from codepacex.tools.agent_tool import AgentTool, AgentToolParams
+
+        async def run_case() -> tuple[TraceManager, str]:
+            parent = Agent(
+                client=MagicMock(), registry=make_registry("Bash"), protocol="anthropic",
+                work_dir=str(tmp_path),
+            )
+            parent.agent_id = "parent-agent"
+            loader = MagicMock()
+            loader.get.return_value = _worker_definition()
+            tasks = TaskManager()
+            traces = TraceManager()
+            tool = AgentTool(loader, tasks, traces, parent)
+
+            async def emit_one_request(self, _task, *, event_callback):
+                event_callback({
+                    "type": "runtime_manifest", "request_index": 1,
+                    "system_sha256": "system", "tools_sha256": "tools",
+                    "experiment_profile_hash": "profile", "runtime_contract_hash": "contract",
+                    "combined_runtime_hash": "combined", "tools_bytes": 321,
+                })
+                self._runtime_request_index = 1
+                return "done"
+
+            with patch("codepacex.agent.Agent.run_to_completion", emit_one_request):
+                for _ in range(2):
+                    result = await tool.execute(AgentToolParams(
+                        prompt="run", description="test", subagent_type="benchmark-worker",
+                        run_in_background=True,
+                    ))
+                    assert not result.is_error
+                await asyncio.gather(*tasks._async_tasks.values())
+            return traces, parent.agent_id
+
+        traces, parent_id = asyncio.run(run_case())
+        manifests = traces.benchmark_summary(parent_id)["child_runtime_manifests"]
+        assert [item["request_index"] for item in manifests] == [1, 1]
+        assert len({item["child_agent_id"] for item in manifests}) == 2
+
+    def test_background_launch_error_closes_the_already_created_trace(self, tmp_path: Path) -> None:
+        from codepacex.agent import Agent
+        from codepacex.tools.agent_tool import AgentTool, AgentToolParams
+
+        parent = Agent(
+            client=MagicMock(), registry=make_registry("Bash"), protocol="anthropic",
+            work_dir=str(tmp_path),
+        )
+        parent.agent_id = "parent-agent"
+        loader = MagicMock()
+        loader.get.return_value = _worker_definition()
+        task_manager = MagicMock()
+        task_manager.launch.side_effect = RuntimeError("scheduler unavailable")
+        traces = TraceManager()
+        tool = AgentTool(loader, task_manager, traces, parent)
+
+        result = asyncio.run(tool.execute(AgentToolParams(
+            prompt="run", description="test", subagent_type="benchmark-worker",
+            run_in_background=True,
+        )))
+
+        assert result.is_error
+        summary = traces.benchmark_summary(parent.agent_id)
+        assert summary["failed_child_count"] == 1
 
 # =====================================================================
 # 11. Agent（run_to_completion 基础功能、agent_id、trace_id）

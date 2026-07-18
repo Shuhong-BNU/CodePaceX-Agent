@@ -39,6 +39,8 @@ class BackgroundTask:
     end_time: float | None = None
     cancel: Callable[[], None] | None = None
     progress: ProgressInfo = field(default_factory=ProgressInfo)
+    event_callback: Callable[[dict[str, Any]], None] | None = None
+    completion_callback: Callable[[BackgroundTask], None] | None = None
 
 
 class TaskManager:
@@ -56,6 +58,8 @@ class TaskManager:
         task: str,
         name: str = "",
         fork_conversation: Any = None,
+        event_callback: Callable[[dict[str, Any]], None] | None = None,
+        completion_callback: Callable[[BackgroundTask], None] | None = None,
     ) -> str:
         task_id = uuid.uuid4().hex[:8]
         bg = BackgroundTask(
@@ -63,6 +67,8 @@ class TaskManager:
             name=name or task_id,
             agent=agent,
             task=task,
+            event_callback=event_callback,
+            completion_callback=completion_callback,
         )
         self._tasks[task_id] = bg
 
@@ -84,9 +90,19 @@ class TaskManager:
 
         try:
             if fork_conversation is not None:
-                result = await bg.agent.run_to_completion("", fork_conversation)
+                if bg.event_callback is None:
+                    result = await bg.agent.run_to_completion("", fork_conversation)
+                else:
+                    result = await bg.agent.run_to_completion(
+                        "", fork_conversation, event_callback=bg.event_callback,
+                    )
             else:
-                result = await bg.agent.run_to_completion(bg.task)
+                if bg.event_callback is None:
+                    result = await bg.agent.run_to_completion(bg.task)
+                else:
+                    result = await bg.agent.run_to_completion(
+                        bg.task, event_callback=bg.event_callback,
+                    )
             bg.result = result
             bg.status = "completed"
 
@@ -110,7 +126,12 @@ class TaskManager:
                         prompt = "\n\n".join(
                             f"[Message from {m.from_agent}] {m.content}" for m in msgs
                         )
-                        result = await bg.agent.run_to_completion(prompt)
+                        if bg.event_callback is None:
+                            result = await bg.agent.run_to_completion(prompt)
+                        else:
+                            result = await bg.agent.run_to_completion(
+                                prompt, event_callback=bg.event_callback,
+                            )
                         bg.result = result
                         msg = create_message(
                             from_agent=bg.name,
@@ -131,6 +152,13 @@ class TaskManager:
             bg.end_time = time.monotonic()
             bg.progress.input_tokens = bg.agent.total_input_tokens
             bg.progress.output_tokens = bg.agent.total_output_tokens
+            if bg.completion_callback is not None:
+                try:
+                    bg.completion_callback(bg)
+                except Exception:
+                    # Trace/reporting must not change the task's terminal
+                    # result or prevent notification of a completed task.
+                    log.exception("Background task completion callback failed: %s", task_id)
             self._async_tasks.pop(task_id, None)
             await self._notify_queue.put(task_id)
 

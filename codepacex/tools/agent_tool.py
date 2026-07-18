@@ -58,6 +58,31 @@ def _capture_foreground_child_event(
     return event_type == "tool_use"
 
 
+def _update_child_trace(
+    trace_manager: Any,
+    trace_node_id: str,
+    child_agent: Any,
+    request_usages: list[tuple[int, int]],
+    runtime_manifests: list[dict[str, Any]],
+    child_tool_call_count: int,
+) -> None:
+    """Update one child trace from the shared event accumulator.
+
+    The event callback is the only source for per-request evidence.  Keep
+    usage on the trace summary's existing single path and never infer tool
+    calls from turns or token totals.
+    """
+    trace_manager.update(
+        trace_node_id,
+        input_tokens=sum(item[0] for item in request_usages),
+        output_tokens=sum(item[1] for item in request_usages),
+        request_count=child_agent._runtime_request_index,
+        request_usages=request_usages,
+        runtime_manifests=runtime_manifests,
+        tool_call_count=child_tool_call_count,
+    )
+
+
 # 核心实现
 class AgentToolParams(BaseModel):
     prompt: str
@@ -87,7 +112,11 @@ PERMISSION_MODE_MAP = {
 
 
 def _child_permission_checker(
-    parent_agent: Agent, definition: Any, *, work_dir: str,
+    parent_agent: Agent,
+    definition: Any,
+    *,
+    work_dir: str,
+    permission_mode_override: str | None = None,
 ) -> Any:
     """Build an isolated child checker from the parent's effective profile.
 
@@ -96,6 +125,10 @@ def _child_permission_checker(
     profile-controlled switches for every in-process child while keeping each
     child checker (and its session approvals and path sandbox) independent.
     Without a profile, preserve the existing definition-only child behaviour.
+    ``team_name`` children are the sole exception: their long-standing
+    noninteractive teammate contract is bypassPermissions, independent of the
+    agent definition.  The override changes only that effective mode; the
+    checker, rule engine, sandbox, and session state remain child-local.
     """
     from codepacex.experiments import PermissionStrategy
     from codepacex.permissions import (
@@ -108,7 +141,9 @@ def _child_permission_checker(
 
     pm_enum = getattr(
         PermissionMode,
-        PERMISSION_MODE_MAP.get(definition.permission_mode, "DEFAULT"),
+        PERMISSION_MODE_MAP.get(
+            permission_mode_override or definition.permission_mode, "DEFAULT",
+        ),
         PermissionMode.DEFAULT,
     )
     parent_checker = parent_agent.permission_checker
@@ -189,6 +224,50 @@ class AgentTool(Tool):
 
     def set_provider_config(self, provider_config: Any) -> None:
         self._provider_config = provider_config
+
+    def _background_child_trace_callbacks(
+        self, trace_node_id: str, sub_agent: Any,
+    ) -> tuple[Any, Any]:
+        """Build the TaskManager callbacks for one asynchronous child.
+
+        Ordinary background children and in-process teammates both run through
+        TaskManager, so they share one event accumulator and one terminal trace
+        finalizer instead of silently diverging from foreground evidence.
+        """
+        request_usages: list[tuple[int, int]] = []
+        runtime_manifests: list[dict[str, Any]] = []
+        child_tool_call_count = 0
+        terminalized = False
+
+        def capture_child_event(event: dict[str, Any]) -> None:
+            nonlocal child_tool_call_count
+            if _capture_foreground_child_event(
+                event, request_usages, runtime_manifests,
+            ):
+                child_tool_call_count += 1
+            _update_child_trace(
+                self._trace_manager, trace_node_id, sub_agent,
+                request_usages, runtime_manifests, child_tool_call_count,
+            )
+
+        def finalize_background_trace(background_task: Any) -> None:
+            nonlocal terminalized
+            if terminalized:
+                return
+            terminalized = True
+            _update_child_trace(
+                self._trace_manager, trace_node_id, sub_agent,
+                request_usages, runtime_manifests, child_tool_call_count,
+            )
+            # TraceManager's established aggregate schema recognizes completed
+            # and failed terminal child states.  A cancellation therefore
+            # closes as failed instead of remaining running.
+            trace_status = (
+                "completed" if background_task.status == "completed" else "failed"
+            )
+            self._trace_manager.complete(trace_node_id, trace_status)
+
+        return capture_child_event, finalize_background_trace
 
     async def execute(self, params: BaseModel) -> ToolResult:
         p: AgentToolParams = params  # type: ignore[assignment]
@@ -309,14 +388,26 @@ class AgentTool(Tool):
         is_fork = p.subagent_type is None
 
         if is_background:
+            capture_child_event, finalize_background_trace = (
+                self._background_child_trace_callbacks(trace_node.agent_id, sub_agent)
+            )
+
             if is_fork:
                 sub_agent._fork_conversation = conversation
-            task_id = self._task_manager.launch(
-                agent=sub_agent,
-                task="" if is_fork else p.prompt,
-                name=agent_name,
-                fork_conversation=conversation if is_fork else None,
-            )
+            try:
+                task_id = self._task_manager.launch(
+                    agent=sub_agent,
+                    task="" if is_fork else p.prompt,
+                    name=agent_name,
+                    fork_conversation=conversation if is_fork else None,
+                    event_callback=capture_child_event,
+                    completion_callback=finalize_background_trace,
+                )
+            except Exception as e:
+                self._trace_manager.complete(trace_node.agent_id, "failed")
+                return ToolResult(
+                    output=f"Sub-agent launch failed: {e}", is_error=True,
+                )
             return ToolResult(
                 output=f"Sub-agent launched in background.\n"
                 f"Task ID: {task_id}\n"
@@ -338,6 +429,8 @@ class AgentTool(Tool):
             ):
                 child_tool_call_count += 1
 
+        result_text = ""
+        run_error: Exception | None = None
         try:
             if is_fork:
                 result_text = await sub_agent.run_to_completion(
@@ -348,21 +441,18 @@ class AgentTool(Tool):
                     p.prompt, event_callback=capture_usage,
                 )
         except Exception as e:
-            self._trace_manager.complete(trace_node.agent_id, "failed")
-            return ToolResult(
-                output=f"Sub-agent failed: {e}", is_error=True
-            )
+            run_error = e
 
-        self._trace_manager.update(
-            trace_node.agent_id,
-            input_tokens=sum(item[0] for item in request_usages),
-            output_tokens=sum(item[1] for item in request_usages),
-            request_count=sub_agent._runtime_request_index,
-            request_usages=request_usages,
-            runtime_manifests=runtime_manifests,
-            tool_call_count=child_tool_call_count,
+        _update_child_trace(
+            self._trace_manager, trace_node.agent_id, sub_agent,
+            request_usages, runtime_manifests, child_tool_call_count,
         )
-        self._trace_manager.complete(trace_node.agent_id, "completed")
+        self._trace_manager.complete(
+            trace_node.agent_id, "failed" if run_error is not None else "completed",
+        )
+
+        if run_error is not None:
+            return ToolResult(output=f"Sub-agent failed: {run_error}", is_error=True)
 
         return ToolResult(output=result_text or "(sub-agent returned no output)")
 
@@ -476,7 +566,10 @@ class AgentTool(Tool):
         instructions = (definition.system_prompt or "") + TEAMMATE_ADDENDUM
 
         checker = _child_permission_checker(
-            self._parent_agent, definition, work_dir=wt.path,
+            self._parent_agent,
+            definition,
+            work_dir=wt.path,
+            permission_mode_override="bypassPermissions",
         )
 
         sub_agent = AgentClass(
@@ -518,12 +611,23 @@ class AgentTool(Tool):
             )
 
         # 进程内模式：直接用 task_manager 执行并通知结果
-        task_id = self._task_manager.launch(
-            agent=sub_agent,
-            task="" if is_fork else p.prompt,
-            name=teammate_name,
-            fork_conversation=conversation if is_fork else None,
+        capture_child_event, finalize_background_trace = (
+            self._background_child_trace_callbacks(trace_node.agent_id, sub_agent)
         )
+        try:
+            task_id = self._task_manager.launch(
+                agent=sub_agent,
+                task="" if is_fork else p.prompt,
+                name=teammate_name,
+                fork_conversation=conversation if is_fork else None,
+                event_callback=capture_child_event,
+                completion_callback=finalize_background_trace,
+            )
+        except Exception as e:
+            self._trace_manager.complete(trace_node.agent_id, "failed")
+            return ToolResult(
+                output=f"Teammate launch failed: {e}", is_error=True,
+            )
 
         return ToolResult(
             output=(
@@ -690,33 +794,55 @@ class AgentTool(Tool):
         sub_agent.agent_id = trace_node.agent_id
 
         request_usages: list[tuple[int, int]] = []
+        runtime_manifests: list[dict[str, Any]] = []
+        child_tool_call_count = 0
 
-        def capture_usage(event: dict[str, Any]) -> None:
-            if event.get("type") == "usage":
-                request_usages.append(_billable_request_usage(event))
+        def capture_child_event(event: dict[str, Any]) -> None:
+            nonlocal child_tool_call_count
+            if _capture_foreground_child_event(
+                event, request_usages, runtime_manifests,
+            ):
+                child_tool_call_count += 1
 
+        result_text = ""
+        run_error: Exception | None = None
         try:
             result_text = await sub_agent.run_to_completion(
-                task, event_callback=capture_usage,
+                task, event_callback=capture_child_event,
             )
         except Exception as e:
-            self._trace_manager.complete(trace_node.agent_id, "failed")
+            run_error = e
+
+        # Child events may precede a timeout or failure.  Retain their trace
+        # evidence before cleanup, while keeping request usage on this existing
+        # single summary path (never the ledger) to avoid duplicate accounting.
+        _update_child_trace(
+            self._trace_manager, trace_node.agent_id, sub_agent,
+            request_usages, runtime_manifests, child_tool_call_count,
+        )
+        self._trace_manager.complete(
+            trace_node.agent_id, "failed" if run_error is not None else "completed",
+        )
+
+        cleanup_error: Exception | None = None
+        cleanup = None
+        try:
+            cleanup = await self._worktree_manager.auto_cleanup(wt_name, wt.head_commit)
+        except Exception as e:
+            cleanup_error = e
+
+        if run_error is not None:
+            output = f"Sub-agent in worktree failed: {run_error}"
+            if cleanup is not None and cleanup.kept:
+                output += f"\n[Worktree preserved at {cleanup.path}, branch {cleanup.branch}]"
+            return ToolResult(output=output, is_error=True)
+        if cleanup_error is not None:
             return ToolResult(
-                output=f"Sub-agent in worktree failed: {e}",
+                output=f"Sub-agent worktree cleanup failed: {cleanup_error}",
                 is_error=True,
             )
 
-        self._trace_manager.update(
-            trace_node.agent_id,
-            input_tokens=sum(item[0] for item in request_usages),
-            output_tokens=sum(item[1] for item in request_usages),
-            request_count=sub_agent._runtime_request_index,
-            request_usages=request_usages,
-            tool_call_count=sub_agent._loop_count,
-        )
-        self._trace_manager.complete(trace_node.agent_id, "completed")
-
-        cleanup = await self._worktree_manager.auto_cleanup(wt_name, wt.head_commit)
+        assert cleanup is not None
         if cleanup.kept:
             result_text = (result_text or "") + (
                 f"\n[Worktree preserved at {cleanup.path}, branch {cleanup.branch}]"
