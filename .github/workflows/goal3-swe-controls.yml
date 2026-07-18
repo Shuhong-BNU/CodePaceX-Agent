@@ -2,6 +2,9 @@ name: Goal 3 SWE controls
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - codex/goal3-swe-live-formal-eval
 
 permissions:
   contents: read
