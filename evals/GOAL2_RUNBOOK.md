@@ -1,6 +1,6 @@
 # Goal 2：真实实验、正式 Benchmark 与证据闭环运行手册
 
-本手册冻结 Goal 2 的实验顺序、已完成的证据和不可变边界，不伪造结果。正式 MCP 已完成 eager/deferred 各 150 个 terminal Trial；其 299 Usage-complete、149 Usage/Token pair 仅保留为会计与配对事实，不能在冻结 source trace 缺失时表述为成功 MCP 执行证据，见 [`GOAL2_MCP_EXECUTION_EVIDENCE_ERRATUM.md`](GOAL2_MCP_EXECUTION_EVIDENCE_ERRATUM.md)。正式 Permission 已完成四策略各 50 个 terminal Trial。Retention 以一个已保守结算、最终 Provider Usage unknown 的 `summary_only` infrastructure-error session 作可审计 partial 收口。Multi-Agent 零模型 grader gate 为 NO-GO，故没有正式 Provider Trial。当前 ledger 为 CNY `92.579316` spent、`1225` request charges、`1114` settlements、`active_reservation=null`；CNY `90` safety reserve 未动用。Formal SWE 固定为 `infrastructure-blocked`，三次 8 小时长会话固定为 deferred。完整指标、Artifact hash 和不可声明范围见 [`GOAL2_FINAL_REPORT.md`](GOAL2_FINAL_REPORT.md)。
+本手册冻结 Goal 2 的实验顺序、已完成的证据和不可变边界，不伪造结果。正式 MCP 已完成 eager/deferred 各 150 个 terminal Trial；其 299 Usage-complete、149 Usage/Token pair 仅保留为会计与配对事实，不能在冻结 source trace 缺失时表述为成功 MCP 执行证据，见 [`GOAL2_MCP_EXECUTION_EVIDENCE_ERRATUM.md`](GOAL2_MCP_EXECUTION_EVIDENCE_ERRATUM.md)。正式 Permission 已完成四策略各 50 个 terminal Trial。Retention 以一个已保守结算、最终 Provider Usage unknown 的 `summary_only` infrastructure-error session 作可审计 partial 收口。Multi-Agent 历史零模型 `NO-GO` 因 runtime-log scope mismatch 且冻结 control Artifact 缺失而为 `evidence_insufficient`；没有正式 Provider Trial，见 [`GOAL2_MULTI_AGENT_SCOPE_EVIDENCE_ERRATUM.md`](GOAL2_MULTI_AGENT_SCOPE_EVIDENCE_ERRATUM.md)。当前 ledger 为 CNY `92.579316` spent、`1225` request charges、`1114` settlements、`active_reservation=null`；CNY `90` safety reserve 未动用。Formal SWE 固定为 `infrastructure-blocked`，三次 8 小时长会话固定为 deferred。完整指标、Artifact hash 和不可声明范围见 [`GOAL2_FINAL_REPORT.md`](GOAL2_FINAL_REPORT.md)。
 
 ## 1. 冻结身份与不可变边界
 
@@ -120,7 +120,7 @@ python -m evals.pilot execute --confirm-paid-run \
 
 ### 5.3 正式矩阵的最终状态
 
-Stage A/B 最小 Pilot 只证明 runner、唯一变量、Usage 与 Artifact 链；不与正式 Claim 混样。正式矩阵已经冻结：MCP 不得重跑任何 terminal Trial，尤其不得重跑 `mcp_one_08/1`；Permission 不得重跑任何四策略 terminal Trial；Retention 不得重跑 `retention-session-01`。Multi-Agent 因 NO-GO 不得执行正式 Provider Trial。Hook 单独保留为零模型、零网络的确定性研究，不与 Provider 实验混合。
+Stage A/B 最小 Pilot 只证明 runner、唯一变量、Usage 与 Artifact 链；不与正式 Claim 混样。正式矩阵已经冻结：MCP 不得重跑任何 terminal Trial，尤其不得重跑 `mcp_one_08/1`；Permission 不得重跑任何四策略 terminal Trial；Retention 不得重跑 `retention-session-01`。Multi-Agent 历史 gate 的 scope 证据为 `evidence_insufficient`，且没有正式 Provider Trial；不得以修复后的零模型 preflight 触发正式 Trial。Hook 单独保留为零模型、零网络的确定性研究，不与 Provider 实验混合。
 
 `long-pilot-1` 是唯一长会话真实证据：2 小时墙钟、8/8 cycles、planned restart、recovery、4 个 hash-chained checkpoints、CNY `0.342108` 估算成本。`long-formal-1/2/3` 明确延期到 follow-up Goal；不得将该 Pilot 描述为 8 小时正式验证。
 
@@ -156,7 +156,7 @@ python -m evals.goal2_claims compile \
 | MCP Token / Schema | formal 300/300 terminal；299 Usage complete、149 Usage/Token pairs | 计费与配对记录保留；由于冻结 source trace 本地缺失，MCP 成功执行与能力 Claim 为 `evidence_insufficient`；schema bytes 仍因原始 runtime telemetry 缺失为 `insufficient-data` |
 | Retention | formal auditable partial | `summary_only` session-01 不重跑；不声明 profile comparison |
 | Permission | formal 四策略各 50 terminal | 结果限 Darwin arm64；含 Usage unknown infrastructure error 的 sandbox arm 保持其 Claim 边界 |
-| Multi-Agent | zero-model gate NO-GO | 不运行 Provider Trial；生成 `insufficient-data` Claim |
+| Multi-Agent | historical zero-model gate `evidence_insufficient` | 冻结 control Artifact 缺失且发现 runtime-log scope mismatch；不运行 Provider Trial，生成 `insufficient-data` Claim |
 | Hook | 已完成 100/100，正式本地 Artifact 绑定 clean HEAD | 零模型、零网络、零拒绝副作用；最终报告引用 Artifact hash |
 | 长会话 | 2h Pilot 已完成；3×8h formal `insufficient-data` / deferred | follow-up Goal，不阻塞本轮其他指标 |
 

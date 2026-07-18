@@ -364,13 +364,13 @@ def generate_claim_document(
     if not include_multi:
         claims.append({
             "claim_id": "multi-agent-formal-no-go",
-            "description_zh": "Multi-Agent 正式实验未通过零模型 gate",
-            "description_en": "Multi-Agent formal study did not pass its zero-model gate.",
+            "description_zh": "Multi-Agent 正式实验缺少可复核的零模型 gate 证据",
+            "description_en": "Multi-Agent formal study lacks reviewable zero-model gate evidence.",
             "metric_name": "multi_agent_task_success_rate", "aggregation": "pooled_rate",
             "unit": "ratio", "sample_size": 50, "experiment_conditions": None,
             "source_run_ids": [], "status": "insufficient-data",
             "limitations": [
-                "The frozen zero-model Multi-Agent gate returned NO-GO.",
+                "The historical zero-model Multi-Agent gate is evidence_insufficient after the runtime-artifact scope erratum.",
                 "No formal Multi-Agent Provider Trial was run; no comparative effect is claimed.",
             ],
         })

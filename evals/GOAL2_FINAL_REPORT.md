@@ -14,6 +14,12 @@ The preserved 299 Usage-complete Trials and 149 Usage/Token pairs are not a
 claim of successfully executed MCP fixture calls while the frozen source traces
 are unavailable for call-ID-correlated result auditing.
 
+Post-review Multi-Agent scope boundary: see
+[`GOAL2_MULTI_AGENT_SCOPE_EVIDENCE_ERRATUM.md`](GOAL2_MULTI_AGENT_SCOPE_EVIDENCE_ERRATUM.md).
+The historical zero-model `NO-GO` was affected by a runtime-log scope mismatch;
+without its frozen control Artifact it is `evidence_insufficient`, and no
+formal Multi-Agent Provider Trial or comparative Claim is implied.
+
 ## Frozen identities and budget
 
 - Claims evidence-control commit: `142e4ce`; the full ID is recorded in Git
@@ -36,7 +42,7 @@ are unavailable for call-ID-correlated result auditing.
 | MCP tool loading | Terminal/accounting matrix preserved; execution evidence insufficient | 299 Usage-complete Trials and 149 valid Token pairs remain accounting facts. They are not verified successful fixture executions because the frozen source traces are unavailable for the post-review `tool_result` correlation audit. `mcp_one_08/1` remains one terminal infrastructure error, is included in attempted count and settled cost, and is excluded from Usage-derived Token measures. |
 | Retention | Auditable partial | `summary_only` session 01 is a terminal infrastructure error with unknown final Provider Usage; it was conservatively settled and is not rerun. `recovery_v1` formal sessions were not run, so no profile comparison is claimed. |
 | Permission | Complete terminal matrix | `default` 44 success/6 task failure; `session_allow` 38/12; `explicit_rules` 42/8; `sandbox_auto_allow` 41 success/8 task failure/1 infrastructure error. Results are limited to Darwin arm64. |
-| Multi-Agent | Insufficient data | The zero-model grader gate returned NO-GO. No formal Multi-Agent Provider Trial was sent and no effect is claimed. |
+| Multi-Agent | Evidence insufficient | The historical zero-model `NO-GO` cannot be regraded because its frozen control Artifact is unavailable; the known runtime-log scope mismatch is recorded in the post-review erratum. No formal Multi-Agent Provider Trial was sent and no effect is claimed. |
 | Formal SWE | Infrastructure-blocked | No formal resolved-rate Claim is produced. |
 | Three 8-hour sessions | Deferred | No formal long-session Claim is produced; the two-hour diagnostic Pilot is not a substitute. |
 
@@ -76,7 +82,7 @@ values.
 - `claims.goal2.yaml`: declarative Claim input.
 - `claims.goal2.compiled.yaml`: compiler output; it includes source Run IDs,
   cohort/provenance hashes, sample sizes, limitations and the Multi-Agent
-  NO-GO Claim.
+  insufficient-data boundary.
 - The compiler reports 23 verified Claims and 10 `insufficient-data` Claims.
   The latter are evidence boundaries, not negative results.
 

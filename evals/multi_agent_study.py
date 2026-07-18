@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -130,19 +131,89 @@ def agent_summary(trace_text: str) -> dict[str, Any] | None:
     return summaries[0] if len(summaries) == 1 else None
 
 
-def changed_files(workspace: Path) -> list[str]:
+@dataclass(frozen=True)
+class _ChangedPathRecord:
+    raw: str
+    paths: tuple[str, ...]
+
+
+def _runtime_artifact_reason(path: str) -> str | None:
+    """Classify only runtime files known to this CLI/test grading path."""
+    parts = path.split("/")
+    if path == ".codepacex/debug.log":
+        return "CodePaceX debug log"
+    if path == ".codepacex/history":
+        return "CodePaceX runtime history"
+    if path.startswith(".codepacex/session/") or path.startswith(".codepacex/sessions/"):
+        return "CodePaceX session runtime data"
+    if "__pycache__" in parts:
+        return "Python bytecode cache"
+    if path.endswith(".pyc"):
+        return "Python bytecode"
+    if ".pytest_cache" in parts:
+        return "pytest cache"
+    return None
+
+
+def _changed_path_records(workspace: Path) -> list[_ChangedPathRecord]:
+    """Read porcelain v1 with NUL records so spaces and renames stay unambiguous."""
     result = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=workspace,
-        text=True, capture_output=True, check=False,
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        cwd=workspace, capture_output=True, check=False,
     )
     if result.returncode != 0:
         raise ValueError("cannot inspect multi-agent fixture changes")
-    paths: list[str] = []
-    for line in result.stdout.splitlines():
-        raw = line[3:]
-        path = raw.split(" -> ")[-1]
-        paths.append(path)
-    return sorted(set(paths))
+    records: list[_ChangedPathRecord] = []
+    fields = result.stdout.split(b"\0")
+    index = 0
+    while index < len(fields):
+        entry = fields[index]
+        index += 1
+        if not entry:
+            continue
+        if len(entry) < 4 or entry[2:3] != b" ":
+            raise ValueError("invalid multi-agent fixture Git status record")
+        status = entry[:2].decode("ascii", errors="strict")
+        destination = entry[3:].decode("utf-8", errors="surrogateescape")
+        if "R" in status or "C" in status:
+            if index >= len(fields) or not fields[index]:
+                raise ValueError("rename status lacks its original path")
+            origin = fields[index].decode("utf-8", errors="surrogateescape")
+            index += 1
+            records.append(_ChangedPathRecord(
+                raw=f"{origin} -> {destination}", paths=(origin, destination),
+            ))
+        else:
+            records.append(_ChangedPathRecord(raw=destination, paths=(destination,)))
+    return records
+
+
+def changed_file_audit(workspace: Path) -> dict[str, Any]:
+    """Keep raw Git evidence while excluding only known runtime artifacts."""
+    raw_changed_paths: list[str] = []
+    ignored_reasons: dict[str, str] = {}
+    graded_paths: set[str] = set()
+    for record in _changed_path_records(workspace):
+        raw_changed_paths.append(record.raw)
+        for path in record.paths:
+            reason = _runtime_artifact_reason(path)
+            if reason is None:
+                graded_paths.add(path)
+            else:
+                ignored_reasons[path] = reason
+    return {
+        "raw_changed_paths": raw_changed_paths,
+        "ignored_runtime_artifacts": sorted(ignored_reasons),
+        "ignored_runtime_artifact_reasons": {
+            path: ignored_reasons[path] for path in sorted(ignored_reasons)
+        },
+        "graded_changed_paths": sorted(graded_paths),
+    }
+
+
+def changed_files(workspace: Path) -> list[str]:
+    """Compatibility wrapper for the semantic paths used by exact-scope grading."""
+    return list(changed_file_audit(workspace)["graded_changed_paths"])
 
 
 def grade_trial(
@@ -150,7 +221,8 @@ def grade_trial(
     workspace: Path, test_returncode: int,
 ) -> tuple[bool, dict[str, Any]]:
     summary = agent_summary(trace_text)
-    changed = changed_files(workspace)
+    path_audit = changed_file_audit(workspace)
+    changed = path_audit["graded_changed_paths"]
     child_count = int(summary.get("child_count", -1)) if summary else -1
     delegation_ok = child_count == 0 if mode is AgentMode.SINGLE else 1 <= child_count <= 3
     mode_ok = bool(summary and summary.get("agent_mode") == mode.value)
@@ -167,6 +239,7 @@ def grade_trial(
         "test_passed": test_returncode == 0,
         "expected_files": expected_changes,
         "changed_files": changed,
+        **path_audit,
         "exact_change_scope": changed == expected_changes,
         "delegation_ok": delegation_ok,
         "runtime_mode_ok": mode_ok,

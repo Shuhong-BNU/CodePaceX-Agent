@@ -10,8 +10,9 @@ claims, Artifact hashes, and publication limits.
 - Formal MCP and Permission matrices are complete. Do not rerun any terminal
   Trial, including `mcp_one_08/1`, Retention `summary_only/session-01`, or
   Permission `sandbox_auto_allow/perm_write_workspace/4`.
-- Retention is legally closed as partial. Multi-Agent is NO-GO and has no
-  formal Provider Trial. Formal SWE remains infrastructure-blocked; the three
+- Retention is legally closed as partial. Multi-Agent historical gate evidence
+  is insufficient after the runtime-artifact scope erratum and has no formal
+  Provider Trial. Formal SWE remains infrastructure-blocked; the three
   formal eight-hour sessions remain deferred.
 - Ledger checkpoint: CNY `92.579316` spent; `active_reservation=null`; CNY 90
   safety reserve untouched.
