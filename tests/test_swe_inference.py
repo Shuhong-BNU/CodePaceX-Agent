@@ -167,17 +167,56 @@ def test_swe_reconciliation_failure_records_one_terminal_trial(
     assert not (recorder.path / "usage.json").exists()
 
 
-def test_swe_evaluator_failure_closes_each_pending_trial(tmp_path: Path) -> None:
+def test_swe_infrastructure_failure_closes_each_pending_trial(tmp_path: Path) -> None:
     recorder = RunRecorder(
         tmp_path, RunManifest(experiment_kind="swe_bench_live"), run_id="evaluator-failure",
     )
     pending = []
     for instance_id in ("one", "two"):
         recorder.event("trial_started", {"task_id": instance_id, "repetition_id": "1", "attempt_id": 1})
-        pending.append({"instance_id": instance_id, "duration_seconds": 1.0, "actual_cny": "0.000001"})
-    swe_inference._complete_pending_evaluator_failure(
+        pending.append({
+            "instance_id": instance_id, "duration_seconds": 1.0,
+            "actual_cny": "0.000001", "provider_request_count": 1,
+        })
+    swe_inference._complete_pending_infrastructure_failure(
         recorder, pending, repeat_index=0, reason="official_evaluator_failed",
     )
     recorder.finalize({"status": "infrastructure_error", "execution_mode": "live"})
     result = json.loads((recorder.path / "result.json").read_text())
     assert result["completed_trial_count"] == 2
+    completed = [
+        json.loads(line) for line in (recorder.path / "events.jsonl").read_text().splitlines()
+        if json.loads(line)["type"] == "trial_completed"
+    ]
+    assert all(event["actual_cny"] == "0.000001" for event in completed)
+    assert all(event["provider_request_count"] == 1 for event in completed)
+
+
+def test_swe_task_failure_records_settled_cost_evidence(tmp_path: Path) -> None:
+    recorder = RunRecorder(
+        tmp_path, RunManifest(experiment_kind="swe_bench_live"), run_id="task-failure",
+    )
+    recorder.event("trial_started", {"task_id": "one", "repetition_id": "1", "attempt_id": 1})
+    swe_inference._record_task_failure(
+        recorder, instance_id="one", repeat_index=0,
+        trial={
+            "duration_seconds": 2.5, "actual_cny": "0.000001",
+            "provider_request_count": 1, "empty_patch": True,
+        },
+    )
+    recorder.finalize({"status": "task_failure", "execution_mode": "live"})
+    completed = [
+        json.loads(line) for line in (recorder.path / "events.jsonl").read_text().splitlines()
+        if json.loads(line)["type"] == "trial_completed"
+    ]
+    assert [{key: event[key] for key in (
+        "type", "task_id", "repetition_id", "attempt_id", "status",
+        "duration_seconds", "actual_cny", "provider_request_count",
+        "empty_patch", "official_outcome",
+    )} for event in completed] == [{
+        "type": "trial_completed",
+        "task_id": "one", "repetition_id": "1", "attempt_id": 1,
+        "status": "task_failure", "duration_seconds": 2.5,
+        "actual_cny": "0.000001", "provider_request_count": 1,
+        "empty_patch": True, "official_outcome": None,
+    }]

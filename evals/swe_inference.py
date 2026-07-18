@@ -168,11 +168,11 @@ def _record_reconciliation_failure(
     recorder.event("trial_completed", payload)
 
 
-def _complete_pending_evaluator_failure(
+def _complete_pending_infrastructure_failure(
     recorder: RunRecorder, pending: list[dict[str, Any]], *, repeat_index: int,
     reason: str,
 ) -> None:
-    """Close inference trials when the later official evaluator cannot finish."""
+    """Close settled inference trials when a later run phase cannot finish."""
     for trial in pending:
         recorder.event("trial_completed", {
             "task_id": trial["instance_id"],
@@ -180,9 +180,25 @@ def _complete_pending_evaluator_failure(
             "status": "infrastructure_error",
             "duration_seconds": trial["duration_seconds"],
             "actual_cny": trial["actual_cny"],
+            "provider_request_count": trial["provider_request_count"],
             "official_evaluator_completed": False,
             "failure_reason": reason,
         })
+
+
+def _record_task_failure(
+    recorder: RunRecorder, *, instance_id: str, repeat_index: int,
+    trial: dict[str, Any],
+) -> None:
+    """Record settled cost evidence for an inference task that produced no patch."""
+    recorder.event("trial_completed", {
+        "task_id": instance_id, "repetition_id": str(repeat_index or 1),
+        "attempt_id": 1, "status": "task_failure",
+        "duration_seconds": trial["duration_seconds"],
+        "actual_cny": trial["actual_cny"],
+        "provider_request_count": trial["provider_request_count"],
+        "empty_patch": trial["empty_patch"], "official_outcome": None,
+    })
 
 
 def load_official_environment(path: Path = DEFAULT_OFFICIAL_ENVIRONMENT) -> dict[str, Any]:
@@ -488,6 +504,10 @@ def execute(
                         text=True, capture_output=True, timeout=1800, check=False,
                     )
                 except subprocess.TimeoutExpired:
+                    _complete_pending_infrastructure_failure(
+                        recorder, pending, repeat_index=repeat_index,
+                        reason="subsequent_instance_timeout",
+                    )
                     recorder.event("trial_completed", {
                         "task_id": instance_id, "repetition_id": str(repeat_index or 1),
                         "attempt_id": 1, "status": "timeout",
@@ -501,6 +521,10 @@ def execute(
                 requests, input_tokens, output_tokens = trace_usage(process.stdout or "")
                 accounting = gate.trial_accounting(trial_id)
                 if accounting["budget_blocked"]:
+                    _complete_pending_infrastructure_failure(
+                        recorder, pending, repeat_index=repeat_index,
+                        reason="subsequent_instance_budget_blocked",
+                    )
                     recorder.event("trial_completed", {
                         "task_id": instance_id, "repetition_id": str(repeat_index or 1),
                         "attempt_id": 1, "status": "budget_blocked",
@@ -519,6 +543,10 @@ def execute(
                         reason = "missing_trace_usage"
                     else:
                         reason = "request_count_mismatch"
+                    _complete_pending_infrastructure_failure(
+                        recorder, pending, repeat_index=repeat_index,
+                        reason=f"subsequent_instance_reconciliation_{reason}",
+                    )
                     _record_reconciliation_failure(
                         recorder, instance_id=instance_id, repeat_index=repeat_index,
                         trial_id=trial_id, duration_seconds=time.monotonic() - started,
@@ -542,21 +570,25 @@ def execute(
                     "model_name_or_path": pilot.model_id,
                     "model_patch": patch,
                 })
-                pending.append({
+                trial = {
                     "instance_id": instance_id,
                     "duration_seconds": time.monotonic() - started,
                     "actual_cny": accounting["actual_cny"],
+                    "provider_request_count": accounting["request_count"],
                     "process_returncode": process.returncode,
                     "empty_patch": not bool(patch.strip()),
-                })
+                }
+                pending.append(trial)
                 recorder.write_json("predictions.json", predictions)
                 if process.returncode != 0 or not patch.strip():
-                    recorder.event("trial_completed", {
-                        "task_id": instance_id, "repetition_id": str(repeat_index or 1),
-                        "attempt_id": 1, "status": "task_failure",
-                        "empty_patch": not bool(patch.strip()),
-                        "official_outcome": None,
-                    })
+                    _complete_pending_infrastructure_failure(
+                        recorder, pending[:-1], repeat_index=repeat_index,
+                        reason="subsequent_instance_task_failure",
+                    )
+                    _record_task_failure(
+                        recorder, instance_id=instance_id, repeat_index=repeat_index,
+                        trial=trial,
+                    )
                     recorder.finalize({
                         "status": "task_failure", "execution_mode": "live",
                         "official_evaluator_completed": False,
@@ -576,7 +608,7 @@ def execute(
                 evaluator_architecture=selected_evaluator_architecture(),
             )
         except (OSError, ValueError) as exc:
-            _complete_pending_evaluator_failure(
+            _complete_pending_infrastructure_failure(
                 recorder, pending, repeat_index=repeat_index,
                 reason="official_evaluator_exception",
             )
@@ -592,7 +624,7 @@ def execute(
             "test-output.txt", (evaluator.stdout or "") + "\n" + (evaluator.stderr or ""),
         )
         if evaluator.returncode != 0:
-            _complete_pending_evaluator_failure(
+            _complete_pending_infrastructure_failure(
                 recorder, pending, repeat_index=repeat_index,
                 reason="official_evaluator_failed",
             )
@@ -605,7 +637,7 @@ def execute(
         try:
             outcomes = collect_official_outcomes(recorder.path, set(ids))
         except (OSError, ValueError, json.JSONDecodeError) as exc:
-            _complete_pending_evaluator_failure(
+            _complete_pending_infrastructure_failure(
                 recorder, pending, repeat_index=repeat_index,
                 reason="official_evaluator_outcomes_incomplete",
             )
@@ -626,6 +658,7 @@ def execute(
                 "status": "success" if resolved else "task_failure",
                 "duration_seconds": trial["duration_seconds"],
                 "actual_cny": trial["actual_cny"],
+                "provider_request_count": trial["provider_request_count"],
                 "empty_patch": False, "official_outcome": resolved,
                 "numerator": int(resolved), "denominator": 1,
             })
