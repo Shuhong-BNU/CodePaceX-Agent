@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import sys
 from pathlib import Path
 from statistics import median
@@ -13,22 +14,43 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from evals.benchmark import RUN_ID_RE, canonical_hash, reduction_percent
+from codepacex.experiments import ExperimentProfile, combined_runtime_hash
+from evals.benchmark import RUN_ID_RE, SCORABLE_STATUSES, canonical_hash, reduction_percent
 
 REGISTERED_METRICS = {
     "provider_input_tokens",
+    "provider_output_tokens",
+    "provider_cache_tokens",
+    "runtime_tool_schema_bytes",
+    "actual_cost_cny",
+    "trial_input_tokens",
+    "trial_output_tokens",
+    "provider_request_count",
+    "integration_conflict_count",
+    "maximum_parallel_children",
     "permission_hitl_count",
     "successful_task_wall_time_seconds",
     "rate",
     "ab_reduction_percent",
+    "canary_retention_rate",
+    "dangerous_command_interception_rate",
+    "multi_agent_task_success_rate",
+    "hook_consistency_rate",
+    "checkpoint_recovery_rate",
 }
 REGISTERED_ALLOWED_DIFFERENCES = {
     "manifest.provider", "manifest.protocol", "manifest.model_id",
     "manifest.base_url_origin", "manifest.git_commit", "manifest.prompt_version",
     "manifest.model_parameters", "manifest.timeout_seconds", "manifest.retry_budget",
     "manifest.fallback_enabled", "manifest.task_ids", "manifest.repetitions",
+    "manifest.experiment_profile", "manifest.experiment_profile_hash",
+    "manifest.runtime_contract_hash", "manifest.benchmark_asset_hash",
+    "manifest.max_iterations",
     "runtime.provider", "runtime.protocol", "runtime.model_id",
     "runtime.system_sha256", "runtime.tools_sha256", "runtime.messages_sha256",
+    "runtime.tools_bytes",
+    "runtime.experiment_profile_hash", "runtime.runtime_contract_hash",
+    "runtime.combined_runtime_hash",
 }
 _MANIFEST_FIELDS = {
     "manifest.provider": "provider",
@@ -43,11 +65,23 @@ _MANIFEST_FIELDS = {
     "manifest.fallback_enabled": "fallback_enabled",
     "manifest.task_ids": "task_ids",
     "manifest.repetitions": "repetitions",
+    "manifest.experiment_profile": "experiment_profile",
+    "manifest.experiment_profile_hash": "experiment_profile_hash",
+    "manifest.runtime_contract_hash": "runtime_contract_hash",
+    "manifest.benchmark_asset_hash": "benchmark_asset_hash",
+    "manifest.swe_evaluator_architecture": "swe_evaluator_architecture",
+    "manifest.max_iterations": "max_iterations",
 }
 _RUNTIME_FIELDS = (
     "provider", "protocol", "model_id", "system_sha256", "tools_sha256",
-    "messages_sha256",
+    "messages_sha256", "tools_bytes", "experiment_profile_hash", "runtime_contract_hash",
+    "combined_runtime_hash",
 )
+_RUNTIME_SET_FIELDS = {
+    "provider", "protocol", "model_id", "experiment_profile_hash",
+    "runtime_contract_hash",
+}
+_PRICING_SNAPSHOT_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class ExperimentConditions(BaseModel):
@@ -66,6 +100,16 @@ class ExperimentConditions(BaseModel):
     task_ids: list[str]
     repetitions: int = Field(ge=1)
     feature_flags: dict[str, Any]
+    experiment_profile: dict[str, Any]
+    experiment_profile_hash: str
+    runtime_contract_hash: str
+    benchmark_asset_hash: str
+    swe_evaluator_architecture: Literal["native", "x86_64"] | None = None
+    max_iterations: int = Field(gt=0)
+    pricing_snapshot_hash: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$",
+        description="Required provenance for actual_cost_cny Claims only.",
+    )
     allowed_differences: list[str] = Field(
         description="Exact registered identity paths allowed to differ; no wildcards."
     )
@@ -105,8 +149,8 @@ class Claim(BaseModel):
     )
     unit: str
     sample_size: int = Field(gt=0)
-    experiment_conditions: ExperimentConditions
-    source_run_ids: list[str] = Field(min_length=1)
+    experiment_conditions: ExperimentConditions | None = None
+    source_run_ids: list[str] = Field(default_factory=list)
     generated_value: float | None = None
     generation_command: str | None = None
     status: Literal["draft", "verified", "insufficient-data"] = "draft"
@@ -134,19 +178,32 @@ class Claim(BaseModel):
             raise ValueError(f"unregistered metric_name: {self.metric_name}")
         allowed = {
             "rate": {"pooled_rate"},
+            "canary_retention_rate": {"pooled_rate"},
+            "dangerous_command_interception_rate": {"pooled_rate"},
+            "multi_agent_task_success_rate": {"pooled_rate"},
+            "hook_consistency_rate": {"pooled_rate"},
+            "checkpoint_recovery_rate": {"pooled_rate"},
             "ab_reduction_percent": {"mean", "median", "p95"},
         }.get(self.metric_name, {"sum", "mean", "median", "p95"})
         if self.aggregation not in allowed:
             raise ValueError(
                 f"aggregation {self.aggregation} is invalid for {self.metric_name}"
             )
+        if self.status == "insufficient-data" and not self.source_run_ids:
+            if self.experiment_conditions is not None:
+                raise ValueError("no-evidence insufficient-data claims cannot declare conditions")
+            if self.generated_value is not None:
+                raise ValueError("no-evidence insufficient-data claims cannot have a value")
+            return self
+        if self.experiment_conditions is None or not self.source_run_ids:
+            raise ValueError("measured claims require conditions and source Run IDs")
         return self
 
 
 class ClaimDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     claims: list[Claim]
 
 
@@ -223,17 +280,34 @@ def _identity(manifest: dict[str, Any], run: Path) -> dict[str, Any]:
             identity[f"manifest.feature_flags.{key}"] = value
     runtime = _runtime_records(run)
     for field in _RUNTIME_FIELDS:
-        identity[f"runtime.{field}"] = [item.get(field) for item in runtime]
+        values = [item.get(field) for item in runtime]
+        identity[f"runtime.{field}"] = (
+            sorted(set(values), key=lambda value: str(value))
+            if field in _RUNTIME_SET_FIELDS else values
+        )
     return identity
 
 
 def _expected_conditions(conditions: ExperimentConditions) -> dict[str, Any]:
-    expected = {
-        path: getattr(conditions, field) for path, field in _MANIFEST_FIELDS.items()
-    }
+    expected = {}
+    for path, field in _MANIFEST_FIELDS.items():
+        value = getattr(conditions, field)
+        if path == "manifest.swe_evaluator_architecture" and value is None:
+            continue
+        expected[path] = value
     for key, value in conditions.feature_flags.items():
         expected[f"manifest.feature_flags.{key}"] = value
     return expected
+
+
+def _swe_evaluator_architectures(
+    runs: list[tuple[dict[str, Any], dict[str, Any], Path]],
+) -> list[Any]:
+    return [
+        manifest.get("swe_evaluator_architecture")
+        for manifest, _, _ in runs
+        if str(manifest.get("experiment_kind", "")).startswith("goal2-swe-")
+    ]
 
 
 def _compatibility(
@@ -247,6 +321,41 @@ def _compatibility(
     expected = _expected_conditions(claim.experiment_conditions)
     problems: list[str] = []
     observed: list[str] = []
+    for manifest, result, run in runs:
+        if manifest.get("schema_version") != 2 or result.get("schema_version") != 2:
+            problems.append(
+                "Schema v1 and unversioned Runs are inspection-only and cannot verify Goal 2 claims."
+            )
+            continue
+        if result.get("scorable") is not True:
+            problems.append(
+                "Source Run is unscorable; infrastructure-error trials cannot enter formal Claims."
+            )
+            continue
+        flags = manifest.get("feature_flags")
+        if flags:
+            problems.append("Legacy feature_flags are not eligible for Goal 2 claims.")
+        try:
+            profile = ExperimentProfile.model_validate(manifest.get("experiment_profile"))
+        except (ValueError, TypeError):
+            problems.append("Manifest experiment_profile is missing or invalid.")
+            continue
+        if profile.profile_hash() != manifest.get("experiment_profile_hash"):
+            problems.append("Manifest experiment_profile_hash is invalid.")
+        if profile.runtime_contract_hash() != manifest.get("runtime_contract_hash"):
+            problems.append("Manifest runtime_contract_hash is invalid.")
+        for record in _runtime_records(run):
+            if record.get("experiment_profile_hash") != manifest.get("experiment_profile_hash"):
+                problems.append("Runtime experiment_profile_hash does not match Manifest.")
+            if record.get("runtime_contract_hash") != manifest.get("runtime_contract_hash"):
+                problems.append("Runtime contract hash does not match Manifest.")
+            expected_combined = combined_runtime_hash(
+                profile_hash=profile.profile_hash(),
+                system_sha256=str(record.get("system_sha256")),
+                tools_sha256=str(record.get("tools_sha256")),
+            )
+            if record.get("combined_runtime_hash") != expected_combined:
+                problems.append("Combined runtime hash is invalid.")
     for identity in identities:
         if not identity["runtime.provider"]:
             problems.append("Runtime telemetry is missing from one or more source Runs.")
@@ -284,6 +393,44 @@ def _compatibility(
             and any(provider != manifest_provider for provider in runtime_providers)
         ):
             problems.append("Runtime Provider does not match the effective Manifest Provider.")
+    swe_architectures = _swe_evaluator_architectures(runs)
+    if swe_architectures:
+        if any(value not in {"native", "x86_64"} for value in swe_architectures):
+            problems.append(
+                "SWE Claim source Runs are missing or have unknown swe_evaluator_architecture provenance."
+            )
+        elif len(set(swe_architectures)) != 1:
+            observed.append("manifest.swe_evaluator_architecture")
+            problems.append("SWE Claim source Runs use different swe_evaluator_architecture values.")
+        elif (
+            claim.experiment_conditions.swe_evaluator_architecture is not None
+            and claim.experiment_conditions.swe_evaluator_architecture != swe_architectures[0]
+        ):
+            problems.append(
+                "SWE Claim conditions do not match manifest.swe_evaluator_architecture."
+            )
+    if claim.metric_name == "actual_cost_cny":
+        pricing_hashes = [manifest.get("pricing_snapshot_hash") for manifest, _, _ in runs]
+        if any(
+            not isinstance(value, str)
+            or _PRICING_SNAPSHOT_HASH_RE.fullmatch(value) is None
+            for value in pricing_hashes
+        ):
+            problems.append(
+                "Cost Claim source Runs are missing valid pricing_snapshot_hash provenance."
+            )
+        elif len(set(pricing_hashes)) != 1:
+            observed.append("manifest.pricing_snapshot_hash")
+            problems.append(
+                "Cost Claim source Runs use different pricing_snapshot_hash values."
+            )
+        elif (
+            claim.experiment_conditions.pricing_snapshot_hash is not None
+            and claim.experiment_conditions.pricing_snapshot_hash != pricing_hashes[0]
+        ):
+            problems.append(
+                "Cost Claim conditions do not match manifest.pricing_snapshot_hash."
+            )
     return not problems, observed, list(dict.fromkeys(problems))
 
 
@@ -305,7 +452,9 @@ def _completed_trials(run: Path) -> dict[tuple[str, str], dict[str, Any]]:
     return completed
 
 
-def _provider_token_trials(run: Path) -> dict[tuple[str, str], float]:
+def _provider_usage_trials(
+    run: Path, metric: Literal["input", "output", "cache"],
+) -> dict[tuple[str, str], float]:
     usage_path = run / "usage.json"
     if not usage_path.exists():
         return {}
@@ -313,6 +462,7 @@ def _provider_token_trials(run: Path) -> dict[tuple[str, str], float]:
     if not isinstance(requests, list):
         return {}
     values: dict[tuple[str, str], float] = {}
+    terminals = _completed_trials(run)
     for item in requests:
         if not isinstance(item, dict):
             return {}
@@ -320,10 +470,70 @@ def _provider_token_trials(run: Path) -> dict[tuple[str, str], float]:
         raw = item.get("provider_usage")
         if key is None or not isinstance(raw, dict):
             return {}
-        tokens = raw.get("prompt_tokens", raw.get("input_tokens"))
+        terminal = terminals.get(key)
+        if terminal is not None and terminal.get("status") == "infrastructure_error":
+            # A missing-Usage reconciliation cannot be paired with token data.
+            # Keep its cost in the ledger, but exclude it from token metrics.
+            continue
+        if metric == "input":
+            tokens = raw.get("prompt_tokens", raw.get("input_tokens"))
+        elif metric == "output":
+            tokens = raw.get("completion_tokens", raw.get("output_tokens"))
+        else:
+            details = raw.get("prompt_tokens_details", raw.get("input_tokens_details", {}))
+            tokens = raw.get("cache_read_input_tokens")
+            if tokens is None and isinstance(details, dict):
+                tokens = details.get("cached_tokens", details.get("cache_read_tokens"))
+            if tokens is None:
+                tokens = 0
         if not isinstance(tokens, (int, float)):
             return {}
         values[key] = values.get(key, 0.0) + float(tokens)
+    return values
+
+
+def _provider_token_trials(run: Path) -> dict[tuple[str, str], float]:
+    return _provider_usage_trials(run, "input")
+
+
+def _runtime_tool_schema_trials(run: Path) -> dict[tuple[str, str], float]:
+    values: dict[tuple[str, str], float] = {}
+    for item in _runtime_records(run):
+        key = _trial_key(item)
+        value = item.get("tools_bytes")
+        if key is None or not isinstance(value, int) or value < 0:
+            return {}
+        values.setdefault(key, float(value))
+    return values
+
+
+def _actual_cost_trials(run: Path) -> dict[tuple[str, str], float]:
+    values: dict[tuple[str, str], float] = {}
+    for key, event in _completed_trials(run).items():
+        try:
+            value = float(event["actual_cny"])
+        except (KeyError, TypeError, ValueError):
+            return {}
+        if value < 0:
+            return {}
+        values[key] = value
+    return values
+
+
+def _terminal_numeric_trials(
+    run: Path, field: str, *, grade_field: bool = False,
+) -> dict[tuple[str, str], float]:
+    values: dict[tuple[str, str], float] = {}
+    for key, event in _completed_trials(run).items():
+        source = event.get("grade") if grade_field else event
+        if not isinstance(source, dict):
+            return {}
+        raw = source.get(field)
+        if isinstance(raw, bool):
+            raw = int(raw)
+        if not isinstance(raw, (int, float)) or raw < 0:
+            return {}
+        values[key] = float(raw)
     return values
 
 
@@ -351,6 +561,8 @@ def _successful_wall_trials(run: Path) -> dict[tuple[str, str], float]:
 def _rate_trials(run: Path) -> dict[tuple[str, str], tuple[float, float]]:
     values: dict[tuple[str, str], tuple[float, float]] = {}
     for key, event in _completed_trials(run).items():
+        if event.get("status") not in SCORABLE_STATUSES:
+            continue
         numerator, denominator = event.get("numerator"), event.get("denominator")
         if (
             isinstance(numerator, (int, float))
@@ -449,13 +661,44 @@ def _calculate(
     if claim.metric_name == "provider_input_tokens":
         values = _all_trial_values(runs, _provider_token_trials)
         return (_aggregate(values, claim.aggregation), len(values)) if values else (None, 0)
+    if claim.metric_name == "provider_output_tokens":
+        values = _all_trial_values(runs, lambda run: _provider_usage_trials(run, "output"))
+        return (_aggregate(values, claim.aggregation), len(values)) if values else (None, 0)
+    if claim.metric_name == "provider_cache_tokens":
+        values = _all_trial_values(runs, lambda run: _provider_usage_trials(run, "cache"))
+        return (_aggregate(values, claim.aggregation), len(values)) if values else (None, 0)
+    if claim.metric_name == "runtime_tool_schema_bytes":
+        values = _all_trial_values(runs, _runtime_tool_schema_trials)
+        return (_aggregate(values, claim.aggregation), len(values)) if values else (None, 0)
+    if claim.metric_name == "actual_cost_cny":
+        values = _all_trial_values(runs, _actual_cost_trials)
+        return (_aggregate(values, claim.aggregation), len(values)) if values else (None, 0)
+    terminal_metrics = {
+        "trial_input_tokens": ("input_tokens", False),
+        "trial_output_tokens": ("output_tokens", False),
+        "provider_request_count": ("provider_request_count", False),
+        "integration_conflict_count": ("integration_conflict_markers", True),
+        "maximum_parallel_children": ("maximum_parallel_children", True),
+    }
+    if claim.metric_name in terminal_metrics:
+        field, grade_field = terminal_metrics[claim.metric_name]
+        values = _all_trial_values(
+            runs, lambda run: _terminal_numeric_trials(
+                run, field, grade_field=grade_field,
+            ),
+        )
+        return (_aggregate(values, claim.aggregation), len(values)) if values else (None, 0)
     if claim.metric_name == "permission_hitl_count":
         values = _all_trial_values(runs, _permission_trials)
         return (_aggregate(values, claim.aggregation), len(values)) if values else (None, 0)
     if claim.metric_name == "successful_task_wall_time_seconds":
         values = _all_trial_values(runs, _successful_wall_trials)
         return (_aggregate(values, claim.aggregation), len(values)) if values else (None, 0)
-    if claim.metric_name == "rate":
+    if claim.metric_name in {
+        "rate", "canary_retention_rate", "dangerous_command_interception_rate",
+        "multi_agent_task_success_rate", "hook_consistency_rate",
+        "checkpoint_recovery_rate",
+    }:
         pairs = [
             pair for _, _, run in runs for pair in _rate_trials(run).values()
         ]
@@ -474,6 +717,22 @@ def compile_claims(document: ClaimDocument, runs_dir: Path) -> dict[str, Any]:
     compiled: list[dict[str, Any]] = []
     for claim in document.claims:
         minimum_samples = claim.sample_size
+        if claim.status == "insufficient-data" and not claim.source_run_ids:
+            output = claim.model_dump(mode="json")
+            output.update({
+                "generated_value": None,
+                "generation_command": "python -m evals.claims compile",
+                "status": "insufficient-data",
+                "limitations": list(dict.fromkeys(claim.limitations)),
+                "evidence_summary": {
+                    "source_run_count": 0,
+                    "measured_sample_size": 0,
+                    "allowed_differences": [],
+                    "observed_differences": [],
+                },
+            })
+            compiled.append(output)
+            continue
         loaded = [_load_run(runs_dir, run_id) for run_id in claim.source_run_ids]
         usable = [run for run in loaded if run is not None]
         output = claim.model_dump(mode="json")
@@ -497,6 +756,11 @@ def compile_claims(document: ClaimDocument, runs_dir: Path) -> dict[str, Any]:
             compatible, observed, problems = _compatibility(claim, usable)
             output["limitations"].extend(problems)
             if compatible:
+                swe_architectures = _swe_evaluator_architectures(usable)
+                if swe_architectures:
+                    output["experiment_conditions"]["swe_evaluator_architecture"] = swe_architectures[0]
+                if claim.metric_name == "actual_cost_cny":
+                    output["experiment_conditions"]["pricing_snapshot_hash"] = usable[0][0]["pricing_snapshot_hash"]
                 try:
                     value, actual_samples = _calculate(claim, usable)
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -526,7 +790,7 @@ def compile_claims(document: ClaimDocument, runs_dir: Path) -> dict[str, Any]:
         output["limitations"] = list(dict.fromkeys(output["limitations"]))
         compiled.append(output)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "claims": compiled,
         "document_hash": canonical_hash(document.model_dump(mode="json")),
     }
@@ -534,12 +798,19 @@ def compile_claims(document: ClaimDocument, runs_dir: Path) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Compile CodePaceX claims from Run artifacts")
-    parser.add_argument("command", choices=["compile", "validate"])
+    parser.add_argument("command", choices=["compile", "validate", "schema"])
     parser.add_argument("--claims", type=Path, default=Path("evals/claims.example.yaml"))
     parser.add_argument("--runs-dir", type=Path, default=Path("evals/.runs/pilot"))
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
+        if args.command == "schema":
+            payload = json.dumps(claims_schema(), ensure_ascii=False, indent=2) + "\n"
+            if args.output:
+                args.output.write_text(payload, encoding="utf-8")
+            else:
+                print(payload, end="")
+            return 0
         document = load_claims(args.claims)
         compiled = compile_claims(document, args.runs_dir)
         if args.command == "validate":

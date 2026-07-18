@@ -90,22 +90,22 @@ The fixture's `.codepacex/permissions.yaml` denies that command through a projec
 Official CLI command construction and dry-run compatibility are tested with:
 
 ```bash
-python -m evals.swe_bench_live --dataset-name org/dataset --predictions-path predictions.json --run-id pilot --namespace codepacex --dry-run
+python -m evals.swe_bench_live --dataset-name SWE-bench-Live/SWE-bench-Live --split lite --predictions-path predictions.json --run-id pilot --namespace starryzhang --dry-run
 ```
 
-## Benchmark Pilot Harness
+## Benchmark Pilot and Goal 2 Harness
 
 The Pilot harness adds reproducible experiment artifacts and claim traceability on top of the existing deterministic six-task eval; it does not replace that eval.
 
 ```bash
 python -m evals.pilot validate
 python -m evals.pilot dry-run
-python -m evals.pilot execute --confirm-paid-run
+python -m evals.pilot execute --confirm-paid-run --pricing-snapshot PATH --budget-authorization PATH --budget-ledger PATH
 python -m evals.claims compile
 ```
 
-`validate` creates no Run and initializes no model client. `dry-run` writes a complete, non-scorable Run without network or model access. The live path is guarded by an explicit paid-run confirmation, a non-empty task list, and the configured key being present; CI and this PR's tests use only dry-run or a mocked subprocess.
+`validate` creates no Run and initializes no model client. `dry-run` writes a complete, non-scorable Run without network or model access. The live path additionally requires an authorization bound to the clean experiment commit and pricing snapshot plus a durable budget ledger. The frozen Pilot runs `codepacex_001_config_bugfix` once; fallback and SDK retries are disabled.
 
 The frozen configuration is [`pilot.qwen.yaml`](pilot.qwen.yaml): Bailian Qwen through `openai-compat`, model `qwen3.7-max-2026-06-08`, no fallback, and retry budget zero. It names an environment variable only and never stores a credential. Core artifacts are `manifest.json`, `environment.json`, `events.jsonl`, `result.json`, and `report.md`; optional usage, runtime-hash, permission, compression, and patch/test artifacts are emitted only when genuinely available. Runtime SHA-256 hashes are generated from the final protocol payload without retaining request content. Provider usage is retained as returned, with no invented missing fields.
 
-`.runs/` is a local artifact directory and must not be committed. A claim can be marked verified only when a registered calculator reproduces it from scorable, field-compatible source Runs. A/B differences require exact registered `allowed_differences` paths and remain visible in the evidence summary. The current Pilot has no feature-flag-to-runtime mapping, so live Runs and verified Claims require empty `feature_flags`. Declared sample size must exactly equal measured trials or exact task/repetition pairs; pooled rates sum numerators and denominators. A/B requires matching pairs with one successful terminal Attempt on each side; a Trial with multiple terminal Attempts is insufficient data in Pilot v1. p95 uniquely uses nearest-rank: `sorted_values[ceil(0.95 * n) - 1]`. This repository has not run a paid Qwen Pilot, real SWE-bench-Live, token-reduction experiment, or long-session experiment in this work, so none of those has a real result here.
+`.runs/` is a local artifact directory and must not be committed. A claim can be marked verified only when a registered calculator reproduces it from scorable, field-compatible source Runs. A/B differences require exact registered `allowed_differences` paths and remain visible in the evidence summary. Goal 2 uses runtime-mapped `ExperimentProfile` variants; legacy non-empty `feature_flags` remain ineligible. Runtime evidence includes the effective profile, payload hashes, and tool-Schema byte count. Declared sample size must exactly equal measured trials or exact task/repetition pairs; pooled rates sum numerators and denominators. A/B requires matching pairs with one successful terminal Attempt on each side. p95 uniquely uses nearest-rank. One paid Stage A Qwen Pilot attempt on `8fd4b19` ended in `task_failure` and is retained only as real failure/evidence-chain data; real SWE Agent inference, formal token A/B, and long-session experiments remain unrun. The exact order and limitations are in [`GOAL2_RUNBOOK.md`](GOAL2_RUNBOOK.md).

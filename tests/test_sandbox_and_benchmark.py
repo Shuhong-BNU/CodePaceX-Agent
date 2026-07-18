@@ -43,6 +43,32 @@ def test_benchmark_artifacts_redact_and_summarize(tmp_path):
     assert reduction_percent(100, 15) == 85
 
 
+def test_run_recorder_reports_incomplete_attempts_and_rejects_duplicate_terminals(tmp_path):
+    recorder = RunRecorder(tmp_path, RunManifest(kind="pilot", model="model", provider="provider"))
+    recorder.event("trial_started", {
+        "task_id": "completed", "repetition_id": "1", "attempt_id": 1,
+    })
+    recorder.event("trial_completed", {
+        "task_id": "completed", "repetition_id": "1", "attempt_id": 1,
+        "status": "task_failure",
+    })
+    recorder.event("trial_started", {
+        "task_id": "interrupted", "repetition_id": "1", "attempt_id": 1,
+    })
+    assert recorder.incomplete_trial_attempts() == {("interrupted", "1", 1)}
+    assert recorder.terminal_trial_statuses() == {("completed", "1"): "task_failure"}
+    recorder.event("trial_completed", {
+        "task_id": "completed", "repetition_id": "1", "attempt_id": 2,
+        "status": "task_failure",
+    })
+    try:
+        recorder.terminal_trial_statuses()
+    except ValueError as exc:
+        assert "duplicate terminal Trial event" in str(exc)
+    else:
+        raise AssertionError("duplicate terminal trial must be rejected")
+
+
 def test_swe_selection_limits_repositories():
     items = [
         {"instance_id": f"a-{index}", "repo": "repo-a", "platform": "linux"}

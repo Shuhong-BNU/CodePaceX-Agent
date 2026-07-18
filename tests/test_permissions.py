@@ -345,6 +345,41 @@ class TestPermissionChecker:
         d = self.checker.check(tool, {"file_path": str(self.tmpdir / "new.txt"), "content": "hi"})
         assert d.effect == "ask"
 
+    def test_experiment_session_allow_changes_write_policy_but_not_safety_floor(self) -> None:
+        from codepacex.tools.bash import Bash
+        from codepacex.tools.write_file import WriteFile
+
+        checker = PermissionChecker(
+            detector=DangerousCommandDetector(),
+            sandbox=PathSandbox(str(self.tmpdir)),
+            rule_engine=RuleEngine(), mode=PermissionMode.DEFAULT,
+            session_allow_all=True,
+        )
+        write = checker.check(WriteFile(), {
+            "file_path": str(self.tmpdir / "session.txt"), "content": "ok",
+        })
+        dangerous = checker.check(Bash(), {"command": "rm -rf /"})
+        assert write.effect == "allow"
+        assert dangerous.effect == "deny"
+
+    def test_explicit_deny_overrides_experiment_session_allow(self) -> None:
+        from codepacex.tools.write_file import WriteFile
+
+        rules_file = self.tmpdir / "session-rules.yaml"
+        rules_file.write_text(yaml.safe_dump([
+            {"rule": "WriteFile(*)", "effect": "deny"},
+        ]))
+        checker = PermissionChecker(
+            detector=DangerousCommandDetector(),
+            sandbox=PathSandbox(str(self.tmpdir)),
+            rule_engine=RuleEngine(project_rules_path=rules_file),
+            session_allow_all=True,
+        )
+        decision = checker.check(WriteFile(), {
+            "file_path": str(self.tmpdir / "denied.txt"), "content": "no",
+        })
+        assert decision.effect == "deny"
+
     def test_bash_asks_in_default_mode(self) -> None:
         from codepacex.tools.bash import Bash
         tool = Bash()

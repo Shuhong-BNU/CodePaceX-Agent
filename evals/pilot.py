@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -12,12 +13,15 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from codepacex.experiments import ExperimentProfile
 from evals.benchmark import RunManifest, RunRecorder, canonical_hash, current_git_commit, sanitize_origin
+from evals.costing import load_pricing, pricing_snapshot_hash
+from evals.paid_gate import PaidRunGate, billable_request_usage, provider_request_budget_environment
 
 FROZEN_PROVIDER = "bailian-qwen37-max"
 FROZEN_PROTOCOL = "openai-compat"
@@ -38,6 +42,7 @@ _PROXY_NAMES = {
 _EXIT_CODES = {
     "success": 0, "dry_run": 0, "task_failure": 1, "configuration_error": 2,
     "timeout": 3, "provider_error": 3, "infrastructure_error": 3, "cancelled": 3,
+    "budget_blocked": 3,
 }
 
 
@@ -54,7 +59,7 @@ class ModelParameters(BaseModel):
 
 class PilotConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    schema_version: int = 1
+    schema_version: Literal[2] = 2
     experiment_kind: str = "pilot"
     provider: str
     protocol: str
@@ -68,11 +73,13 @@ class PilotConfig(BaseModel):
     task_ids: list[str] = Field(default_factory=list)
     repetitions: int = Field(default=1, ge=1)
     feature_flags: dict[str, Any] = Field(default_factory=dict)
+    experiment_profile: ExperimentProfile
+    max_iterations: Literal[50] = 50
 
     @model_validator(mode="after")
     def validate_frozen_primary(self) -> PilotConfig:
-        if self.schema_version != 1 or self.experiment_kind != "pilot":
-            raise ValueError("only pilot schema version 1 is supported")
+        if self.experiment_kind != "pilot":
+            raise ValueError("only pilot schema version 2 is supported")
         if (self.provider, self.protocol, self.base_url, self.api_key_env, self.model_id) != (
             FROZEN_PROVIDER, FROZEN_PROTOCOL, FROZEN_BASE_URL, FROZEN_KEY_ENV, FROZEN_MODEL,
         ):
@@ -81,6 +88,8 @@ class PilotConfig(BaseModel):
             raise ValueError("frozen Pilot configuration requires fallback=false and retry_budget=0")
         if self.model_parameters.temperature is not None or self.model_parameters.top_p is not None:
             raise ValueError("temperature and top_p remain unset until a real Pilot is frozen")
+        if self.model_parameters.max_output_tokens != 8192:
+            raise ValueError("Pilot v2 freezes max_output_tokens at 8192")
         if self.feature_flags:
             raise ValueError(
                 "Pilot v1 does not map feature_flags to runtime behavior; live runs require {}"
@@ -97,6 +106,22 @@ def load_config(path: Path) -> PilotConfig:
 
 def config_hash(config: PilotConfig) -> str:
     return canonical_hash(config.model_dump(mode="json"))
+
+
+def benchmark_asset_hash(root: Path) -> str:
+    """Hash frozen tasks, fixtures, graders, and the deterministic runner."""
+    evals_root = root / "evals"
+    files = [evals_root / "run_eval.py", evals_root / "graders.py"]
+    files.extend(sorted((evals_root / "tasks").glob("*.yaml")))
+    files.extend(sorted(
+        path for path in (evals_root / "fixtures").rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
+    ))
+    payload = {
+        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in files
+    }
+    return canonical_hash(payload)
 
 
 def _git_dirty(root: Path) -> bool | None:
@@ -136,6 +161,10 @@ def build_manifest(config: PilotConfig, root: Path, *, run_id: str = "") -> RunM
         system_prompt_hash=None,
         tool_schema_hash=None,
         feature_flags=config.feature_flags,
+        experiment_profile=config.experiment_profile.canonical_payload(),
+        experiment_profile_hash=config.experiment_profile.profile_hash(),
+        runtime_contract_hash=config.experiment_profile.runtime_contract_hash(),
+        benchmark_asset_hash=benchmark_asset_hash(root),
         task_ids=config.task_ids,
         repetitions=config.repetitions,
         model_parameters=config.model_parameters.model_dump(mode="json"),
@@ -144,8 +173,18 @@ def build_manifest(config: PilotConfig, root: Path, *, run_id: str = "") -> RunM
         timeout_seconds=config.timeout_seconds,
         retry_budget=config.retry_budget,
         fallback_enabled=config.fallback_enabled,
+        max_iterations=config.max_iterations,
         experiment_config_hash=config_hash(config),
     )
+
+
+def _paid_manifest(
+    config: PilotConfig, root: Path, *, run_id: str, gate: PaidRunGate,
+) -> RunManifest:
+    """Bind a paid Pilot manifest to the Gate's validated pricing snapshot."""
+    manifest = build_manifest(config, root, run_id=run_id)
+    manifest.pricing_snapshot_hash = pricing_snapshot_hash(gate.pricing)
+    return manifest
 
 
 def dry_run(config: PilotConfig, root: Path, runs_dir: Path, run_id: str | None = None) -> RunRecorder:
@@ -168,13 +207,16 @@ def _configuration_error(
     return recorder
 
 
-def _child_environment(config: PilotConfig, home: str) -> dict[str, str]:
-    """Pass only the frozen provider credential to the isolated eval child."""
+def _child_environment(
+    config: PilotConfig, home: str, *, root: Path,
+) -> dict[str, str]:
+    """Bind the isolated eval child to the frozen checkout and credential."""
     environment = {
         key: value for key, value in os.environ.items()
         if key in _ENV_NAMES or key.startswith("LC_")
     }
     environment["HOME"] = home
+    environment["PYTHONPATH"] = str(root.resolve())
     environment[config.api_key_env] = os.environ[config.api_key_env]
     return environment
 
@@ -209,6 +251,7 @@ def _write_validated_provider_config(config: PilotConfig, path: Path) -> None:
 def _aggregate_status(statuses: list[str]) -> str:
     for status in (
         "configuration_error", "provider_error", "timeout", "infrastructure_error",
+        "budget_blocked",
         "task_failure",
     ):
         if status in statuses:
@@ -248,18 +291,54 @@ def _suite_status(report_dir: Path, task_id: str, returncode: int) -> str:
 def _ingest_trace(
     recorder: RunRecorder, trace_path: Path, task_id: str, repetition_id: str,
     attempt_id: int,
-) -> None:
+) -> tuple[int, int, int]:
     """Derive only events actually emitted by the existing stream-json runner."""
     try:
         lines = trace_path.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return
+        return 0, 0, 0
+    requests = 0
+    input_tokens = 0
+    output_tokens = 0
+
+    def capture_runtime_manifest(event: dict[str, Any]) -> None:
+        runtime_event = {
+            "type": "runtime_manifest",
+            "request_index": event.get("request_index"),
+            "provider": event.get("provider"),
+            "protocol": event.get("protocol"),
+            "model_id": event.get("model_id"),
+            "system_sha256": event.get("system_sha256"),
+            "tools_sha256": event.get("tools_sha256"),
+            "messages_sha256": event.get("messages_sha256"),
+            "experiment_profile_hash": event.get("experiment_profile_hash"),
+            "runtime_contract_hash": event.get("runtime_contract_hash"),
+            "combined_runtime_hash": event.get("combined_runtime_hash"),
+            "task_id": task_id, "repetition_id": repetition_id,
+            "attempt_id": attempt_id,
+        }
+        if "child_agent_id" in event:
+            runtime_event["child_agent_id"] = event["child_agent_id"]
+        if "tools_bytes" in event:
+            tools_bytes = event["tools_bytes"]
+            if isinstance(tools_bytes, bool) or not isinstance(tools_bytes, int) or tools_bytes < 0:
+                raise ValueError("runtime manifest tools_bytes must be a non-negative integer")
+            runtime_event["tools_bytes"] = tools_bytes
+        recorder.capture_event(runtime_event)
+
     for line in lines:
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
         if event.get("type") == "usage":
+            requests += 1
+            input_tokens += int(
+                event.get("request_input_tokens") or event.get("input_tokens") or 0
+            )
+            output_tokens += int(
+                event.get("request_output_tokens") or event.get("output_tokens") or 0
+            )
             recorder.capture_event({
                 "type": "usage",
                 "request_index": event.get("request_index"),
@@ -274,18 +353,20 @@ def _ingest_trace(
                 "attempt_id": attempt_id,
             })
         elif event.get("type") == "runtime_manifest":
-            recorder.capture_event({
-                "type": "runtime_manifest",
-                "request_index": event.get("request_index"),
-                "provider": event.get("provider"),
-                "protocol": event.get("protocol"),
-                "model_id": event.get("model_id"),
-                "system_sha256": event.get("system_sha256"),
-                "tools_sha256": event.get("tools_sha256"),
-                "messages_sha256": event.get("messages_sha256"),
-                "task_id": task_id, "repetition_id": repetition_id,
-                "attempt_id": attempt_id,
-            })
+            capture_runtime_manifest(event)
+        elif event.get("type") == "experiment_agent_summary":
+            child_manifests = event.get("child_runtime_manifests")
+            if child_manifests is None:
+                continue
+            if not isinstance(child_manifests, list):
+                raise ValueError("child runtime manifests must be a list")
+            for child_manifest in child_manifests:
+                if (
+                    not isinstance(child_manifest, dict)
+                    or child_manifest.get("type") != "runtime_manifest"
+                ):
+                    raise ValueError("child runtime manifest must be a runtime_manifest object")
+                capture_runtime_manifest(child_manifest)
         elif event.get("type") == "permission_decision":
             recorder.capture_event({
                 "type": "permission_decision",
@@ -313,13 +394,55 @@ def _ingest_trace(
                 "task_id": task_id, "repetition_id": repetition_id,
                 "attempt_id": attempt_id,
             })
+    return requests, input_tokens, output_tokens
 
 
-def _run_trials(config: PilotConfig, root: Path, recorder: RunRecorder) -> list[str]:
+def trace_request_usages(trace_text: str) -> list[tuple[int, int]]:
+    """Return exact per-request token pairs or fail closed on incomplete usage."""
+    result: list[tuple[int, int]] = []
+    for line in trace_text.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("type") != "usage":
+            continue
+        result.append(billable_request_usage(event))
+    return result
+
+
+def _trial_evidence(report_dir: Path, task_id: str) -> str:
+    """Retain the inner grader result before its temporary directory is removed."""
+    results = list(report_dir.glob("*/suite_result.json"))
+    if len(results) != 1:
+        return ""
+    inner = results[0].parent
+    payload = json.loads(results[0].read_text(encoding="utf-8"))
+    report = inner / "report.md"
+    return "\n".join([
+        f"## {task_id}",
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+        report.read_text(encoding="utf-8") if report.exists() else "",
+    ])
+
+
+def _provider_request_count(recorder: RunRecorder) -> int:
+    try:
+        payload = json.loads((recorder.path / "usage.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+    requests = payload.get("requests") if isinstance(payload, dict) else None
+    return len(requests) if isinstance(requests, list) else 0
+
+
+def _run_trials(
+    config: PilotConfig, root: Path, recorder: RunRecorder, gate: PaidRunGate,
+) -> list[str]:
     """Run only incomplete trials; callers must have performed paid-run checks."""
     statuses: list[str] = []
     stdout_chunks: list[str | bytes] = []
     stderr_chunks: list[str | bytes] = []
+    evidence_chunks: list[str] = []
     successful = recorder.successful_trials()
     with (
         tempfile.TemporaryDirectory(prefix="codepacex-pilot-home-") as home,
@@ -331,7 +454,12 @@ def _run_trials(config: PilotConfig, root: Path, recorder: RunRecorder) -> list[
             _write_validated_provider_config(config, config_dir / "config.yaml")
         except (OSError, ValueError) as exc:
             raise PilotConfigurationError(str(exc)) from exc
-        env = _child_environment(config, home)
+        env = _child_environment(config, home, root=root)
+        profile_path = Path(staging) / "experiment-profile.yaml"
+        profile_path.write_text(
+            yaml.safe_dump(config.experiment_profile.canonical_payload(), sort_keys=True),
+            encoding="utf-8",
+        )
         for repetition in range(1, config.repetitions + 1):
             for task_id in config.task_ids:
                 trial = (task_id, str(repetition))
@@ -344,19 +472,44 @@ def _run_trials(config: PilotConfig, root: Path, recorder: RunRecorder) -> list[
                     continue
                 attempt_id = recorder.next_attempt_id(task_id, str(repetition))
                 report_dir = Path(staging) / f"{task_id}-{repetition}"
-                command = [sys.executable, "evals/run_eval.py", "--task", task_id, "--report-dir", str(report_dir)]
+                command = [
+                    sys.executable, "evals/run_eval.py", "--task", task_id,
+                    "--report-dir", str(report_dir),
+                    "--experiment-profile", str(profile_path),
+                ]
                 started = time.monotonic()
+                trial_id = f"pilot/{recorder.run_id}/{task_id}/{repetition}/{attempt_id}"
+                request_environment = dict(env)
+                request_environment.update(provider_request_budget_environment(
+                    gate, trial_id=trial_id,
+                    maximum_input_tokens_per_request=128_000,
+                    maximum_output_tokens_per_request=(
+                        config.model_parameters.max_output_tokens or 8192
+                    ),
+                ))
                 recorder.event("trial_started", {
                     "task_id": task_id, "repetition_id": str(repetition),
                     "attempt_id": attempt_id,
+                    "budget_mode": "per_provider_request",
                 })
+                requests = 0
+                input_tokens = 0
+                output_tokens = 0
                 try:
-                    process = subprocess.run(command, cwd=root, env=env, text=True, capture_output=True, timeout=config.timeout_seconds)
+                    process = subprocess.run(command, cwd=root, env=request_environment, text=True, capture_output=True, timeout=config.timeout_seconds)
                     status = _suite_status(report_dir, task_id, process.returncode)
+                    evidence = _trial_evidence(report_dir, task_id)
+                    if evidence:
+                        evidence_chunks.append(evidence)
                     stdout_chunks.append(process.stdout or "")
                     stderr_chunks.append(process.stderr or "")
                     for trace_path in report_dir.glob("*/**/trace.ndjson"):
-                        _ingest_trace(recorder, trace_path, task_id, str(repetition), attempt_id)
+                        usage = _ingest_trace(
+                            recorder, trace_path, task_id, str(repetition), attempt_id,
+                        )
+                        requests += usage[0]
+                        input_tokens += usage[1]
+                        output_tokens += usage[2]
                 except subprocess.TimeoutExpired as exc:
                     status = "timeout"
                     stdout_chunks.append(exc.stdout or "")
@@ -367,6 +520,27 @@ def _run_trials(config: PilotConfig, root: Path, recorder: RunRecorder) -> list[
                 except (ValueError, json.JSONDecodeError) as exc:
                     status = "infrastructure_error"
                     stderr_chunks.append(f"trace ingestion failed: {exc}")
+                accounting = gate.trial_accounting(trial_id)
+                if accounting["budget_blocked"]:
+                    recorder.event("trial_completed", {
+                        "task_id": task_id, "repetition_id": str(repetition),
+                        "attempt_id": attempt_id, "status": "budget_blocked",
+                        "duration_seconds": time.monotonic() - started,
+                        "budget_block_reasons": accounting["budget_block_reasons"],
+                        "actual_cny": accounting["actual_cny"],
+                    })
+                    statuses.append("budget_blocked")
+                    break
+                if accounting["active_reservation"] is not None or requests == 0 or accounting["request_count"] != requests:
+                    ambiguous_status = status if status == "timeout" else "infrastructure_error"
+                    recorder.event("trial_completed", {
+                        "task_id": task_id, "repetition_id": str(repetition),
+                        "attempt_id": attempt_id, "status": ambiguous_status,
+                        "duration_seconds": time.monotonic() - started,
+                        "budget_reconciliation_required": True,
+                    })
+                    statuses.append(ambiguous_status)
+                    break
                 statuses.append(status)
                 recorder.event("trial_completed", {
                     "task_id": task_id,
@@ -374,11 +548,16 @@ def _run_trials(config: PilotConfig, root: Path, recorder: RunRecorder) -> list[
                     "attempt_id": attempt_id,
                     "status": status,
                     "duration_seconds": time.monotonic() - started,
+                    "actual_cny": accounting["actual_cny"],
                 })
+            if statuses and statuses[-1] in {"infrastructure_error", "timeout", "budget_blocked"}:
+                break
     if stdout_chunks:
         recorder.write_artifact("stdout.txt", "\n".join(_as_text(item) for item in stdout_chunks))
     if stderr_chunks:
         recorder.write_artifact("stderr.txt", "\n".join(_as_text(item) for item in stderr_chunks))
+    if evidence_chunks:
+        recorder.write_artifact("test-output.txt", "\n\n".join(evidence_chunks))
     return statuses
 
 
@@ -387,19 +566,29 @@ def _as_text(value: str | bytes) -> str:
 
 
 def execute(
-    config: PilotConfig, root: Path, runs_dir: Path, *, confirmed: bool, run_id: str | None = None,
+    config: PilotConfig, root: Path, runs_dir: Path, *, confirmed: bool,
+    gate: PaidRunGate | None = None, run_id: str | None = None,
 ) -> RunRecorder:
-    if not confirmed or not config.task_ids or not os.environ.get(config.api_key_env):
+    if (
+        not confirmed or not config.task_ids or not os.environ.get(config.api_key_env)
+        or gate is None
+    ):
         return _configuration_error(config, root, runs_dir, run_id)
     recorder = RunRecorder(
-        runs_dir, build_manifest(config, root, run_id=run_id or ""), run_id=run_id,
+        runs_dir, _paid_manifest(config, root, run_id=run_id or "", gate=gate), run_id=run_id,
         repo_root=root, secrets=_runtime_secrets(config),
     )
     # The only live backend deliberately reuses the deterministic 6-task harness.
     # Tests mock this subprocess; this module never calls it during dry-run or CI.
     try:
-        statuses = _run_trials(config, root, recorder)
-        recorder.finalize({"status": _aggregate_status(statuses), "execution_mode": "live"})
+        statuses = _run_trials(config, root, recorder, gate)
+        provider_requests = _provider_request_count(recorder)
+        recorder.finalize({
+            "status": _aggregate_status(statuses), "execution_mode": "live",
+            "model_called": provider_requests > 0,
+            "network_called": provider_requests > 0,
+            "provider_request_count": provider_requests,
+        })
     except asyncio.CancelledError:
         recorder.finalize({"status": "cancelled", "execution_mode": "live"})
         raise
@@ -413,19 +602,31 @@ def execute(
 
 def resume(
     config: PilotConfig, root: Path, runs_dir: Path, run_id: str, *, confirmed: bool,
+    gate: PaidRunGate | None = None,
 ) -> RunRecorder:
-    if not confirmed or not config.task_ids or not os.environ.get(config.api_key_env):
-        raise ValueError("resume requires --confirm-paid-run, tasks, and the configured API key")
+    if (
+        not confirmed or not config.task_ids or not os.environ.get(config.api_key_env)
+        or gate is None
+    ):
+        raise ValueError(
+            "resume requires paid confirmation, tasks, API key, and budget authorization"
+        )
     recorder = RunRecorder.resume(
-        runs_dir, run_id, build_manifest(config, root, run_id=run_id),
+        runs_dir, run_id, _paid_manifest(config, root, run_id=run_id, gate=gate),
         secrets=_runtime_secrets(config),
     )
     try:
-        statuses = _run_trials(config, root, recorder)
+        statuses = _run_trials(config, root, recorder, gate)
         status = _aggregate_status(statuses) if statuses else (
             recorder.previous_status or "infrastructure_error"
         )
-        recorder.finalize({"status": status, "execution_mode": "live", "resumed": True})
+        provider_requests = _provider_request_count(recorder)
+        recorder.finalize({
+            "status": status, "execution_mode": "live", "resumed": True,
+            "model_called": provider_requests > 0,
+            "network_called": provider_requests > 0,
+            "provider_request_count": provider_requests,
+        })
     except asyncio.CancelledError:
         recorder.finalize({"status": "cancelled", "execution_mode": "live", "resumed": True})
         raise
@@ -444,6 +645,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--runs-dir", type=Path, default=Path("evals/.runs/pilot"))
     parser.add_argument("--run-id")
     parser.add_argument("--confirm-paid-run", action="store_true")
+    parser.add_argument("--pricing-snapshot", type=Path)
+    parser.add_argument("--budget-authorization", type=Path)
+    parser.add_argument("--budget-ledger", type=Path)
+    parser.add_argument("--budget-stage", choices=["A", "B", "C"])
     args = parser.parse_args(argv)
     try:
         config = load_config(args.config)
@@ -453,17 +658,34 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "dry-run":
             print(dry_run(config, Path.cwd(), args.runs_dir, args.run_id).path)
             return 0
+        gate = None
+        if args.command in {"execute", "resume"}:
+            required = [
+                args.pricing_snapshot, args.budget_authorization, args.budget_ledger,
+                args.budget_stage,
+            ]
+            if any(item is None for item in required):
+                raise ValueError(
+                    "live Pilot requires pricing, budget authorization, and ledger paths"
+                )
+            gate = PaidRunGate(
+                root=Path.cwd(), authorization_path=args.budget_authorization,
+                ledger_path=args.budget_ledger,
+                pricing=load_pricing(args.pricing_snapshot),
+                stage=args.budget_stage,
+                pricing_path=args.pricing_snapshot,
+            )
         if args.command == "resume":
             if not args.run_id:
                 raise ValueError("resume requires --run-id")
             recorder = resume(
                 config, Path.cwd(), args.runs_dir, args.run_id,
-                confirmed=args.confirm_paid_run,
+                confirmed=args.confirm_paid_run, gate=gate,
             )
         else:
             recorder = execute(
                 config, Path.cwd(), args.runs_dir, confirmed=args.confirm_paid_run,
-                run_id=args.run_id,
+                gate=gate, run_id=args.run_id,
             )
         print(recorder.path)
         result = json.loads((recorder.path / "result.json").read_text(encoding="utf-8"))

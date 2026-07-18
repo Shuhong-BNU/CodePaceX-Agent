@@ -11,9 +11,11 @@ from codepacex.client import (
     OpenAICompatClient,
     _canonical_sha256,
     _runtime_manifest_event,
+    create_client,
 )
 from codepacex.config import ProviderConfig
 from codepacex.conversation import ConversationManager
+from codepacex.experiments import ExperimentProfile, combined_runtime_hash
 from codepacex.serialization import (
     build_anthropic_messages,
     build_chat_completion_messages,
@@ -92,6 +94,11 @@ async def test_clients_emit_hashes_before_sdk_call(
 
     assert event.system_sha256 == _canonical_sha256(expected_system)
     assert event.tools_sha256 == _canonical_sha256(expected_tools)
+    assert event.tools_bytes == len(
+        __import__("json").dumps(
+            expected_tools, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+    )
     assert event.messages_sha256 == _canonical_sha256(messages)
 
 
@@ -127,6 +134,45 @@ async def test_agent_assigns_monotonic_request_indexes_across_turns(tmp_path) ->
     assert [event.provider for event in runtime_events] == ["primary", "fallback"]
 
 
+@pytest.mark.asyncio
+async def test_agent_binds_experiment_profile_to_each_runtime_request(tmp_path) -> None:
+    runtime = RuntimeManifestEvent(
+        "primary", "openai-compat", "model", "system", "tools", "messages"
+    )
+
+    class RuntimeClient:
+        async def stream(self, conversation, system="", tools=None):
+            yield runtime
+            yield TextDelta("done")
+            yield StreamEnd("end_turn")
+
+        def set_max_output_tokens(self, tokens: int) -> None:
+            pass
+
+    profile = ExperimentProfile.model_validate({
+        "tool_loading": "deferred",
+        "compression_profile": "recovery_v1",
+        "permission_strategy": "default",
+        "agent_mode": "single",
+    })
+    agent = Agent(
+        RuntimeClient(), create_default_registry(), "openai-compat",
+        work_dir=str(tmp_path), experiment_profile=profile,
+    )
+    conversation = ConversationManager()
+    conversation.add_user_message("run")
+    events = [event async for event in agent.run(conversation)]
+    observed = next(event for event in events if isinstance(event, RuntimeManifestEvent))
+
+    assert observed.experiment_profile_hash == profile.profile_hash()
+    assert observed.runtime_contract_hash == profile.runtime_contract_hash()
+    assert observed.combined_runtime_hash == combined_runtime_hash(
+        profile_hash=profile.profile_hash(),
+        system_sha256="system",
+        tools_sha256="tools",
+    )
+
+
 def test_runtime_hash_components_change_independently() -> None:
     baseline = _runtime_manifest_event(
         provider="p", protocol="openai-compat", model="m",
@@ -157,3 +203,15 @@ def test_runtime_hash_components_change_independently() -> None:
         assert [left != right for left, right in zip(baseline_hashes, hashes)] == [
             position == index for position in range(3)
         ]
+
+
+def test_benchmark_client_can_disable_sdk_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_openai(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr("codepacex.client.AsyncOpenAI", fake_openai)
+    create_client(_config("openai-compat"), max_retries=0)
+    assert captured["max_retries"] == 0

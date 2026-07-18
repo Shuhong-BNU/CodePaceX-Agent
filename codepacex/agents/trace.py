@@ -8,6 +8,7 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
 
 # 核心实现
@@ -20,6 +21,9 @@ class TraceNode:
     input_tokens: int = 0
     output_tokens: int = 0
     tool_call_count: int = 0
+    request_count: int = 0
+    request_usages: list[tuple[int, int]] = field(default_factory=list)
+    runtime_manifests: list[dict[str, Any]] = field(default_factory=list)
     start_time: float = field(default_factory=time.monotonic)
     end_time: float | None = None
     status: str = "running"
@@ -28,6 +32,7 @@ class TraceNode:
 class TraceManager:
     def __init__(self) -> None:
         self._nodes: dict[str, TraceNode] = {}
+        self._peak_parallel_by_parent: dict[str, int] = {}
 
 
     def create(
@@ -47,9 +52,17 @@ class TraceManager:
             agent_type=agent_type,
         )
         self._nodes[agent_id] = node
+        if parent_id is not None:
+            running = sum(
+                item.parent_id == parent_id and item.end_time is None
+                for item in self._nodes.values()
+            )
+            self._peak_parallel_by_parent[parent_id] = max(
+                self._peak_parallel_by_parent.get(parent_id, 0), running,
+            )
         return node
 
-    def update(self, agent_id: str, **kwargs: int | str) -> None:
+    def update(self, agent_id: str, **kwargs: object) -> None:
         node = self._nodes.get(agent_id)
         if node is None:
             return
@@ -90,3 +103,27 @@ class TraceManager:
                 total_in += node.input_tokens
                 total_out += node.output_tokens
         return total_in, total_out
+
+    def benchmark_summary(self, parent_id: str) -> dict[str, object]:
+        """Return aggregate child telemetry without prompts or model content."""
+        children = [node for node in self._nodes.values() if node.parent_id == parent_id]
+        return {
+            "child_count": len(children),
+            "completed_child_count": sum(node.status == "completed" for node in children),
+            "failed_child_count": sum(node.status == "failed" for node in children),
+            "child_input_tokens": sum(node.input_tokens for node in children),
+            "child_output_tokens": sum(node.output_tokens for node in children),
+            "child_request_count": sum(node.request_count for node in children),
+            "child_request_usages": [
+                {"input_tokens": input_tokens, "output_tokens": output_tokens}
+                for node in children
+                for input_tokens, output_tokens in node.request_usages
+            ],
+            "child_runtime_manifests": [
+                {**manifest, "child_agent_id": node.agent_id}
+                for node in children
+                for manifest in node.runtime_manifests
+            ],
+            "child_tool_call_count": sum(node.tool_call_count for node in children),
+            "maximum_parallel_children": self._peak_parallel_by_parent.get(parent_id, 0),
+        }

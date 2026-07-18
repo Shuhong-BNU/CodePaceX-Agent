@@ -50,12 +50,14 @@ class PermissionChecker:
         rule_engine: RuleEngine,
         mode: PermissionMode = PermissionMode.DEFAULT,
         sandbox_enabled: bool = False,
+        session_allow_all: bool = False,
     ) -> None:
         self.detector = detector
         self.sandbox = sandbox
         self.rule_engine = rule_engine
         self.mode = mode
         self.sandbox_enabled = sandbox_enabled
+        self.session_allow_all = session_allow_all
         self.plan_file_path: str = ""
         # Layer 4b: 会话级 allow-always 集合（内存中，不持久化）
         # 存放格式为 "ToolName:pattern"，用户选择 "don't ask again" 时记录
@@ -174,6 +176,8 @@ class PermissionChecker:
         if assessment.explicit_effect is not None:
             policy_effect = assessment.explicit_effect
             policy_reason = assessment.explicit_reason
+        elif self.session_allow_all:
+            policy_effect, policy_reason = "allow", "实验会话级预授权"
         elif self._check_session_allowed(assessment.tool.name, assessment.content):
             policy_effect, policy_reason = "allow", "会话级放行"
         elif self.sandbox_enabled and assessment.tool.category == "command":

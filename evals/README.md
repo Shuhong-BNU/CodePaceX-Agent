@@ -91,7 +91,7 @@ fixture 中的 `.codepacex/permissions.yaml` 会通过项目级 permission rule 
 
 `evals/benchmark.py` 为每次真实实验创建版本化 manifest、环境快照、事件 JSONL、usage 和 Markdown 报告，并自动脱敏 API Key 等敏感字段。`evals/run_resume_metrics.py` 只汇总真实采样数据；它不会生成或补全任何缺失的样本。
 
-## 🧪 Benchmark Pilot Harness（本轮新增）
+## 🧪 Benchmark Pilot 与 Goal 2 Harness
 
 本轮在既有 6-task Eval 之上增加了可复现实验的记录与证据链，不替代既有 deterministic eval：
 
@@ -102,14 +102,14 @@ fixture 中的 `.codepacex/permissions.yaml` 会通过项目级 permission rule 
 # 创建完整的 dry-run Run；不会访问网络或调用模型
 ./.venv/bin/python -m evals.pilot dry-run
 
-# 只在人工确认付费实验、任务清单非空且环境中已有 Key 时才允许进入 live 路径
-./.venv/bin/python -m evals.pilot execute --confirm-paid-run
+# live 路径还必须提供绑定 clean HEAD 的预算授权、定价快照和持久 ledger
+./.venv/bin/python -m evals.pilot execute --confirm-paid-run --pricing-snapshot PATH --budget-authorization PATH --budget-ledger PATH
 
 # 从已存在的真实 Run 重新计算 Claims；缺失证据只会输出 insufficient-data
 ./.venv/bin/python -m evals.claims compile
 ```
 
-冻结主实验配置位于 `evals/pilot.qwen.yaml`：`bailian-qwen37-max`、`openai-compat`、`qwen3.7-max-2026-06-08`，且 fallback 与自动 retry 均关闭。该配置只引用环境变量名，永不写入密钥。live 路径复用现有 6-task Runner，并在隔离的临时 HOME 中运行；本 PR 的测试与 CI 只运行 validate/dry-run 和 mock subprocess，不会发起付费调用。
+冻结主实验配置位于 `evals/pilot.qwen.yaml`：默认只运行 `codepacex_001_config_bugfix` 一次；Provider 为 `bailian-qwen37-max`，协议 `openai-compat`，模型 `qwen3.7-max-2026-06-08`，fallback 与自动 retry 均关闭。配置只引用环境变量名，永不写入密钥。预算授权绑定 clean Git commit 与定价快照，ledger 在下一 trial 前按最坏上限预约并在真实 Usage 到达后结算。
 
 每次 terminal Run 的五个核心文件是 `manifest.json`、`environment.json`、`events.jsonl`、`result.json` 与 `report.md`。usage、Runtime Hash、权限、压缩和 patch/test-output 附件仅在真实事件或真实文件存在时生成。Runtime Hash 在协议转换完成后针对实际 system/tools/messages payload 计算，只保存 SHA-256 与实际 Provider 身份，不保存请求原文。Provider 返回的 usage 结构按原样保存，缺失字段不会补零或推断。
 
@@ -117,14 +117,14 @@ fixture 中的 `.codepacex/permissions.yaml` 会通过项目级 permission rule 
 
 Claims 声明的 sample size 必须与真实 trial 或真实 A/B 配对数完全相等。rate 使用汇总后的 numerator/denominator；A/B 仅比较完全相同的 `task_id + repetition_id` 配对，且双方都必须具有唯一、成功的终态 Attempt；含多个终态 Attempt 的 trial 在 Pilot v1 中是 insufficient-data。p95 唯一使用 nearest-rank：`sorted_values[ceil(0.95 * n) - 1]`，不使用插值。
 
-当前状态：可复现实验采集、dry-run 校验与 Claims 溯源已实现并有测试；尚未运行任何本轮 Qwen paid Pilot、真实 SWE-bench-Live、Token 节省率实验或长会话实验，因此没有这些项目的实际指标或成绩。
+Goal 2 的四类 `ExperimentProfile` 会真实改变 ToolRegistry、压缩、权限和多 Agent Runtime；Runtime Artifact 记录 profile/hash、最终 Provider payload hash 和工具 Schema 字节数。六项指标 runner、分项成本估算、官方 SWE 环境 preflight、单写者预算 gate、长会话 checkpoint 和 Goal 2 Claims 自动生成均已实现并有测试。`8fd4b19` 的首次 Qwen Stage A Pilot 已真实调用 Provider，但以 `task_failure` 结束并触发证据/计费修复，不能写成效果成绩；真实 SWE Agent inference、正式 Token A/B 和长会话仍未运行。执行手册见 [`GOAL2_RUNBOOK.md`](GOAL2_RUNBOOK.md)。
 
 ## SWE-bench 官方适配器
 
-`evals/swe_bench_live.py` 可确定性筛选实例、写入 frozen manifest，并构造官方 `swebench.harness.run_evaluation` 命令。无需安装 evaluator 的 dry-run 示例：
+`evals/swe_bench_live.py` 与 `evals/swe_inference.py` 可确定性筛选实例、冻结官方 payload hash、执行 Agent inference，并调用官方 `swebench.harness.run_evaluation`。正式 preflight 还会验证安装 checkout 精确等于 Microsoft `python-only` commit `ad79b850f15e33992e96f03f6e97f05ddf9aa0be`；arm64 结果必须标注 experimental。无需安装 evaluator 的命令构造 dry-run 示例：
 
 ```bash
-./.venv/bin/python -m evals.swe_bench_live --dataset-name org/dataset --predictions-path predictions.json --run-id pilot --namespace codepacex --dry-run
+./.venv/bin/python -m evals.swe_bench_live --dataset-name SWE-bench-Live/SWE-bench-Live --split lite --predictions-path predictions.json --run-id pilot --namespace starryzhang --dry-run
 ```
 
-当前只验证官方 CLI 命令构造、manifest 和 dry-run；尚未运行真实 Docker SWE-bench-Live 评测，因此仓库不提供或声称真实 SWE-bench 成绩。
+当前只验证官方 CLI、manifest、inference/evaluator 闭环和 dry-run；尚未安装隔离 evaluator 依赖或运行真实 Docker SWE-bench-Live，因此仓库不提供或声称真实 SWE-bench 成绩。

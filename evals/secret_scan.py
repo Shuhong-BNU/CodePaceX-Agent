@@ -6,6 +6,7 @@ process environment values are read or printed.
 
 from __future__ import annotations
 
+import argparse
 import re
 import subprocess
 import sys
@@ -43,8 +44,32 @@ def scan_tracked_files(root: Path) -> list[str]:
     return findings
 
 
+def scan_artifact_roots(roots: list[Path]) -> list[str]:
+    """Scan explicit local Artifact roots without reading process environment."""
+    findings: list[str] = []
+    for root in roots:
+        candidates = [root] if root.is_file() else sorted(root.rglob("*"))
+        for path in candidates:
+            if not path.is_file() or path.is_symlink():
+                continue
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except (OSError, UnicodeDecodeError):
+                continue
+            for number, line in enumerate(lines, 1):
+                if line_has_credential(line):
+                    findings.append(f"{path}:{number}")
+    return findings
+
+
 def main() -> int:
-    findings = scan_tracked_files(Path.cwd())
+    parser = argparse.ArgumentParser(description="Scan source and explicit Run Artifacts")
+    parser.add_argument("--artifact-root", action="append", type=Path, default=[])
+    args = parser.parse_args()
+    findings = [
+        *scan_tracked_files(Path.cwd()),
+        *scan_artifact_roots(args.artifact_root),
+    ]
     if findings:
         print("credential-shaped tracked content: " + ", ".join(findings), file=sys.stderr)
         return 1

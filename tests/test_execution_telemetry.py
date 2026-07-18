@@ -15,6 +15,7 @@ from codepacex.agent import (
 )
 from codepacex.context import CompactEvent
 from codepacex.conversation import ConversationManager
+from codepacex.experiments import ExperimentProfile
 from codepacex.hooks import Action, Hook, HookEngine
 from codepacex.permissions import (
     DangerousCommandDetector,
@@ -251,6 +252,64 @@ async def test_compression_emits_structured_terminal_event(
     assert compression[0].tokens_after is None
     assert compression[0].attachment_count is None
     assert compression[0].error_category == (None if success else "compression_error")
+
+
+@pytest.mark.asyncio
+async def test_run_to_completion_reuses_conversation_after_compaction(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    async def fake_compact(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return CompactEvent(123) if calls == 1 else None
+
+    monkeypatch.setattr("codepacex.agent.auto_compact", fake_compact)
+    agent = Agent(
+        ScriptedClient([[TextDelta("done"), StreamEnd("end_turn")]]),
+        create_default_registry(), "anthropic", work_dir=str(tmp_path),
+    )
+
+    result = await agent.run_to_completion("run", ConversationManager())
+
+    assert result == "done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("compression_profile", "expects_recovery"),
+    [("summary_only", False), ("recovery_v1", True)],
+)
+async def test_experiment_compression_profile_changes_runtime_attachments(
+    compression_profile: str,
+    expects_recovery: bool,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[tuple[object, object]] = []
+
+    async def fake_compact(*args, **kwargs):
+        observed.append((kwargs.get("recovery"), kwargs.get("tool_schemas")))
+        return None
+
+    monkeypatch.setattr("codepacex.agent.auto_compact", fake_compact)
+    profile = ExperimentProfile.model_validate({
+        "tool_loading": "deferred",
+        "compression_profile": compression_profile,
+        "permission_strategy": "default",
+        "agent_mode": "single",
+    })
+    agent = Agent(
+        ScriptedClient([[TextDelta("done"), StreamEnd("end_turn")]]),
+        create_default_registry(), "anthropic", work_dir=str(tmp_path),
+        experiment_profile=profile,
+    )
+    await _run(agent)
+
+    recovery, schemas = observed[0]
+    assert (recovery is not None) is expects_recovery
+    assert (schemas is not None) is expects_recovery
 
 
 @pytest.mark.asyncio

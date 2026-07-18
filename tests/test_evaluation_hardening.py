@@ -39,6 +39,29 @@ def test_empty_instance_ids_omit_argument(tmp_path: Path) -> None:
     assert "--instance_ids" not in _command(tmp_path, [])
 
 
+def test_arm64_local_build_namespace_and_report_dir_are_supported(tmp_path: Path) -> None:
+    command = build_evaluator_command(
+        dataset_name="org/live", split="lite",
+        predictions_path=tmp_path / "predictions.json", instance_ids=["one"],
+        max_workers=1, run_id="arm", namespace="", report_dir=tmp_path / "reports",
+    )
+    assert command[command.index("--namespace") + 1] == ""
+    assert command[command.index("--report_dir") + 1] == str(tmp_path / "reports")
+
+
+def test_x86_64_override_runs_fixed_module_without_editing_evaluator(tmp_path: Path) -> None:
+    command = build_evaluator_command(
+        dataset_name="org/live", split="lite",
+        predictions_path=tmp_path / "predictions.json", instance_ids=["one"],
+        max_workers=1, run_id="amd64", namespace="starryzhang",
+        python_executable="python3", evaluator_architecture="x86_64",
+    )
+    assert command[:2] == ["python3", "-c"]
+    assert "platform.machine=lambda" in command[2]
+    assert "swebench.harness.run_evaluation" in command[2]
+    assert command[command.index("--instance_ids") + 1:] == ["one"]
+
+
 def test_selection_is_stable_and_optionally_filters_language() -> None:
     items = [
         {"instance_id": "b", "repo": "repo", "platform": "linux", "language": "python"},
@@ -81,12 +104,13 @@ def test_evaluator_return_code_is_propagated(tmp_path: Path) -> None:
     completed = subprocess.CompletedProcess(["swebench"], 7, "out", "err")
     with patch("evals.swe_bench_live.importlib.util.find_spec", return_value=object()), patch(
         "evals.swe_bench_live.subprocess.run", return_value=completed
-    ):
+    ) as run_mock:
         result = run_official_evaluator(
             dataset_name="org/live", split="test", predictions_path=predictions,
             instance_ids=["one"], max_workers=1, run_id="run", namespace="codepacex",
         )
     assert result.returncode == 7
+    assert run_mock.call_args.kwargs["cwd"] is None
 
 
 def test_cli_dry_run_needs_no_evaluator(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

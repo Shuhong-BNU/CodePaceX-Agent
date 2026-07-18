@@ -16,17 +16,18 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import median
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
 from urllib.parse import quote, quote_plus, unquote, urlsplit
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 RESULT_STATUSES = {
     "success", "task_failure", "timeout", "provider_error",
     "configuration_error", "infrastructure_error", "cancelled", "dry_run",
+    "budget_blocked",
 }
 SCORABLE_STATUSES = {"success", "task_failure"}
-RESUMABLE_STATUSES = RESULT_STATUSES - {"success", "dry_run"}
+RESUMABLE_STATUSES = RESULT_STATUSES - {"success", "dry_run", "budget_blocked"}
 OPTIONAL_JSON = {"usage.json"}
 OPTIONAL_STREAMS = {
     "permission-events.jsonl", "compression-events.jsonl", "runtime-events.jsonl",
@@ -150,6 +151,12 @@ class RunManifest:
     system_prompt_hash: str | None = None
     tool_schema_hash: str | None = None
     feature_flags: dict[str, Any] = field(default_factory=dict)
+    experiment_profile: dict[str, Any] = field(default_factory=dict)
+    experiment_profile_hash: str | None = None
+    runtime_contract_hash: str | None = None
+    benchmark_asset_hash: str | None = None
+    pricing_snapshot_hash: str | None = None
+    swe_evaluator_architecture: Literal["native", "x86_64"] | None = None
     task_ids: list[str] = field(default_factory=list)
     repetitions: int = 1
     model_parameters: dict[str, Any] = field(default_factory=dict)
@@ -158,6 +165,7 @@ class RunManifest:
     timeout_seconds: int | None = None
     retry_budget: int | None = None
     fallback_enabled: bool = False
+    max_iterations: int | None = None
     operating_system: str = field(default_factory=platform.system)
     python_version: str = field(default_factory=platform.python_version)
     dependency_snapshot_hash: str | None = None
@@ -237,10 +245,15 @@ class RunRecorder:
         payload = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
         identity = (
             "experiment_config_hash", "git_commit", "provider", "model_id",
-            "system_prompt_hash", "tool_schema_hash",
+            "system_prompt_hash", "tool_schema_hash", "experiment_profile_hash",
+            "runtime_contract_hash", "benchmark_asset_hash", "model_parameters",
+            "retry_budget", "fallback_enabled", "pricing_snapshot_hash",
+            "swe_evaluator_architecture",
         )
         expected_payload = expected.to_dict()
         mismatches = [key for key in identity if payload.get(key) != expected_payload.get(key)]
+        if "pricing_snapshot_hash" in mismatches:
+            raise ValueError("pricing snapshot identity mismatch")
         if mismatches:
             raise ValueError(f"resume manifest mismatch: {', '.join(mismatches)}")
         result_path = path / "result.json"
@@ -337,8 +350,9 @@ class RunRecorder:
         """Return a stable attempt scope without changing provider request IDs.
 
         ``request_index`` and ``tool_use_id`` are local to an Agent process.  A
-        Pilot starts one process per trial, so Recorder-level uniqueness must be
-        scoped to the task, repetition, and attempt that emitted the event.
+        Pilot starts one process per trial, and a foreground child Agent shares
+        that trial's stream-json trace, so runtime uniqueness is also scoped by
+        an optional child Agent identity.
         Older artifacts without ``attempt_id`` are treated as their first
         attempt for backwards-compatible inspection.
         """
@@ -379,14 +393,32 @@ class RunRecorder:
             request_index = payload.get("request_index")
             if not isinstance(request_index, int) or request_index < 1:
                 raise ValueError("runtime manifest requires a positive request_index")
+            child_agent_id = payload.get("child_agent_id")
+            if child_agent_id is not None and (
+                not isinstance(child_agent_id, str) or not child_agent_id
+            ):
+                raise ValueError("runtime manifest child_agent_id must be a non-empty string")
             identity = self._attempt_identity(payload)
             previous = self._jsonl_records("runtime-events.jsonl")
             if any(
                 self._attempt_identity(item) == identity
                 and item.get("request_index") == request_index
+                and item.get("child_agent_id") == child_agent_id
                 for item in previous
             ):
                 raise ValueError(f"duplicate runtime request index: {request_index}")
+            if self.manifest.experiment_profile_hash is not None:
+                if payload.get("experiment_profile_hash") != self.manifest.experiment_profile_hash:
+                    raise ValueError("runtime experiment profile hash does not match manifest")
+                if payload.get("runtime_contract_hash") != self.manifest.runtime_contract_hash:
+                    raise ValueError("runtime contract hash does not match manifest")
+                expected_runtime_hash = canonical_hash({
+                    "experiment_profile_hash": self.manifest.experiment_profile_hash,
+                    "system_sha256": payload.get("system_sha256"),
+                    "tools_sha256": payload.get("tools_sha256"),
+                })
+                if payload.get("combined_runtime_hash") != expected_runtime_hash:
+                    raise ValueError("combined runtime hash does not match effective request")
         elif event_type == "usage":
             request_index = payload.get("request_index")
             trial_scoped = {"task_id", "repetition_id", "attempt_id"}.issubset(payload)
@@ -458,6 +490,47 @@ class RunRecorder:
             if event.get("type") == "trial_completed":
                 completed.add((str(event.get("task_id")), str(event.get("repetition_id"))))
         return completed
+
+    def incomplete_trial_attempts(self) -> set[tuple[str, str, int]]:
+        """Return started Trial attempts that have no terminal event.
+
+        A paid runner must not invoke a Provider again for one of these
+        attempts.  Callers seal the attempt as an infrastructure error during
+        an explicit resume, preserving its original identity for audit.
+        """
+        started: set[tuple[str, str, int]] = set()
+        completed: set[tuple[str, str, int]] = set()
+        for event in self._jsonl_records("events.jsonl"):
+            if event.get("type") not in {"trial_started", "trial_completed"}:
+                continue
+            task_id, repetition_id, attempt_id = self._attempt_identity(event)
+            identity = (str(task_id), str(repetition_id), attempt_id)
+            if event["type"] == "trial_started":
+                started.add(identity)
+            else:
+                completed.add(identity)
+        return started - completed
+
+    def terminal_trial_statuses(self) -> dict[tuple[str, str], str]:
+        """Return the sole terminal status for each Trial identity.
+
+        Duplicate terminal events are invalid evidence and are rejected rather
+        than silently choosing one.  Attempts are intentionally collapsed here:
+        a Trial is terminal after its first terminal attempt and may not be
+        rerun by a resume command.
+        """
+        statuses: dict[tuple[str, str], str] = {}
+        for event in self._jsonl_records("events.jsonl"):
+            if event.get("type") != "trial_completed":
+                continue
+            identity = (str(event.get("task_id")), str(event.get("repetition_id")))
+            if identity in statuses:
+                raise ValueError(
+                    "duplicate terminal Trial event: "
+                    f"{identity[0]}/{identity[1]}"
+                )
+            statuses[identity] = str(event.get("status", "infrastructure_error"))
+        return statuses
 
     def successful_trials(self) -> set[tuple[str, str]]:
         successful: set[tuple[str, str]] = set()

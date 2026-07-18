@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "repository": "https://github.com/microsoft/SWE-bench-Live",
+  "branch": "python-only",
+  "commit": "ad79b850f15e33992e96f03f6e97f05ddf9aa0be",
+  "dataset": "SWE-bench-Live/SWE-bench-Live",
+  "split": "lite",
+  "evaluator_namespace": "starryzhang",
+  "installation": "isolated-editable-checkout",
+  "docker_required": true,
+  "arm64_support_is_experimental": true,
+  "arm64_evaluator_architecture": "x86_64",
+  "notes": [
+    "Install the official checkout only in a dedicated Goal 2 virtual environment.",
+    "The dataset revision and exported JSONL hash are frozen separately in swe_matrix.json.",
+    "Do not count evaluator or Docker failures as Agent failures."
+  ]
+}

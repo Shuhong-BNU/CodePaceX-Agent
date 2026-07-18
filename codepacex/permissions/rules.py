@@ -108,6 +108,14 @@ class RuleEngine:
                     return rule.effect
         return None
 
+    def clone(self) -> "RuleEngine":
+        """Copy the rule sources without sharing mutable checker state."""
+        return RuleEngine(
+            user_rules_path=self._user_path,
+            project_rules_path=self._project_path,
+            local_rules_path=self._local_path,
+        )
+
 
     def append_local_rule(self, rule: Rule) -> None:
         if self._local_path is None:

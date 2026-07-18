@@ -192,6 +192,7 @@ def run_agent(
     task: dict[str, Any],
     trace_path: Path,
     stderr_path: Path,
+    experiment_profile: Path | None = None,
 ) -> tuple[int | None, int, bool]:
     execution = task.get("execution") if isinstance(task.get("execution"), dict) else {}
     mode = str(execution.get("permission_mode", "default"))
@@ -210,6 +211,8 @@ def run_agent(
         "--output-format",
         "stream-json",
     ]
+    if experiment_profile is not None:
+        command.extend(["--experiment-profile", str(experiment_profile)])
     start = time.monotonic()
     try:
         proc = subprocess.run(
@@ -377,6 +380,7 @@ def run_task(
     run_dir: Path,
     *,
     keep_failed: bool,
+    experiment_profile: Path | None = None,
 ) -> dict[str, Any]:
     task_id = str(task["id"])
     task_dir = run_dir / task_id
@@ -391,7 +395,8 @@ def run_task(
         trace_path = task_dir / "trace.ndjson"
         stderr_path = task_dir / "stderr.txt"
         returncode, duration_ms, timed_out = run_agent(
-            repo_root, workspace, task, trace_path, stderr_path
+            repo_root, workspace, task, trace_path, stderr_path,
+            experiment_profile=experiment_profile,
         )
         post_agent = snapshot_files(workspace)
         diff = diff_snapshots(initial, post_agent)
@@ -514,6 +519,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--task", action="append", default=[])
     parser.add_argument("--report-dir", default=str(DEFAULT_REPORT_DIR))
     parser.add_argument("--keep-failed", action="store_true")
+    parser.add_argument("--experiment-profile", type=Path)
     return parser.parse_args()
 
 
@@ -534,7 +540,10 @@ def main() -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
 
     results = [
-        run_task(repo_root, task, run_dir, keep_failed=args.keep_failed)
+        run_task(
+            repo_root, task, run_dir, keep_failed=args.keep_failed,
+            experiment_profile=args.experiment_profile,
+        )
         for task in tasks
     ]
     summary = summarize_suite_results(results)

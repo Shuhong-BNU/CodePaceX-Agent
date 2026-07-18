@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import asyncio
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -10,7 +11,47 @@ from unittest.mock import patch
 import pytest
 
 from evals import pilot
+import evals.claims as claims
 from evals.benchmark import RunRecorder
+from evals.costing import load_pricing, pricing_snapshot_hash
+from codepacex.experiments import combined_runtime_hash
+
+
+class _TestGate:
+    def __init__(self):
+        self.last_trial_id: str | None = None
+        self.lock_entries = 0
+        self.root = Path.cwd()
+        self.authorization_path = Path("/tmp/authorization.json")
+        self.ledger_path = Path("/tmp/ledger.json")
+        self.pricing_path = Path("/tmp/pricing.json")
+        self.stage = "A"
+        self.allocation_path = None
+        self.pricing = load_pricing(
+            Path("evals/goal2/pricing_bailian_qwen37_max_2026-07-13.json"),
+        )
+
+    @contextmanager
+    def locked(self):
+        self.lock_entries += 1
+        yield
+
+    def trial_accounting(self, trial_id: str) -> dict[str, object]:
+        self.last_trial_id = trial_id
+        return {
+            "budget_blocked": False,
+            "budget_block_reasons": [],
+            "active_reservation": None,
+            "request_count": 1,
+            "actual_cny": "0.000000",
+        }
+
+
+TEST_GATE = _TestGate()
+
+
+def _paid_manifest(config: pilot.PilotConfig, run_id: str = ""):
+    return pilot._paid_manifest(config, Path.cwd(), run_id=run_id, gate=TEST_GATE)
 
 
 def config_file(tmp_path: Path, **changes: object) -> Path:
@@ -28,6 +69,13 @@ def config_file(tmp_path: Path, **changes: object) -> Path:
 def test_frozen_config_validates_and_hash_changes(tmp_path: Path) -> None:
     config = pilot.load_config(config_file(tmp_path))
     assert config.provider == pilot.FROZEN_PROVIDER
+    assert config.schema_version == 2
+    assert config.model_parameters.max_output_tokens == 8192
+    assert config.task_ids == ["codepacex_001_config_bugfix"]
+    assert config.repetitions == 1
+    manifest = pilot.build_manifest(config, Path.cwd())
+    assert manifest.benchmark_asset_hash == pilot.benchmark_asset_hash(Path.cwd())
+    assert len(manifest.benchmark_asset_hash or "") == 64
     with pytest.raises(ValueError, match="feature_flags"):
         pilot.load_config(config_file(tmp_path, feature_flags={"deferred": True}))
 
@@ -67,12 +115,40 @@ def test_execute_without_key_or_confirmation_is_configuration_error(tmp_path: Pa
     assert json.loads((recorder.path / "result.json").read_text())["status"] == "configuration_error"
 
 
+def test_execute_with_key_but_without_budget_gate_is_configuration_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = pilot.load_config(config_file(
+        tmp_path, task_ids=["codepacex_001_config_bugfix"],
+    ))
+    monkeypatch.setenv("BAILIAN_API_KEY", "test-only")
+    with patch("evals.pilot._run_trials", side_effect=AssertionError("must not run")):
+        recorder = pilot.execute(
+            config, Path.cwd(), tmp_path / "runs", confirmed=True,
+        )
+    assert json.loads((recorder.path / "result.json").read_text())["status"] == "configuration_error"
+
+
 def test_cli_validate_does_not_show_key_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setenv("BAILIAN_API_KEY", "do-not-print")
     assert pilot.main(["validate", "--config", str(config_file(tmp_path))]) == 0
     output = capsys.readouterr().out
     assert "do-not-print" not in output
     assert '"api_key_present": true' in output
+
+
+def test_trace_request_usages_prices_total_provider_tokens_without_cache_discount() -> None:
+    trace = json.dumps({
+        "type": "usage",
+        "request_input_tokens": 200,
+        "request_output_tokens": 30,
+        "provider_usage": {
+            "prompt_tokens": 1200,
+            "completion_tokens": 30,
+            "prompt_tokens_details": {"cached_tokens": 1000},
+        },
+    })
+    assert pilot.trace_request_usages(trace) == [(1200, 30)]
 
 
 def test_live_execute_is_mockable_and_child_env_excludes_other_provider_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -83,6 +159,7 @@ def test_live_execute_is_mockable_and_child_env_excludes_other_provider_keys(tmp
     monkeypatch.setenv("GITHUB_TOKEN", "also-blocked")
     monkeypatch.setenv("SSH_AUTH_SOCK", "/private/credential-agent")
     monkeypatch.setenv("HTTPS_PROXY", "https://proxy-user:proxy-password@example.test")
+    monkeypatch.setenv("PYTHONPATH", "/tmp/stale-codepacex-checkout")
     captured: dict[str, object] = {}
     real_run = subprocess.run
 
@@ -97,17 +174,47 @@ def test_live_execute_is_mockable_and_child_env_excludes_other_provider_keys(tmp
             "suite_status": "PASS",
             "tasks": [{"id": "codepacex_001_config_bugfix", "status": "PASS"}],
         }))
+        (report_dir / "report.md").write_text("inner report", encoding="utf-8")
+        from codepacex.experiments import load_experiment_profile
+
+        profile = load_experiment_profile(Path(command[command.index("--experiment-profile") + 1]))
+        runtime = {
+            "type": "runtime_manifest", "request_index": 1,
+            "provider": "bailian-qwen37-max", "protocol": "openai-compat",
+            "model_id": "qwen3.7-max-2026-06-08",
+            "system_sha256": "system", "tools_sha256": "tools", "messages_sha256": "messages",
+            "experiment_profile_hash": profile.profile_hash(),
+            "runtime_contract_hash": profile.runtime_contract_hash(),
+            "combined_runtime_hash": combined_runtime_hash(
+                profile_hash=profile.profile_hash(), system_sha256="system", tools_sha256="tools",
+            ),
+        }
+        usage = {
+            "type": "usage", "request_index": 1,
+            "provider": "bailian-qwen37-max", "model_id": "qwen3.7-max-2026-06-08",
+            "input_tokens": 1, "output_tokens": 1,
+            "request_input_tokens": 1, "request_output_tokens": 1,
+        }
+        (report_dir / "trace.ndjson").write_text(
+            json.dumps(runtime) + "\n" + json.dumps(usage) + "\n",
+            encoding="utf-8",
+        )
         return SimpleNamespace(returncode=0, stdout="mock stdout", stderr="")
 
     with patch("evals.pilot.subprocess.run", side_effect=fake_run):
-        recorder = pilot.execute(config, Path.cwd(), tmp_path / "runs", confirmed=True)
+        recorder = pilot.execute(
+            config, Path.cwd(), tmp_path / "runs", confirmed=True, gate=TEST_GATE,
+        )
     assert json.loads((recorder.path / "result.json").read_text())["status"] == "success"
     assert captured["command"][0] == pilot.sys.executable
+    assert "--experiment-profile" in captured["command"]
     assert "AGENTROUTER_API_KEY" not in captured["env"]
     assert "AWS_SECRET_ACCESS_KEY" not in captured["env"]
     assert "GITHUB_TOKEN" not in captured["env"]
     assert "SSH_AUTH_SOCK" not in captured["env"]
     assert captured["env"]["HTTPS_PROXY"].startswith("https://proxy-user")
+    assert captured["env"]["PYTHONPATH"] == str(Path.cwd().resolve())
+    assert captured["env"]["CODEPACEX_EXPERIMENT_REQUEST_BUDGET"] == "1"
     all_output = "\n".join(
         path.read_text(encoding="utf-8", errors="replace")
         for path in recorder.path.rglob("*") if path.is_file()
@@ -115,26 +222,188 @@ def test_live_execute_is_mockable_and_child_env_excludes_other_provider_keys(tmp
     assert "test-only-bailian-key" not in all_output
     assert "proxy-password" not in all_output
     result = json.loads((recorder.path / "result.json").read_text())
+    assert result["model_called"] is result["network_called"] is True
+    assert TEST_GATE.last_trial_id == (
+        f"pilot/{recorder.run_id}/codepacex_001_config_bugfix/1/1"
+    )
     assert result["attempted_trial_count"] == 1
     assert result["completed_trial_count"] == 1
     assert result["unscorable_trial_count"] == 0
+    assert TEST_GATE.lock_entries == 0
+    evidence = (recorder.path / "artifacts" / "test-output.txt").read_text()
+    assert '"suite_status": "PASS"' in evidence
+    assert "inner report" in evidence
     assert not (recorder.path / "artifacts" / "task-runs").exists()
+    assert json.loads((recorder.path / "manifest.json").read_text())["pricing_snapshot_hash"] == (
+        pricing_snapshot_hash(TEST_GATE.pricing)
+    )
+
+
+def test_pilot_fifty_iteration_ceiling_uses_request_bridge_not_trial_reservation() -> None:
+    source = Path(pilot.__file__).read_text(encoding="utf-8")
+    assert "maximum_requests=config.max_iterations" not in source
+    assert "provider_request_budget_environment(" in source
+    assert "with gate.locked():\n            statuses = _run_trials" not in source
+
+
+def _runtime_event(config: pilot.PilotConfig, request_index: int, **extra: object) -> dict[str, object]:
+    profile = config.experiment_profile
+    return {
+        "type": "runtime_manifest", "request_index": request_index,
+        "provider": config.provider, "protocol": config.protocol,
+        "model_id": config.model_id, "system_sha256": "system",
+        "tools_sha256": "tools", "messages_sha256": "messages",
+        "experiment_profile_hash": profile.profile_hash(),
+        "runtime_contract_hash": profile.runtime_contract_hash(),
+        "combined_runtime_hash": combined_runtime_hash(
+            profile_hash=profile.profile_hash(), system_sha256="system", tools_sha256="tools",
+        ),
+        **extra,
+    }
+
+
+def test_trace_ingestion_preserves_explicit_tools_bytes_for_claims(tmp_path: Path) -> None:
+    config = pilot.load_config(config_file(tmp_path))
+    recorder = RunRecorder(tmp_path / "runs", pilot.build_manifest(config, Path.cwd()), run_id="tools")
+    trace = tmp_path / "trace.ndjson"
+    trace.write_text("\n".join(json.dumps(event) for event in (
+        _runtime_event(config, 1, tools_bytes=1234),
+        _runtime_event(config, 2, tools_bytes=0),
+    )))
+    pilot._ingest_trace(recorder, trace, "task", "1", 1)
+    records = [json.loads(line) for line in (recorder.path / "runtime-events.jsonl").read_text().splitlines()]
+    assert [item["tools_bytes"] for item in records] == [1234, 0]
+    assert [item["tools_sha256"] for item in records] == ["tools", "tools"]
+    assert claims._runtime_tool_schema_trials(recorder.path) == {("task", "1"): 1234.0}
+
+
+def test_trace_ingestion_persists_child_runtime_manifests_without_duplicate_usage(tmp_path: Path) -> None:
+    config = pilot.load_config(config_file(tmp_path))
+    recorder = RunRecorder(tmp_path / "runs", pilot.build_manifest(config, Path.cwd()), run_id="children")
+    trace = tmp_path / "trace.ndjson"
+    parent_runtime = _runtime_event(config, 1, tools_bytes=789)
+    parent_usage = {
+        "type": "usage", "request_index": 1,
+        "input_tokens": 10, "output_tokens": 4,
+        "request_input_tokens": 10, "request_output_tokens": 4,
+    }
+    child_one = {
+        **_runtime_event(config, 1, tools_bytes=123),
+        "child_agent_id": "child-one",
+    }
+    child_two = {
+        **_runtime_event(config, 2, tools_bytes=456),
+        "child_agent_id": "child-two",
+    }
+    trace.write_text("\n".join(json.dumps(event) for event in (
+        parent_runtime,
+        parent_usage,
+        {"type": "experiment_agent_summary", "child_request_usages": [{
+            "input_tokens": 8, "output_tokens": 2,
+        }], "child_runtime_manifests": [child_one, child_two]},
+    )))
+
+    assert pilot._ingest_trace(recorder, trace, "task", "1", 1) == (1, 10, 4)
+    records = [
+        json.loads(line)
+        for line in (recorder.path / "runtime-events.jsonl").read_text().splitlines()
+    ]
+    assert [(item.get("child_agent_id"), item["request_index"], item["tools_bytes"])
+            for item in records] == [(None, 1, 789), ("child-one", 1, 123), ("child-two", 2, 456)]
+    assert all(item["tools_sha256"] == "tools" for item in records)
+    assert all(item["combined_runtime_hash"] == child_one["combined_runtime_hash"] for item in records)
+    usage_records = json.loads((recorder.path / "usage.json").read_text())["requests"]
+    assert len(usage_records) == 1
+
+
+def test_trace_ingestion_rejects_malformed_child_runtime_telemetry(tmp_path: Path) -> None:
+    config = pilot.load_config(config_file(tmp_path))
+    trace = tmp_path / "trace.ndjson"
+    for index, child_manifests in enumerate((
+        {"not": "a-list"},
+        [{"type": "not-a-runtime-manifest"}],
+        [{**_runtime_event(config, 1), "tools_bytes": "not-an-int"}],
+        [{**_runtime_event(config, 1), "child_agent_id": ""}],
+    ), start=1):
+        recorder = RunRecorder(
+            tmp_path / "runs", pilot.build_manifest(config, Path.cwd()), run_id=f"bad-child-{index}",
+        )
+        trace.write_text(json.dumps({
+            "type": "experiment_agent_summary",
+            "child_runtime_manifests": child_manifests,
+        }))
+        with pytest.raises(ValueError, match="child runtime manifest|tools_bytes|child_agent_id"):
+            pilot._ingest_trace(recorder, trace, "task", "1", 1)
+        assert not (recorder.path / "runtime-events.jsonl").exists()
+
+
+def test_trace_ingestion_does_not_default_or_accept_invalid_tools_bytes(tmp_path: Path) -> None:
+    config = pilot.load_config(config_file(tmp_path))
+    missing = RunRecorder(tmp_path / "runs", pilot.build_manifest(config, Path.cwd()), run_id="missing")
+    trace = tmp_path / "missing.ndjson"
+    trace.write_text(json.dumps(_runtime_event(config, 1)))
+    pilot._ingest_trace(missing, trace, "task", "1", 1)
+    assert "tools_bytes" not in json.loads((missing.path / "runtime-events.jsonl").read_text())
+
+    for index, value in enumerate(("1234", -1, 1.5, True), start=1):
+        recorder = RunRecorder(
+            tmp_path / "runs", pilot.build_manifest(config, Path.cwd()), run_id=f"invalid-{index}",
+        )
+        trace.write_text(json.dumps(_runtime_event(config, 1, tools_bytes=value)))
+        with pytest.raises(ValueError, match="tools_bytes"):
+            pilot._ingest_trace(recorder, trace, "task", "1", 1)
+        assert not (recorder.path / "runtime-events.jsonl").exists()
+
+
+def test_paid_pilot_resume_pricing_mismatch_fails_before_new_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = pilot.load_config(config_file(tmp_path))
+    monkeypatch.setenv("BAILIAN_API_KEY", "test-only-bailian-key")
+    initial = RunRecorder(tmp_path / "runs", _paid_manifest(config, "priced"), run_id="priced")
+    initial.finalize({"status": "provider_error"})
+    events_before = (initial.path / "events.jsonl").read_bytes()
+    different_gate = _TestGate()
+    different_gate.pricing = TEST_GATE.pricing.model_copy(update={"retrieved_at": "different"})
+    with pytest.raises(ValueError, match="pricing snapshot identity mismatch"):
+        pilot.resume(
+            config, Path.cwd(), tmp_path / "runs", "priced",
+            confirmed=True, gate=different_gate,
+        )
+    assert (initial.path / "events.jsonl").read_bytes() == events_before
+    assert not (initial.path / "usage.json").exists()
+
+
+def test_pilot_pricing_identity_keeps_offline_none_distinct_from_paid(tmp_path: Path) -> None:
+    config = pilot.load_config(config_file(tmp_path))
+    offline = RunRecorder(tmp_path / "runs", pilot.build_manifest(config, Path.cwd()), run_id="offline")
+    offline.finalize({"status": "provider_error"})
+    with pytest.raises(ValueError, match="pricing snapshot identity mismatch"):
+        RunRecorder.resume(tmp_path / "runs", "offline", _paid_manifest(config, "offline"))
+    resumed = RunRecorder.resume(
+        tmp_path / "runs", "offline", pilot.build_manifest(config, Path.cwd(), run_id="offline"),
+    )
+    assert resumed.previous_status == "provider_error"
 
 
 def test_resume_requires_a_resumable_matching_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = pilot.load_config(config_file(tmp_path, task_ids=["codepacex_001_config_bugfix"]))
     monkeypatch.setenv("BAILIAN_API_KEY", "test-only-bailian-key")
-    initial = pilot.dry_run(config, Path.cwd(), tmp_path / "runs", "old")
+    initial = RunRecorder(tmp_path / "runs", _paid_manifest(config, "old"), run_id="old")
+    initial.finalize({"status": "dry_run"})
     with pytest.raises(ValueError, match="not resumable"):
-        pilot.resume(config, Path.cwd(), tmp_path / "runs", initial.run_id, confirmed=True)
+        pilot.resume(
+            config, Path.cwd(), tmp_path / "runs", initial.run_id,
+            confirmed=True, gate=TEST_GATE,
+        )
 
 
-def test_generated_provider_config_omits_none_and_uses_real_loader(tmp_path: Path) -> None:
+def test_generated_provider_config_freezes_output_limit_and_uses_real_loader(tmp_path: Path) -> None:
     config = pilot.load_config(config_file(tmp_path))
     path = tmp_path / "config.yaml"
     pilot._write_validated_provider_config(config, path)
     raw = __import__("yaml").safe_load(path.read_text())
-    assert "max_output_tokens" not in raw["providers"][0]
+    assert raw["providers"][0]["max_output_tokens"] == 8192
 
 
 def test_unknown_and_unsafe_task_ids_are_rejected(tmp_path: Path) -> None:
@@ -196,11 +465,25 @@ def _mock_trial_process(task_status: str = "PASS", duplicate_runtime: bool = Fal
                 "provider": "bailian-qwen37-max", "protocol": "openai-compat",
                 "model_id": "qwen3.7-max-2026-06-08", "system_sha256": "s",
                 "tools_sha256": "t", "messages_sha256": "m",
+                "experiment_profile_hash": pilot.load_config(
+                    Path("evals/pilot.qwen.yaml")
+                ).experiment_profile.profile_hash(),
+                "runtime_contract_hash": pilot.load_config(
+                    Path("evals/pilot.qwen.yaml")
+                ).experiment_profile.runtime_contract_hash(),
+                "combined_runtime_hash": combined_runtime_hash(
+                    profile_hash=pilot.load_config(
+                        Path("evals/pilot.qwen.yaml")
+                    ).experiment_profile.profile_hash(),
+                    system_sha256="s", tools_sha256="t",
+                ),
             },
             {
                 "type": "usage", "request_index": 1,
                 "provider": "bailian-qwen37-max",
                 "model_id": "qwen3.7-max-2026-06-08",
+                "request_input_tokens": 1,
+                "request_output_tokens": 1,
                 "provider_usage": {"prompt_tokens": 1},
             },
             {
@@ -225,7 +508,9 @@ def test_multiple_trials_keep_local_request_and_tool_ids_distinct(tmp_path: Path
     ], repetitions=2))
     monkeypatch.setenv("BAILIAN_API_KEY", "test-only-bailian-key")
     with patch("evals.pilot.subprocess.run", side_effect=_mock_trial_process()):
-        recorder = pilot.execute(config, Path.cwd(), tmp_path / "runs", confirmed=True)
+        recorder = pilot.execute(
+            config, Path.cwd(), tmp_path / "runs", confirmed=True, gate=TEST_GATE,
+        )
     result = json.loads((recorder.path / "result.json").read_text())
     assert result["status"] == "success"
     assert result["attempted_trial_count"] == 4
@@ -242,7 +527,9 @@ def test_duplicate_runtime_within_one_trial_finalizes_as_infrastructure_error(tm
     config = pilot.load_config(config_file(tmp_path, task_ids=["codepacex_001_config_bugfix"]))
     monkeypatch.setenv("BAILIAN_API_KEY", "test-only-bailian-key")
     with patch("evals.pilot.subprocess.run", side_effect=_mock_trial_process(duplicate_runtime=True)):
-        recorder = pilot.execute(config, Path.cwd(), tmp_path / "runs", confirmed=True)
+        recorder = pilot.execute(
+            config, Path.cwd(), tmp_path / "runs", confirmed=True, gate=TEST_GATE,
+        )
     result = json.loads((recorder.path / "result.json").read_text())
     assert result["status"] == "infrastructure_error"
     assert result["scorable"] is False
@@ -252,7 +539,7 @@ def test_duplicate_runtime_within_one_trial_finalizes_as_infrastructure_error(tm
 def test_resume_retries_failed_attempt_with_incremented_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = pilot.load_config(config_file(tmp_path, task_ids=["codepacex_001_config_bugfix"]))
     monkeypatch.setenv("BAILIAN_API_KEY", "test-only-bailian-key")
-    initial = RunRecorder(tmp_path / "runs", pilot.build_manifest(config, Path.cwd()), run_id="retry")
+    initial = RunRecorder(tmp_path / "runs", _paid_manifest(config, "retry"), run_id="retry")
     initial.event("trial_started", {"task_id": config.task_ids[0], "repetition_id": "1", "attempt_id": 1})
     initial.event("trial_completed", {
         "task_id": config.task_ids[0], "repetition_id": "1", "attempt_id": 1,
@@ -260,7 +547,10 @@ def test_resume_retries_failed_attempt_with_incremented_identity(tmp_path: Path,
     })
     initial.finalize({"status": "provider_error"})
     with patch("evals.pilot.subprocess.run", side_effect=_mock_trial_process()):
-        recorder = pilot.resume(config, Path.cwd(), tmp_path / "runs", "retry", confirmed=True)
+        recorder = pilot.resume(
+            config, Path.cwd(), tmp_path / "runs", "retry",
+            confirmed=True, gate=TEST_GATE,
+        )
     completed = [
         json.loads(line) for line in (recorder.path / "events.jsonl").read_text().splitlines()
         if json.loads(line).get("type") == "trial_completed"
@@ -274,10 +564,16 @@ def test_resume_retries_failed_attempt_with_incremented_identity(tmp_path: Path,
 def test_resume_without_new_trials_preserves_previous_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = pilot.load_config(config_file(tmp_path, task_ids=["codepacex_001_config_bugfix"]))
     monkeypatch.setenv("BAILIAN_API_KEY", "test-only-bailian-key")
-    initial = RunRecorder(tmp_path / "runs", pilot.build_manifest(config, Path.cwd()), run_id="previous-failure")
+    initial = RunRecorder(
+        tmp_path / "runs", _paid_manifest(config, "previous-failure"),
+        run_id="previous-failure",
+    )
     initial.finalize({"status": "timeout"})
     with patch("evals.pilot._run_trials", return_value=[]):
-        recorder = pilot.resume(config, Path.cwd(), tmp_path / "runs", "previous-failure", confirmed=True)
+        recorder = pilot.resume(
+            config, Path.cwd(), tmp_path / "runs", "previous-failure",
+            confirmed=True, gate=TEST_GATE,
+        )
     result = json.loads((recorder.path / "result.json").read_text())
     assert result["status"] == "timeout"
     assert result["scorable"] is False
@@ -298,5 +594,7 @@ def test_cancelled_execution_finalizes_before_reraising(tmp_path: Path, monkeypa
         patch.object(RunRecorder, "finalize", capture_finalize),
         pytest.raises(asyncio.CancelledError),
     ):
-        pilot.execute(config, Path.cwd(), tmp_path / "runs", confirmed=True)
+        pilot.execute(
+            config, Path.cwd(), tmp_path / "runs", confirmed=True, gate=TEST_GATE,
+        )
     assert captured[-1]["status"] == "cancelled"

@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 2
 experiment_kind: pilot
 provider: bailian-qwen37-max
 protocol: openai-compat
@@ -9,9 +9,17 @@ fallback_enabled: false
 model_parameters:
   temperature: null
   top_p: null
-  max_output_tokens: null
+  max_output_tokens: 8192
 timeout_seconds: null
 retry_budget: 0
-task_ids: []
+task_ids:
+  - codepacex_001_config_bugfix
 repetitions: 1
 feature_flags: {}
+experiment_profile:
+  schema_version: 1
+  tool_loading: deferred
+  compression_profile: recovery_v1
+  permission_strategy: default
+  agent_mode: single
+max_iterations: 50

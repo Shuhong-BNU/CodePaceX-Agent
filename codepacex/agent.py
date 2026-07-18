@@ -35,6 +35,11 @@ from codepacex.context import (
 )
 from codepacex.conversation import ConversationManager, ToolResultBlock, ToolUseBlock
 from codepacex.conversation import ThinkingBlock as ConvThinkingBlock
+from codepacex.experiments import (
+    CompressionProfile,
+    ExperimentProfile,
+    combined_runtime_hash,
+)
 from codepacex.memory.auto_memory import MemoryManager
 from codepacex.model_fallback import (
     classify_fallback_error,
@@ -233,9 +238,14 @@ class LLMResponse:
 
 
 class StreamCollector:
-    def __init__(self, request_indexer: Callable[[], int] | None = None) -> None:
+    def __init__(
+        self,
+        runtime_event_indexer: (
+            Callable[[RuntimeManifestEvent], RuntimeManifestEvent] | None
+        ) = None,
+    ) -> None:
         self.response = LLMResponse()
-        self._request_indexer = request_indexer
+        self._runtime_event_indexer = runtime_event_indexer
 
     async def consume(
         self, stream: AsyncIterator[StreamEvent]
@@ -251,8 +261,8 @@ class StreamCollector:
                     ThinkingBlock(thinking=event.thinking, signature=event.signature)
                 )
             elif isinstance(event, RuntimeManifestEvent):
-                if self._request_indexer is not None:
-                    event.request_index = self._request_indexer()
+                if self._runtime_event_indexer is not None:
+                    event = self._runtime_event_indexer(event)
                 self.response.request_index = event.request_index
                 yield event
             elif isinstance(event, ToolCallStart):
@@ -428,6 +438,7 @@ class Agent:
         active_provider: ProviderConfig | None = None,
         providers: list[ProviderConfig] | None = None,
         fallback: list[str] | None = None,
+        experiment_profile: ExperimentProfile | None = None,
     ) -> None:
         self.client = client
         self.registry = registry
@@ -435,6 +446,7 @@ class Agent:
         self.active_provider = active_provider
         self.providers = providers or []
         self.fallback = fallback or []
+        self.experiment_profile = experiment_profile
         self.work_dir = work_dir
         self.max_iterations = max_iterations
         self.permission_checker = permission_checker
@@ -496,7 +508,27 @@ class Agent:
 
     def _index_runtime_event(self, event: RuntimeManifestEvent) -> RuntimeManifestEvent:
         event.request_index = self._next_runtime_request_index()
+        if self.experiment_profile is not None:
+            profile_hash = self.experiment_profile.profile_hash()
+            event.experiment_profile_hash = profile_hash
+            event.runtime_contract_hash = self.experiment_profile.runtime_contract_hash()
+            event.combined_runtime_hash = combined_runtime_hash(
+                profile_hash=profile_hash,
+                system_sha256=event.system_sha256,
+                tools_sha256=event.tools_sha256,
+            )
         return event
+
+    def _compression_recovery_inputs(
+        self, protocol: str,
+    ) -> tuple[RecoveryState | None, list[dict[str, Any]] | None]:
+        if (
+            self.experiment_profile is not None
+            and self.experiment_profile.compression_profile
+            is CompressionProfile.SUMMARY_ONLY
+        ):
+            return None, None
+        return self.recovery_state, self.registry.get_all_schemas(protocol)
 
     @staticmethod
     def _runtime_event_payload(event: RuntimeManifestEvent) -> dict[str, Any]:
@@ -509,6 +541,10 @@ class Agent:
             "system_sha256": event.system_sha256,
             "tools_sha256": event.tools_sha256,
             "messages_sha256": event.messages_sha256,
+            "tools_bytes": event.tools_bytes,
+            "experiment_profile_hash": event.experiment_profile_hash,
+            "runtime_contract_hash": event.runtime_contract_hash,
+            "combined_runtime_hash": event.combined_runtime_hash,
         }
 
     @staticmethod
@@ -642,6 +678,7 @@ class Agent:
         def on_usage(event: RuntimeManifestEvent, stream_end: StreamEnd) -> None:
             compression_usage.append(self._usage_from_stream_end(event, stream_end))
         tokens_before = conversation.current_tokens()
+        recovery, recovery_tools = self._compression_recovery_inputs(runtime.protocol)
         compact_result = await auto_compact(
             conversation,
             runtime.client,
@@ -649,8 +686,8 @@ class Agent:
             self.session_dir,
             protocol=runtime.protocol,
             breaker=self.compact_breaker,
-            recovery=self.recovery_state,
-            tool_schemas=self.registry.get_all_schemas(runtime.protocol),
+            recovery=recovery,
+            tool_schemas=recovery_tools,
             transcript_path=self._transcript_path,
             runtime_event_sink=on_runtime,
             usage_event_sink=on_usage,
@@ -814,7 +851,7 @@ class Agent:
                 append_replacement_records(self.session_dir, _new_records)
 
             while True:
-                collector = StreamCollector(self._next_runtime_request_index)
+                collector = StreamCollector(self._index_runtime_event)
                 streaming_executor = StreamingExecutor()
                 active_executor[0] = streaming_executor
                 streamed_count = 0
@@ -829,19 +866,19 @@ class Agent:
                         if isinstance(event, ToolUseEvent) and streaming_prefix_open:
                             tc = collector.response.tool_calls[-1]
                             tool = self.registry.get(tc.tool_name)
-                            # Hook-enabled turns remain on the normal path so that
-                            # pre/post Hook events can be yielded in order. For the
-                            # fast path, only pre-approved read-only tools are run.
+                            # Pre Hooks are assessed before dispatch. Hook events
+                            # and post Hooks are emitted after ordered result
+                            # collection, preserving audit order without disabling
+                            # the read-only streaming fast path.
                             if (
-                                self.hook_engine is None
-                                and tool is not None
+                                tool is not None
                                 and tool.is_read_only
                                 and tool.is_concurrency_safe
                                 and self.registry.is_enabled(tc.tool_name)
                             ):
                                 decision = await self._assess_tool(tc)
                                 streaming_decisions[tc.tool_id] = decision
-                                if decision.decision.effect == "allow":
+                                if decision.decision.effect in {"allow", "deny"}:
                                     streaming_executor.submit(
                                         self._execute_single_tool_direct(
                                             tc, decision, execution_path="streaming",
@@ -1121,7 +1158,21 @@ class Agent:
                     consecutive_unknown = 0
                 content = self._maybe_persist_or_truncate(br.tool_id, br.result.output)
                 tool_results.append(ToolResultBlock(tool_use_id=br.tool_id, content=content, is_error=br.result.is_error))
+                for he in self._drain_hook_events():
+                    yield he
                 yield self._permission_decision_event(br)
+                if self.hook_engine and br.executed:
+                    source_call = next(
+                        tc for tc in response.tool_calls if tc.tool_id == br.tool_id
+                    )
+                    hook_ctx = self._build_hook_context(
+                        "post_tool_use", tool_name=br.tool_name,
+                        tool_args=source_call.arguments,
+                        file_path=self._infer_file_path(source_call.arguments),
+                    )
+                    await self.hook_engine.run_hooks("post_tool_use", hook_ctx)
+                    for he in self._drain_hook_events():
+                        yield he
                 yield ToolResultEvent(tool_id=br.tool_id, tool_name=br.tool_name, output=br.result.output, is_error=br.result.is_error, elapsed=br.elapsed)
             active_executor[0] = None
 
@@ -1132,13 +1183,13 @@ class Agent:
                     tc.tool_id: streaming_decisions[tc.tool_id]
                     for tc in batch.calls if tc.tool_id in streaming_decisions
                 }
-                can_run_direct = batch.concurrent and len(batch.calls) > 1 and self.hook_engine is None
+                can_run_direct = batch.concurrent and len(batch.calls) > 1
                 if can_run_direct:
                     for tc in batch.calls:
                         if tc.tool_id not in predecisions:
                             predecisions[tc.tool_id] = await self._assess_tool(tc)
                     can_run_direct = can_run_direct and all(
-                        decision.decision.effect == "allow"
+                        decision.decision.effect in {"allow", "deny"}
                         for decision in predecisions.values()
                     )
                 if can_run_direct:
@@ -1161,6 +1212,18 @@ class Agent:
                             )
                         )
                         yield self._permission_decision_event(br)
+                        if self.hook_engine and br.executed:
+                            source_call = next(
+                                tc for tc in batch.calls if tc.tool_id == br.tool_id
+                            )
+                            hook_ctx = self._build_hook_context(
+                                "post_tool_use", tool_name=br.tool_name,
+                                tool_args=source_call.arguments,
+                                file_path=self._infer_file_path(source_call.arguments),
+                            )
+                            await self.hook_engine.run_hooks("post_tool_use", hook_ctx)
+                            for he in self._drain_hook_events():
+                                yield he
                         yield ToolResultEvent(
                             tool_id=br.tool_id,
                             tool_name=br.tool_name,
@@ -1664,6 +1727,7 @@ class Agent:
         def on_usage(event: RuntimeManifestEvent, stream_end: StreamEnd) -> None:
             usage_events.append(self._usage_from_stream_end(event, stream_end))
 
+        recovery, recovery_tools = self._compression_recovery_inputs(self.protocol)
         result = await auto_compact(
             conversation,
             self.client,
@@ -1672,8 +1736,8 @@ class Agent:
             protocol=self.protocol,
             manual=True,
             breaker=self.compact_breaker,
-            recovery=self.recovery_state,
-            tool_schemas=self.registry.get_all_schemas(self.protocol),
+            recovery=recovery,
+            tool_schemas=recovery_tools,
             transcript_path=self._transcript_path,
             runtime_event_sink=on_runtime,
             usage_event_sink=on_usage,
@@ -1711,12 +1775,11 @@ class Agent:
         self, task: str, conversation: ConversationManager | None = None,
         event_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> str:
+        env_context = build_environment_context(
+            self.work_dir, self.active_skills, self._skill_catalog, self._agent_catalog
+        )
         if conversation is None:
             conversation = ConversationManager()
-
-            env_context = build_environment_context(
-                self.work_dir, self.active_skills, self._skill_catalog, self._agent_catalog
-            )
             conversation.inject_environment(env_context)
 
             if self.instructions_content:
@@ -1770,6 +1833,7 @@ class Agent:
                 compact_usage_events.append(self._usage_from_stream_end(event, stream_end))
 
             compact_tokens_before = conversation.current_tokens()
+            recovery, recovery_tools = self._compression_recovery_inputs(self.protocol)
             compact_result = await auto_compact(
                 conversation,
                 self.client,
@@ -1777,8 +1841,8 @@ class Agent:
                 self.session_dir,
                 protocol=self.protocol,
                 breaker=self.compact_breaker,
-                recovery=self.recovery_state,
-                tool_schemas=self.registry.get_all_schemas(self.protocol),
+                recovery=recovery,
+                tool_schemas=recovery_tools,
                 transcript_path=self._transcript_path,
                 runtime_event_sink=on_compact_runtime,
                 usage_event_sink=on_compact_usage,
@@ -1817,7 +1881,7 @@ class Agent:
             if _new_records:
                 append_replacement_records(self.session_dir, _new_records)
 
-            collector = StreamCollector(self._next_runtime_request_index)
+            collector = StreamCollector(self._index_runtime_event)
             llm_stream = self.client.stream(api_conv, system=system, tools=tools)
             async for stream_event in collector.consume(llm_stream):
                 if event_callback and isinstance(stream_event, RuntimeManifestEvent):
@@ -1828,14 +1892,20 @@ class Agent:
             self.total_output_tokens += response.output_tokens
 
             if event_callback:
-                event_callback({
-                    "type": "usage",
-                    "usage": {
-                        "inputTokens": self.total_input_tokens,
-                        "outputTokens": self.total_output_tokens,
-                        "requestIndex": response.request_index,
-                    },
-                })
+                event_callback(self._usage_event_payload(UsageEvent(
+                    input_tokens=self.total_input_tokens,
+                    output_tokens=self.total_output_tokens,
+                    request_input_tokens=response.input_tokens,
+                    request_output_tokens=response.output_tokens,
+                    provider_usage=response.provider_usage,
+                    provider=(
+                        self.active_provider.name if self.active_provider is not None else None
+                    ),
+                    model_id=(
+                        self.active_provider.model if self.active_provider is not None else None
+                    ),
+                    request_index=response.request_index,
+                )))
 
             if response.text:
                 last_text = response.text

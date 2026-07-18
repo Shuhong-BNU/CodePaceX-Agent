@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 2
 claims:
   - claim_id: pilot-token-example
     description_zh: 冻结百炼 Qwen Pilot 的 Provider 输入 Token 总量
@@ -17,13 +17,24 @@ claims:
       model_parameters:
         temperature: null
         top_p: null
-        max_output_tokens: null
+        max_output_tokens: 8192
       timeout_seconds: null
       retry_budget: 0
       fallback_enabled: false
-      task_ids: []
+      task_ids:
+        - codepacex_001_config_bugfix
       repetitions: 1
       feature_flags: {}
+      experiment_profile:
+        schema_version: 1
+        tool_loading: deferred
+        compression_profile: recovery_v1
+        permission_strategy: default
+        agent_mode: single
+      experiment_profile_hash: c9c5e3555482ce6fc5e311d78af03b57710d5dad57fe2aaaf4695c33d0768e09
+      runtime_contract_hash: e17aae98c9c7d4ea90d5439a9a3e8938a2d81217afbe05c8710e00cc95e12984
+      benchmark_asset_hash: replace-with-frozen-benchmark-asset-hash
+      max_iterations: 50
       allowed_differences: []
     source_run_ids:
       - replace-with-successful-run-id

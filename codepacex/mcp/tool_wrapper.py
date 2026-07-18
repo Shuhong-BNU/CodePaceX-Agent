@@ -66,6 +66,8 @@ class MCPToolWrapper(Tool):
         server_name: str,
         tool_def: mcp_types.Tool,
         client: MCPClient,
+        *,
+        should_defer: bool = True,
     ) -> None:
         self._server_name = server_name
         self._tool_def = tool_def
@@ -74,7 +76,7 @@ class MCPToolWrapper(Tool):
         self.description = tool_def.description or tool_def.name
         self.category = "command"
         self.is_concurrency_safe = False
-        self.should_defer = True
+        self.should_defer = should_defer
         self.params_model = _build_params_model(
             tool_def.name, tool_def.inputSchema
         )

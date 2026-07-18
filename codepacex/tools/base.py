@@ -112,7 +112,11 @@ class RuntimeManifestEvent:
     system_sha256: str
     tools_sha256: str
     messages_sha256: str
+    tools_bytes: int | None = None
     request_index: int | None = None
+    experiment_profile_hash: str | None = None
+    runtime_contract_hash: str | None = None
+    combined_runtime_hash: str | None = None
 
 
 @dataclass

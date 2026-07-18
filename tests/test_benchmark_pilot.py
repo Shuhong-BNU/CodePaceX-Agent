@@ -24,6 +24,7 @@ def test_manifest_serialization_and_hash_are_stable(tmp_path: Path) -> None:
     second = RunRecorder(tmp_path / "two", _manifest(created_at="2026-01-01T00:00:00Z"), run_id="run-1")
     assert (first.path / "manifest.json").read_bytes() == (second.path / "manifest.json").read_bytes()
     assert canonical_hash({"b": 2, "a": 1}) == canonical_hash({"a": 1, "b": 2})
+    assert json.loads((first.path / "manifest.json").read_text())["schema_version"] == 2
 
 
 def test_recorder_terminal_run_has_core_files_and_optional_files_are_lazy(tmp_path: Path) -> None:
@@ -109,6 +110,53 @@ def test_resume_requires_matching_identity_and_resumable_status(tmp_path: Path) 
     assert resumed.completed_trials() == {("one", "1")}
     with pytest.raises(ValueError, match="mismatch"):
         RunRecorder.resume(tmp_path, "resume", _manifest(model_id="other"))
+    with pytest.raises(ValueError, match="experiment_profile_hash"):
+        RunRecorder.resume(
+            tmp_path, "resume", _manifest(experiment_profile_hash="different-profile"),
+        )
+
+
+@pytest.mark.parametrize(
+    ("stored_hash", "expected_hash", "permitted"),
+    [
+        ("pricing-a", "pricing-a", True),
+        ("pricing-a", "pricing-b", False),
+        ("pricing-a", None, False),
+        (None, "pricing-a", False),
+        (None, None, True),
+    ],
+)
+def test_resume_requires_matching_pricing_snapshot_identity(
+    tmp_path: Path, stored_hash: str | None, expected_hash: str | None, permitted: bool,
+) -> None:
+    recorder = RunRecorder(
+        tmp_path, _manifest(pricing_snapshot_hash=stored_hash), run_id="pricing-resume",
+    )
+    recorder.finalize({"status": "provider_error"})
+    events_before = (recorder.path / "events.jsonl").read_bytes()
+
+    if permitted:
+        resumed = RunRecorder.resume(
+            tmp_path, "pricing-resume", _manifest(pricing_snapshot_hash=expected_hash),
+        )
+        assert resumed.previous_status == "provider_error"
+    else:
+        with pytest.raises(ValueError, match="pricing snapshot identity mismatch"):
+            RunRecorder.resume(
+                tmp_path, "pricing-resume", _manifest(pricing_snapshot_hash=expected_hash),
+            )
+        assert (recorder.path / "events.jsonl").read_bytes() == events_before
+
+
+def test_resume_requires_matching_swe_evaluator_architecture_identity(tmp_path: Path) -> None:
+    recorder = RunRecorder(
+        tmp_path, _manifest(swe_evaluator_architecture="native"), run_id="swe-architecture",
+    )
+    recorder.finalize({"status": "provider_error"})
+    with pytest.raises(ValueError, match="swe_evaluator_architecture"):
+        RunRecorder.resume(
+            tmp_path, "swe-architecture", _manifest(swe_evaluator_architecture="x86_64"),
+        )
 
 
 def test_success_and_dry_run_are_not_resumable(tmp_path: Path) -> None:
@@ -232,6 +280,37 @@ def test_runtime_events_are_separate_and_request_indexes_are_unique(tmp_path: Pa
         recorder.capture_event(event)
 
 
+def test_v2_runtime_profile_must_match_actual_request_hashes(tmp_path: Path) -> None:
+    profile_hash = canonical_hash({"profile": "deferred"})
+    contract_hash = canonical_hash({"effective": "deferred"})
+    recorder = RunRecorder(tmp_path, _manifest(
+        experiment_profile={"tool_loading": "deferred"},
+        experiment_profile_hash=profile_hash,
+        runtime_contract_hash=contract_hash,
+    ), run_id="profile-runtime")
+    event = {
+        "type": "runtime_manifest", "request_index": 1,
+        "provider": "p", "protocol": "openai-compat", "model_id": "m",
+        "system_sha256": "system", "tools_sha256": "tools",
+        "messages_sha256": "messages",
+        "experiment_profile_hash": profile_hash,
+        "runtime_contract_hash": contract_hash,
+        "combined_runtime_hash": canonical_hash({
+            "experiment_profile_hash": profile_hash,
+            "system_sha256": "system", "tools_sha256": "tools",
+        }),
+    }
+    recorder.capture_event(event)
+
+    second = RunRecorder(tmp_path, _manifest(
+        experiment_profile={"tool_loading": "deferred"},
+        experiment_profile_hash=profile_hash,
+        runtime_contract_hash=contract_hash,
+    ), run_id="profile-mismatch")
+    with pytest.raises(ValueError, match="profile hash"):
+        second.capture_event({**event, "experiment_profile_hash": "wrong"})
+
+
 def test_runtime_and_permission_identity_is_scoped_to_trial_attempt(tmp_path: Path) -> None:
     recorder = RunRecorder(tmp_path, _manifest(), run_id="attempt-scope")
 
@@ -257,3 +336,25 @@ def test_runtime_and_permission_identity_is_scoped_to_trial_attempt(tmp_path: Pa
     recorder.capture_event({**permission, "task_id": "task-two"})
     with pytest.raises(ValueError, match="duplicate permission"):
         recorder.capture_event(permission)
+
+
+def test_budget_blocked_is_terminal_unscorable_and_not_resumable(tmp_path: Path) -> None:
+    recorder = RunRecorder(tmp_path, _manifest(), run_id="budget-blocked")
+    recorder.event("trial_started", {
+        "task_id": "one", "repetition_id": "1", "attempt_id": 1,
+    })
+    recorder.event("trial_completed", {
+        "task_id": "one", "repetition_id": "1", "attempt_id": 1,
+        "status": "budget_blocked", "budget_block_reasons": ["stage_limit"],
+        "actual_cny": "0.000000",
+    })
+    recorder.finalize({"status": "budget_blocked", "execution_mode": "live"})
+
+    result = json.loads((recorder.path / "result.json").read_text())
+    assert result["status"] == "budget_blocked"
+    assert result["scorable"] is False
+    assert result["unscorable_trial_count"] == 1
+    assert result["error_category_summary"] == {"budget_blocked": 1}
+    assert recorder.terminal_trial_statuses() == {("one", "1"): "budget_blocked"}
+    with pytest.raises(ValueError, match="not resumable: budget_blocked"):
+        RunRecorder.resume(tmp_path, "budget-blocked", _manifest())

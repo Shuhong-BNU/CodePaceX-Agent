@@ -14,7 +14,16 @@ import sys
 import time
 from pathlib import Path
 
+import yaml
+
 from codepacex.config import ConfigError, load_config
+from codepacex.experiments import (
+    AgentMode,
+    ExperimentProfile,
+    PermissionStrategy,
+    ToolLoading,
+    load_experiment_profile,
+)
 from codepacex.hooks import HookConfigError, HookEngine, load_hooks
 from codepacex.permissions import PermissionMode
 
@@ -59,6 +68,12 @@ def main() -> None:
         help="Output format for -p mode: 'text' (default) prints final text, 'stream-json' emits NDJSON events",
     )
     parser.add_argument(
+        "--experiment-profile",
+        type=Path,
+        default=None,
+        help="Validated benchmark runtime profile (only valid with -p)",
+    )
+    parser.add_argument(
         "--remote",
         action="store_true",
         default=False,
@@ -83,9 +98,23 @@ def main() -> None:
 
     hook_engine = HookEngine(hooks) if hooks else None
 
+    experiment_profile: ExperimentProfile | None = None
+    if args.experiment_profile is not None:
+        if args.p is None:
+            print("Error: --experiment-profile is only valid with -p", file=sys.stderr)
+            sys.exit(1)
+        try:
+            experiment_profile = load_experiment_profile(args.experiment_profile)
+        except (OSError, ValueError, yaml.YAMLError) as e:
+            print(f"Experiment profile error: {e}", file=sys.stderr)
+            sys.exit(1)
+
     if args.p is not None:
         output_format = getattr(args, "output_format", "text")
-        asyncio.run(_run_prompt(config, permission_mode, hook_engine, args.p, output_format))
+        asyncio.run(_run_prompt(
+            config, permission_mode, hook_engine, args.p, output_format,
+            experiment_profile=experiment_profile,
+        ))
         return
 
     # Remote 模式：启动 WebSocket 服务器，浏览器访问 http://localhost:18888
@@ -121,7 +150,51 @@ def main() -> None:
     app.run()
 
 
-async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_format: str = "text") -> None:
+async def _run_prompt(
+    config,
+    permission_mode,
+    hook_engine,
+    prompt: str,
+    output_format: str = "text",
+    *,
+    experiment_profile: ExperimentProfile | None = None,
+) -> None:
+    mcp_manager = None
+
+    def set_mcp_manager(manager) -> None:
+        nonlocal mcp_manager
+        mcp_manager = manager
+
+    try:
+        await _run_prompt_impl(
+            config,
+            permission_mode,
+            hook_engine,
+            prompt,
+            output_format,
+            experiment_profile=experiment_profile,
+            _set_mcp_manager=set_mcp_manager,
+        )
+    finally:
+        if mcp_manager is not None:
+            try:
+                await mcp_manager.shutdown()
+            except Exception:
+                logging.getLogger(__name__).debug(
+                    "Error shutting down MCP manager", exc_info=True,
+                )
+
+
+async def _run_prompt_impl(
+    config,
+    permission_mode,
+    hook_engine,
+    prompt: str,
+    output_format: str = "text",
+    *,
+    experiment_profile: ExperimentProfile | None = None,
+    _set_mcp_manager,
+) -> None:
     from codepacex.agent import (
         Agent,
         CompactNotification,
@@ -142,6 +215,7 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
     from codepacex.client import create_client, resolve_context_window
     from codepacex.conversation import ConversationManager
     from codepacex.memory.instructions import load_instructions
+    from codepacex.mcp import MCPManager
     from codepacex.permissions import (
         DangerousCommandDetector,
         PathSandbox,
@@ -170,7 +244,9 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
         print(json.dumps(obj, ensure_ascii=False), flush=True)
 
     provider = config.providers[0]
-    client = create_client(provider)
+    client = create_client(
+        provider, max_retries=0 if experiment_profile is not None else None,
+    )
     # 第 2 层：尽力从 provider 自动拉取模型的 context window（缓存在 provider 上）。
     # 不会抛异常或阻塞启动；失败则退化到映射表。
     await resolve_context_window(provider)
@@ -194,11 +270,47 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
         ),
         mode=permission_mode,
         sandbox_enabled=bool(
-            config.sandbox.auto_allow and backend is not None and sandbox_state == "available"
+            (
+                config.sandbox.auto_allow
+                or (
+                    experiment_profile is not None
+                    and experiment_profile.permission_strategy
+                    is PermissionStrategy.SANDBOX_AUTO_ALLOW
+                )
+            )
+            and backend is not None and sandbox_state == "available"
+        ),
+        session_allow_all=bool(
+            experiment_profile is not None
+            and experiment_profile.permission_strategy
+            is PermissionStrategy.SESSION_ALLOW
         ),
     )
 
+    mcp_manager: MCPManager | None = None
+    mcp_instructions: list[str] = []
+    if config.mcp_servers:
+        mcp_manager = MCPManager()
+        _set_mcp_manager(mcp_manager)
+        mcp_manager.load_configs(config.mcp_servers)
+        connected = await mcp_manager.register_all_tools(
+            registry,
+            defer_tools=(
+                experiment_profile is None
+                or experiment_profile.tool_loading is ToolLoading.DEFERRED
+            ),
+        )
+        if experiment_profile is not None and connected.errors:
+            raise RuntimeError(
+                "benchmark MCP initialization failed: " + "; ".join(connected.errors)
+            )
+        mcp_instructions = [
+            server.instructions for server in connected.servers if server.instructions
+        ]
+
     instructions = load_instructions(work_dir)
+    if mcp_instructions:
+        instructions = "\n\n".join([instructions, *mcp_instructions]).strip()
     registry.register(ToolSearchTool(registry, protocol=provider.protocol))
     registry.register(InstallSkill())
 
@@ -214,6 +326,7 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
         active_provider=provider,
         providers=config.providers,
         fallback=config.fallback,
+        experiment_profile=experiment_profile,
     )
 
     wt_cfg = config.worktree or WorktreeConfig()
@@ -227,25 +340,30 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
     agent_loader.load_all()
     team_manager = TeamManager(worktree_manager=wt_manager, trace_manager=trace_manager)
 
-    agent_tool = AgentTool(
-        agent_loader=agent_loader,
-        task_manager=task_manager,
-        trace_manager=trace_manager,
-        parent_agent=agent,
-        enable_fork=config.enable_fork,
-        provider_config=provider,
-        worktree_manager=wt_manager,
-        team_manager=team_manager,
+    multi_agent_enabled = (
+        experiment_profile is None
+        or experiment_profile.agent_mode is AgentMode.MULTI
     )
-    registry.register(agent_tool)
-    registry.register(TeamCreateTool(
-        team_manager=team_manager,
-        parent_agent=agent,
-        teammate_mode="in-process",
-        is_interactive=False,
-        enable_coordinator_mode=config.enable_coordinator_mode,
-    ))
-    registry.register(TeamDeleteTool(team_manager=team_manager, parent_agent=agent))
+    if multi_agent_enabled:
+        agent_tool = AgentTool(
+            agent_loader=agent_loader,
+            task_manager=task_manager,
+            trace_manager=trace_manager,
+            parent_agent=agent,
+            enable_fork=config.enable_fork,
+            provider_config=provider,
+            worktree_manager=wt_manager,
+            team_manager=team_manager,
+        )
+        registry.register(agent_tool)
+        registry.register(TeamCreateTool(
+            team_manager=team_manager,
+            parent_agent=agent,
+            teammate_mode="in-process",
+            is_interactive=False,
+            enable_coordinator_mode=config.enable_coordinator_mode,
+        ))
+        registry.register(TeamDeleteTool(team_manager=team_manager, parent_agent=agent))
 
     def drain_notifications() -> list[str]:
         notes: list[str] = []
@@ -262,6 +380,16 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
         return team_manager.drain_lead_mailbox()
 
     agent.notification_fn = drain_mailbox_only
+
+    def emit_agent_experiment_summary() -> None:
+        if not is_json or experiment_profile is None:
+            return
+        emit_json({
+            "type": "experiment_agent_summary",
+            "agent_mode": experiment_profile.agent_mode.value,
+            "maximum_workers": 3,
+            **trace_manager.benchmark_summary(agent.agent_id),
+        })
 
     # 使用事件驱动的 agent.run()，支持 text 和 stream-json 两种输出格式
     conv = ConversationManager()
@@ -334,6 +462,10 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
                     "system_sha256": event.system_sha256,
                     "tools_sha256": event.tools_sha256,
                     "messages_sha256": event.messages_sha256,
+                    "tools_bytes": event.tools_bytes,
+                    "experiment_profile_hash": event.experiment_profile_hash,
+                    "runtime_contract_hash": event.runtime_contract_hash,
+                    "combined_runtime_hash": event.combined_runtime_hash,
                 })
 
         elif isinstance(event, PermissionDecisionEvent):
@@ -412,6 +544,7 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
 
     # 如果有 team 在运行，轮询等待 teammate 完成
     if not team_manager._teams:
+        emit_agent_experiment_summary()
         return
 
     for i in range(90):
@@ -436,6 +569,8 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
             emit_json({"type": "assistant", "text": last_result})
         else:
             print(last_result, flush=True)
+
+    emit_agent_experiment_summary()
 
 
 if __name__ == "__main__":

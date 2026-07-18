@@ -1,0 +1,100 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+
+from codepacex.client import OpenAICompatClient
+from codepacex.config import ProviderConfig
+from codepacex.conversation import ConversationManager
+from codepacex.tools.base import StreamEnd
+from evals.paid_gate import ProviderUsageUnknown
+
+
+class _Usage:
+    prompt_tokens = 12
+    completion_tokens = 3
+    prompt_tokens_details = SimpleNamespace(cached_tokens=0)
+
+    def model_dump(self, *, exclude_none: bool) -> dict[str, int]:
+        assert exclude_none is True
+        return {"prompt_tokens": 12, "completion_tokens": 3}
+
+
+class _Response:
+    def __init__(self, chunks: list[object]) -> None:
+        self.chunks = chunks
+
+    def __aiter__(self):
+        async def iterator():
+            for chunk in self.chunks:
+                yield chunk
+        return iterator()
+
+
+class _FakeBudget:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.reservation = object()
+
+    def reserve_before_request(self) -> object:
+        self.calls.append("reserve")
+        return self.reservation
+
+    def settle_after_usage(self, reservation: object, usage: dict[str, int] | None) -> None:
+        assert reservation is self.reservation
+        assert usage == {"prompt_tokens": 12, "completion_tokens": 3}
+        self.calls.append("settle")
+
+
+def _client() -> OpenAICompatClient:
+    return OpenAICompatClient(ProviderConfig(
+        "test", "openai-compat", "https://example.invalid", "test-model",
+        api_key="not-a-real-key", max_output_tokens=128,
+    ), max_retries=0)
+
+
+@pytest.mark.asyncio
+async def test_compat_client_reserves_before_provider_and_settles_on_usage(monkeypatch) -> None:
+    budget = _FakeBudget()
+    client = _client()
+    response = _Response([SimpleNamespace(choices=[], usage=_Usage())])
+
+    async def create(**kwargs):
+        assert budget.calls == ["reserve"]
+        assert kwargs["stream_options"] == {"include_usage": True}
+        return response
+
+    client._client = SimpleNamespace(chat=SimpleNamespace(
+        completions=SimpleNamespace(create=create),
+    ))
+    conversation = ConversationManager()
+    conversation.add_user_message("hello")
+    monkeypatch.setenv("CODEPACEX_EXPERIMENT_REQUEST_BUDGET", "1")
+    with patch("evals.paid_gate.ProviderRequestBudget.from_environment", return_value=budget):
+        events = [event async for event in client.stream(conversation)]
+    assert any(isinstance(event, StreamEnd) for event in events)
+    assert budget.calls == ["reserve", "settle"]
+
+
+@pytest.mark.asyncio
+async def test_compat_client_keeps_reservation_when_provider_returns_no_usage(monkeypatch) -> None:
+    budget = _FakeBudget()
+    client = _client()
+
+    async def create(**kwargs):
+        return _Response([])
+
+    client._client = SimpleNamespace(chat=SimpleNamespace(
+        completions=SimpleNamespace(create=create),
+    ))
+    conversation = ConversationManager()
+    conversation.add_user_message("hello")
+    monkeypatch.setenv("CODEPACEX_EXPERIMENT_REQUEST_BUDGET", "1")
+    with patch("evals.paid_gate.ProviderRequestBudget.from_environment", return_value=budget), pytest.raises(
+        ProviderUsageUnknown, match="active reservation retained",
+    ):
+        async for _event in client.stream(conversation):
+            pass
+    assert budget.calls == ["reserve"]
