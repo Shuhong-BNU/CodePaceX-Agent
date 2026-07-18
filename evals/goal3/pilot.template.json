@@ -1,0 +1,19 @@
+{
+  "dataset_revision": null,
+  "experiment_kind": "goal3-swe-bench-live-pilot",
+  "fallback_enabled": false,
+  "instance_count": 3,
+  "instance_ids": [],
+  "model_id": null,
+  "model_parameters": {
+    "max_output_tokens": null,
+    "temperature": null,
+    "top_p": null
+  },
+  "pricing_snapshot": null,
+  "provider": null,
+  "retry_budget": 0,
+  "schema_version": 1,
+  "serial": true,
+  "status": "candidate_unverified"
+}
