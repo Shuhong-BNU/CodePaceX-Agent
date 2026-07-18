@@ -148,6 +148,17 @@ def test_resume_requires_matching_pricing_snapshot_identity(
         assert (recorder.path / "events.jsonl").read_bytes() == events_before
 
 
+def test_resume_requires_matching_swe_evaluator_architecture_identity(tmp_path: Path) -> None:
+    recorder = RunRecorder(
+        tmp_path, _manifest(swe_evaluator_architecture="native"), run_id="swe-architecture",
+    )
+    recorder.finalize({"status": "provider_error"})
+    with pytest.raises(ValueError, match="swe_evaluator_architecture"):
+        RunRecorder.resume(
+            tmp_path, "swe-architecture", _manifest(swe_evaluator_architecture="x86_64"),
+        )
+
+
 def test_success_and_dry_run_are_not_resumable(tmp_path: Path) -> None:
     for status in ("success", "dry_run"):
         recorder = RunRecorder(tmp_path, _manifest(), run_id=status)

@@ -330,6 +330,7 @@ def _conditions(
         "experiment_profile_hash": manifest.get("experiment_profile_hash"),
         "runtime_contract_hash": manifest.get("runtime_contract_hash"),
         "benchmark_asset_hash": manifest.get("benchmark_asset_hash"),
+        "swe_evaluator_architecture": manifest.get("swe_evaluator_architecture"),
         "max_iterations": manifest.get("max_iterations"),
         "allowed_differences": list(spec.allowed_differences),
         "baseline_run_ids": list(spec.baseline_run_ids),

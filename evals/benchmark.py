@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import median
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
 from urllib.parse import quote, quote_plus, unquote, urlsplit
 
 SCHEMA_VERSION = 2
@@ -156,6 +156,7 @@ class RunManifest:
     runtime_contract_hash: str | None = None
     benchmark_asset_hash: str | None = None
     pricing_snapshot_hash: str | None = None
+    swe_evaluator_architecture: Literal["native", "x86_64"] | None = None
     task_ids: list[str] = field(default_factory=list)
     repetitions: int = 1
     model_parameters: dict[str, Any] = field(default_factory=dict)
@@ -247,6 +248,7 @@ class RunRecorder:
             "system_prompt_hash", "tool_schema_hash", "experiment_profile_hash",
             "runtime_contract_hash", "benchmark_asset_hash", "model_parameters",
             "retry_budget", "fallback_enabled", "pricing_snapshot_hash",
+            "swe_evaluator_architecture",
         )
         expected_payload = expected.to_dict()
         mismatches = [key for key in identity if payload.get(key) != expected_payload.get(key)]

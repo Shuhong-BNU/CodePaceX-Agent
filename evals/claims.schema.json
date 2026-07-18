@@ -211,6 +211,22 @@
           "title": "Benchmark Asset Hash",
           "type": "string"
         },
+        "swe_evaluator_architecture": {
+          "anyOf": [
+            {
+              "enum": [
+                "native",
+                "x86_64"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Swe Evaluator Architecture"
+        },
         "max_iterations": {
           "exclusiveMinimum": 0,
           "title": "Max Iterations",

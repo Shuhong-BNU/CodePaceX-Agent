@@ -96,6 +96,8 @@ def _successful_run(
     tools_bytes: int = 64,
     actual_cny: str = "0.01",
     pricing_snapshot_hash: str | None = PRICING_HASH,
+    experiment_kind: str = "unknown",
+    swe_evaluator_architecture: str | None = None,
     terminal_fields: dict[str, object] | None = None,
     runtime_tools: str = "tools",
     numerator: int | None = None,
@@ -103,7 +105,7 @@ def _successful_run(
 ) -> None:
     profile = _profile()
     recorder = RunRecorder(root, RunManifest(
-        provider=provider, protocol="openai-compat", model_id="m",
+        experiment_kind=experiment_kind, provider=provider, protocol="openai-compat", model_id="m",
         base_url_origin="https://provider.example/v1", git_commit="abc",
         prompt_version="prompt-v1", model_parameters={"temperature": None},
         timeout_seconds=60, retry_budget=0, fallback_enabled=False,
@@ -114,6 +116,7 @@ def _successful_run(
         runtime_contract_hash=profile.runtime_contract_hash(),
         benchmark_asset_hash="assets", max_iterations=50,
         pricing_snapshot_hash=pricing_snapshot_hash,
+        swe_evaluator_architecture=swe_evaluator_architecture,
     ), run_id=run_id)
     recorder.event("trial_started", {
         "task_id": task_id, "repetition_id": repetition_id,
@@ -234,6 +237,70 @@ def test_swe_cost_claim_carries_pricing_snapshot_condition(tmp_path: Path) -> No
     ), tmp_path)["claims"][0]
     assert compiled["status"] == "verified"
     assert compiled["experiment_conditions"]["pricing_snapshot_hash"] == PRICING_HASH
+
+
+@pytest.mark.parametrize(("metric_name", "unit"), [
+    ("actual_cost_cny", "CNY"),
+    ("provider_input_tokens", "tokens"),
+    ("runtime_tool_schema_bytes", "bytes"),
+])
+def test_swe_claims_record_evaluator_architecture_provenance(
+    tmp_path: Path, metric_name: str, unit: str,
+) -> None:
+    _successful_run(
+        tmp_path, "swe-control", experiment_kind="goal2-swe-bench-live-formal",
+        swe_evaluator_architecture="native",
+    )
+    compiled = compile_claims(_document(
+        claim_id="swe-architecture", metric_name=metric_name, unit=unit,
+        source_run_ids=["swe-control"],
+    ), tmp_path)["claims"][0]
+    assert compiled["status"] == "verified"
+    assert compiled["experiment_conditions"]["swe_evaluator_architecture"] == "native"
+
+
+@pytest.mark.parametrize("architecture", [None, "unknown"])
+def test_swe_claim_rejects_missing_or_unknown_evaluator_architecture(
+    tmp_path: Path, architecture: str | None,
+) -> None:
+    _successful_run(
+        tmp_path, "swe-control", experiment_kind="goal2-swe-bench-live-formal",
+        swe_evaluator_architecture=architecture,
+    )
+    compiled = compile_claims(_document(
+        claim_id="swe-architecture", source_run_ids=["swe-control"],
+    ), tmp_path)["claims"][0]
+    assert compiled["status"] == "insufficient-data"
+    assert any("swe_evaluator_architecture" in item for item in compiled["limitations"])
+
+
+def test_swe_claim_rejects_mixed_evaluator_architectures(tmp_path: Path) -> None:
+    _successful_run(
+        tmp_path, "swe-native", repetition_id="1",
+        experiment_kind="goal2-swe-bench-live-formal", swe_evaluator_architecture="native",
+    )
+    _successful_run(
+        tmp_path, "swe-x86", repetition_id="2",
+        experiment_kind="goal2-swe-bench-live-formal", swe_evaluator_architecture="x86_64",
+    )
+    compiled = compile_claims(_document(
+        claim_id="swe-architecture", source_run_ids=["swe-native", "swe-x86"], sample_size=2,
+    ), tmp_path)["claims"][0]
+    assert compiled["status"] == "insufficient-data"
+    assert "manifest.swe_evaluator_architecture" in compiled["evidence_summary"]["observed_differences"]
+
+
+def test_swe_claim_recompile_rejects_changed_architecture_condition(tmp_path: Path) -> None:
+    _successful_run(
+        tmp_path, "swe-control", experiment_kind="goal2-swe-bench-live-formal",
+        swe_evaluator_architecture="native",
+    )
+    compiled = compile_claims(_document(
+        claim_id="swe-architecture", source_run_ids=["swe-control"],
+        experiment_conditions=_conditions(swe_evaluator_architecture="x86_64"),
+    ), tmp_path)["claims"][0]
+    assert compiled["status"] == "insufficient-data"
+    assert any("conditions do not match" in item for item in compiled["limitations"])
 
 
 def test_non_cost_claims_do_not_require_pricing_snapshot_hash(tmp_path: Path) -> None:

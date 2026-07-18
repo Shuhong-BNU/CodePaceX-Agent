@@ -112,6 +112,18 @@ def test_official_environment_freezes_exact_python_only_revision() -> None:
     assert environment["split"] == "lite"
 
 
+def test_swe_manifest_records_architecture_without_a_feature_flag(tmp_path: Path) -> None:
+    matrix = tmp_path / "matrix.json"
+    matrix.write_text("{}", encoding="utf-8")
+    manifest = swe_inference.build_manifest(
+        root=Path.cwd(), matrix_path=matrix,
+        matrix={"pilot_instances": ["one", "two", "three"]},
+        stage="pilot", repeat_index=0,
+    )
+    assert manifest.feature_flags == {}
+    assert manifest.swe_evaluator_architecture == swe_inference.selected_evaluator_architecture()
+
+
 def test_preflight_rejects_wrong_installed_official_revision(tmp_path: Path) -> None:
     package = tmp_path / "checkout" / "swebench" / "__init__.py"
     package.parent.mkdir(parents=True)

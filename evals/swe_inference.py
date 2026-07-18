@@ -282,9 +282,8 @@ def build_manifest(
         api_key_env=pilot.api_key_env, model_id=pilot.model_id,
         git_commit=current_git_commit(root), dirty_worktree=_git_dirty(root),
         prompt_version="swe-bench-live-inference-v1",
-        feature_flags={
-            "swe_evaluator_architecture": selected_evaluator_architecture(),
-        },
+        feature_flags={},
+        swe_evaluator_architecture=selected_evaluator_architecture(),
         experiment_profile=profile.canonical_payload(),
         experiment_profile_hash=profile.profile_hash(),
         runtime_contract_hash=profile.runtime_contract_hash(),

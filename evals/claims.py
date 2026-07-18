@@ -69,6 +69,7 @@ _MANIFEST_FIELDS = {
     "manifest.experiment_profile_hash": "experiment_profile_hash",
     "manifest.runtime_contract_hash": "runtime_contract_hash",
     "manifest.benchmark_asset_hash": "benchmark_asset_hash",
+    "manifest.swe_evaluator_architecture": "swe_evaluator_architecture",
     "manifest.max_iterations": "max_iterations",
 }
 _RUNTIME_FIELDS = (
@@ -103,6 +104,7 @@ class ExperimentConditions(BaseModel):
     experiment_profile_hash: str
     runtime_contract_hash: str
     benchmark_asset_hash: str
+    swe_evaluator_architecture: Literal["native", "x86_64"] | None = None
     max_iterations: int = Field(gt=0)
     pricing_snapshot_hash: str | None = Field(
         default=None, pattern=r"^[0-9a-f]{64}$",
@@ -287,12 +289,25 @@ def _identity(manifest: dict[str, Any], run: Path) -> dict[str, Any]:
 
 
 def _expected_conditions(conditions: ExperimentConditions) -> dict[str, Any]:
-    expected = {
-        path: getattr(conditions, field) for path, field in _MANIFEST_FIELDS.items()
-    }
+    expected = {}
+    for path, field in _MANIFEST_FIELDS.items():
+        value = getattr(conditions, field)
+        if path == "manifest.swe_evaluator_architecture" and value is None:
+            continue
+        expected[path] = value
     for key, value in conditions.feature_flags.items():
         expected[f"manifest.feature_flags.{key}"] = value
     return expected
+
+
+def _swe_evaluator_architectures(
+    runs: list[tuple[dict[str, Any], dict[str, Any], Path]],
+) -> list[Any]:
+    return [
+        manifest.get("swe_evaluator_architecture")
+        for manifest, _, _ in runs
+        if str(manifest.get("experiment_kind", "")).startswith("goal2-swe-")
+    ]
 
 
 def _compatibility(
@@ -378,6 +393,22 @@ def _compatibility(
             and any(provider != manifest_provider for provider in runtime_providers)
         ):
             problems.append("Runtime Provider does not match the effective Manifest Provider.")
+    swe_architectures = _swe_evaluator_architectures(runs)
+    if swe_architectures:
+        if any(value not in {"native", "x86_64"} for value in swe_architectures):
+            problems.append(
+                "SWE Claim source Runs are missing or have unknown swe_evaluator_architecture provenance."
+            )
+        elif len(set(swe_architectures)) != 1:
+            observed.append("manifest.swe_evaluator_architecture")
+            problems.append("SWE Claim source Runs use different swe_evaluator_architecture values.")
+        elif (
+            claim.experiment_conditions.swe_evaluator_architecture is not None
+            and claim.experiment_conditions.swe_evaluator_architecture != swe_architectures[0]
+        ):
+            problems.append(
+                "SWE Claim conditions do not match manifest.swe_evaluator_architecture."
+            )
     if claim.metric_name == "actual_cost_cny":
         pricing_hashes = [manifest.get("pricing_snapshot_hash") for manifest, _, _ in runs]
         if any(
@@ -725,6 +756,9 @@ def compile_claims(document: ClaimDocument, runs_dir: Path) -> dict[str, Any]:
             compatible, observed, problems = _compatibility(claim, usable)
             output["limitations"].extend(problems)
             if compatible:
+                swe_architectures = _swe_evaluator_architectures(usable)
+                if swe_architectures:
+                    output["experiment_conditions"]["swe_evaluator_architecture"] = swe_architectures[0]
                 if claim.metric_name == "actual_cost_cny":
                     output["experiment_conditions"]["pricing_snapshot_hash"] = usable[0][0]["pricing_snapshot_hash"]
                 try:
