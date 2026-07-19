@@ -167,6 +167,14 @@ def test_goal3_budget_paths_are_named_but_not_created() -> None:
     assert not any(path.exists() for path in paths.values())
 
 
+def test_paid_workflow_uses_one_goal3_only_artifact_root() -> None:
+    workflow = Path(".github/workflows/goal3-swe-paid-pilot.yml").read_text(encoding="utf-8")
+    root = "${{ github.workspace }}/.runs/goal3-swe"
+    assert f"FREEZE_ROOT: {root}" in workflow
+    assert workflow.count(f"path: {root}") == 2
+    assert ".goal3-freeze" not in workflow
+
+
 def test_existing_goal3_run_is_not_overwritten(tmp_path: Path) -> None:
     runs_dir = tmp_path / "goal3-swe"
     goal3_swe.dry_run(root=tmp_path, runs_dir=runs_dir, run_id="existing")
