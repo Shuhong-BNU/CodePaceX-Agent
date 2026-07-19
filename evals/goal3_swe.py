@@ -40,8 +40,10 @@ from evals.pilot import (
 from evals.swe_bench_live import (
     instance_payload_hash,
     load_jsonl,
+    patch_file_count,
     run_official_evaluator,
     select_pilot_instances,
+    size_bucket,
 )
 
 
@@ -61,6 +63,10 @@ MAXIMUM_REQUESTS_PER_INSTANCE = 50
 MAXIMUM_INPUT_TOKENS_PER_REQUEST = 128_000
 MAXIMUM_OUTPUT_TOKENS_PER_REQUEST = 8192
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+EXECUTION_INSTANCE_FIELDS = (
+    "instance_id", "repo", "base_commit", "problem_statement", "platform",
+    "version", "environment_setup_commit",
+)
 ENVIRONMENT = {
     "schema_version": 1,
     "repository": "https://github.com/microsoft/SWE-bench-Live",
@@ -170,6 +176,106 @@ def freeze_pilot_config(
     return payload
 
 
+def execution_instance_payload(instance: dict[str, Any]) -> dict[str, Any]:
+    """Return the exact Agent-visible subset of a SWE-bench-Live instance.
+
+    Gold patches, tests, hints, and other evaluator-only fields are intentionally
+    excluded before a Goal 3 paid artifact is written.
+    """
+    return {field: instance.get(field) for field in EXECUTION_INSTANCE_FIELDS}
+
+
+def execution_instance_payload_hash(instance: dict[str, Any]) -> str:
+    return canonical_hash(execution_instance_payload(instance))
+
+
+def freeze_paid_pilot_bundle(
+    *, root: Path, dataset_jsonl: Path, pricing_snapshot: Path, output_dir: Path,
+    dataset_revision: str,
+) -> dict[str, Any]:
+    """Write one immutable, Agent-safe Goal 3 Pilot bundle.
+
+    The input may contain official gold data, but only hashes of it enter the
+    bundle. The persisted dataset has precisely the fields used to materialize
+    the repository and construct the Agent prompt.
+    """
+    root = root.resolve()
+    output_dir = output_dir.resolve()
+    _require_goal3_path(output_dir)
+    if not re.fullmatch(r"[0-9a-f]{40}", dataset_revision):
+        raise ValueError("Goal 3 Pilot freeze requires the exact Dataset revision")
+    commit = current_git_commit(root)
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("Goal 3 Pilot freeze requires an exact Git commit")
+    pricing = load_pricing(pricing_snapshot)
+    rows = load_jsonl(dataset_jsonl)
+    selected = select_pilot_instances(rows)
+    if len(selected) != 3:
+        raise ValueError("Goal 3 Pilot freeze requires exactly three selected instances")
+    source_hash = canonical_hash(rows)
+    pilots = [{
+        "instance_id": str(instance["instance_id"]),
+        "repo": str(instance["repo"]),
+        "size_bucket": size_bucket(instance),
+        "gold_file_count": patch_file_count(str(instance.get("patch", ""))),
+        "payload_sha256": instance_payload_hash(instance),
+        "execution_payload_sha256": execution_instance_payload_hash(instance),
+    } for instance in selected]
+    matrix = {
+        "dataset_revision": dataset_revision,
+        "dataset_source_sha256": source_hash,
+        "selection_algorithm": "python-lite-size-stratified-v1",
+        "pilots": pilots,
+    }
+    profile = ExperimentProfile(
+        tool_loading="deferred", compression_profile="recovery_v1",
+        permission_strategy="session_allow", agent_mode="single",
+    )
+    frozen = {
+        "schema_version": 1,
+        "status": "frozen_pending_authorization",
+        "experiment_kind": "goal3-swe-bench-live-pilot",
+        "codepacex_commit": commit,
+        "official_evaluator_commit": ENVIRONMENT["commit"],
+        "dataset": ENVIRONMENT["dataset"],
+        "dataset_split": ENVIRONMENT["split"],
+        "dataset_revision": dataset_revision,
+        "dataset_source_sha256": source_hash,
+        "selection_algorithm": matrix["selection_algorithm"],
+        "matrix_sha256": canonical_hash(matrix),
+        "provider": "bailian-qwen37-max",
+        "protocol": "openai-compat",
+        "base_url": "https://llm-ipge9fy38w648m28.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        "api_key_env": "BAILIAN_API_KEY",
+        "model_id": "qwen3.7-max-2026-06-08",
+        "pricing_snapshot_hash": pricing_snapshot_hash(pricing),
+        "experiment_profile": profile.canonical_payload(),
+        "fallback_enabled": False,
+        "retry_budget": 0,
+        "serial": True,
+        "max_provider_requests_per_instance": MAXIMUM_REQUESTS_PER_INSTANCE,
+        "maximum_input_tokens_per_request": MAXIMUM_INPUT_TOKENS_PER_REQUEST,
+        "maximum_output_tokens_per_request": MAXIMUM_OUTPUT_TOKENS_PER_REQUEST,
+        "model_parameters": {"temperature": None, "top_p": None, "max_output_tokens": 8192},
+        "pilots": pilots,
+    }
+    paths = {
+        "pilot": output_dir / "pilot-freeze.json",
+        "pricing": output_dir / "pricing-snapshot.json",
+        "dataset": output_dir / "pilot-dataset.jsonl",
+    }
+    if any(path.exists() for path in paths.values()):
+        raise ValueError("Goal 3 paid Pilot bundle already exists and cannot be rewritten")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    paths["pilot"].write_text(json.dumps(frozen, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    paths["pricing"].write_bytes(pricing_snapshot.read_bytes())
+    paths["dataset"].write_text(
+        "".join(json.dumps(execution_instance_payload(instance), ensure_ascii=False, sort_keys=True) + "\n" for instance in selected),
+        encoding="utf-8",
+    )
+    return frozen
+
+
 def load_frozen_pilot(
     path: Path = GOAL3_PILOT_FREEZE, *, root: Path | None = None,
 ) -> dict[str, Any]:
@@ -178,7 +284,7 @@ def load_frozen_pilot(
     required = {
         "schema_version", "status", "experiment_kind", "codepacex_commit",
         "official_evaluator_commit", "dataset", "dataset_split", "dataset_revision",
-        "dataset_arrow_sha256", "selection_algorithm", "matrix_sha256", "provider",
+        "dataset_source_sha256", "selection_algorithm", "matrix_sha256", "provider",
         "protocol", "base_url", "api_key_env", "model_id", "pricing_snapshot_hash",
         "experiment_profile", "fallback_enabled", "retry_budget", "serial",
         "max_provider_requests_per_instance", "maximum_input_tokens_per_request",
@@ -197,7 +303,7 @@ def load_frozen_pilot(
     if payload["dataset"] != ENVIRONMENT["dataset"] or payload["dataset_split"] != ENVIRONMENT["split"]:
         raise ValueError("Goal 3 Pilot freeze does not match the official Dataset")
     if not all(isinstance(payload[key], str) and payload[key] for key in (
-        "dataset_revision", "dataset_arrow_sha256", "matrix_sha256", "provider",
+        "dataset_revision", "dataset_source_sha256", "matrix_sha256", "provider",
         "protocol", "base_url", "api_key_env", "model_id", "pricing_snapshot_hash",
     )):
         raise ValueError("Goal 3 Pilot freeze is missing immutable provenance")
@@ -224,6 +330,7 @@ def load_frozen_pilot(
     for pilot in pilots:
         if not isinstance(pilot, dict) or set(pilot) != {
             "instance_id", "repo", "size_bucket", "gold_file_count", "payload_sha256",
+            "execution_payload_sha256",
         }:
             raise ValueError("Goal 3 Pilot freeze has an invalid Pilot record")
         instance_id = pilot["instance_id"]
@@ -237,6 +344,8 @@ def load_frozen_pilot(
             raise ValueError("Goal 3 Pilot has an invalid file count")
         if not isinstance(pilot["payload_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", pilot["payload_sha256"]):
             raise ValueError("Goal 3 Pilot has an invalid payload hash")
+        if not isinstance(pilot["execution_payload_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", pilot["execution_payload_sha256"]):
+            raise ValueError("Goal 3 Pilot has an invalid execution payload hash")
         ids.add(instance_id)
         buckets.add(pilot["size_bucket"])
     if buckets != {"one_file", "two_to_four_files", "five_plus_files"}:
@@ -255,10 +364,12 @@ def load_frozen_instances(
         instance = rows.get(instance_id)
         if instance is None:
             raise ValueError(f"Goal 3 frozen Dataset does not contain {instance_id}")
+        if set(instance) != set(EXECUTION_INSTANCE_FIELDS):
+            raise ValueError(f"Goal 3 frozen Dataset has non-Agent-visible fields: {instance_id}")
         if instance.get("repo") != expected["repo"]:
             raise ValueError(f"Goal 3 frozen repository changed: {instance_id}")
-        if instance_payload_hash(instance) != expected["payload_sha256"]:
-            raise ValueError(f"Goal 3 frozen payload changed: {instance_id}")
+        if execution_instance_payload_hash(instance) != expected["execution_payload_sha256"]:
+            raise ValueError(f"Goal 3 frozen execution payload changed: {instance_id}")
         selected.append(instance)
     if len(rows) != 3:
         raise ValueError("Goal 3 Pilot Dataset must contain exactly the three frozen rows")
@@ -938,6 +1049,7 @@ def main(argv: list[str] | None = None) -> int:
         choices=[
             "preflight", "validate", "dry-run", "control-empty", "control-gold",
             "paid-preflight", "prepare-paid-artifacts", "execute-pilot",
+            "freeze-paid-pilot-bundle",
         ],
     )
     parser.add_argument("--environment", type=Path, default=DEFAULT_ENVIRONMENT)
@@ -953,6 +1065,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--budget-ledger", type=Path, default=GOAL3_BUDGET_LEDGER)
     parser.add_argument("--budget-allocation", type=Path, default=GOAL3_BUDGET_ALLOCATION)
     parser.add_argument("--authorized-total-cny", type=Decimal)
+    parser.add_argument("--freeze-output-dir", type=Path)
+    parser.add_argument("--dataset-revision")
     parser.add_argument("--confirm-paid-run", action="store_true")
     args = parser.parse_args(argv)
     root = Path.cwd()
@@ -994,6 +1108,14 @@ def main(argv: list[str] | None = None) -> int:
                 budget_ledger=args.budget_ledger,
                 budget_allocation=args.budget_allocation,
                 authorized_total_cny=args.authorized_total_cny,
+            )
+        elif args.command == "freeze-paid-pilot-bundle":
+            if args.dataset_jsonl is None or args.freeze_output_dir is None or args.dataset_revision is None:
+                raise ValueError("paid Pilot freeze requires --dataset-jsonl, --dataset-revision, and --freeze-output-dir")
+            payload = freeze_paid_pilot_bundle(
+                root=root, dataset_jsonl=args.dataset_jsonl,
+                pricing_snapshot=args.pricing_snapshot,
+                output_dir=args.freeze_output_dir, dataset_revision=args.dataset_revision,
             )
         else:
             if args.dataset_jsonl is None or not args.instance_id:

@@ -8,9 +8,8 @@ on:
         required: true
         type: string
       freeze_artifact_name:
-        description: Artifact name containing goal3-swe/{pilot-freeze,pricing-snapshot,pilot-dataset}.json*
+        description: Exact freeze Artifact name containing the three paid Pilot contract files
         required: true
-        default: goal3-swe-paid-freeze
         type: string
       authorized_total_cny:
         description: Explicit user-authorized CNY ceiling bound to this freeze

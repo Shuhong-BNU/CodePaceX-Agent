@@ -216,16 +216,20 @@ def _frozen_pilot(tmp_path: Path) -> tuple[Path, Path, dict[str, object]]:
          "patch": _patch(5), "problem_statement": "large"},
     ]
     dataset = input_root / "pilot-dataset.jsonl"
-    dataset.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    dataset.write_text(
+        "".join(json.dumps(goal3_swe.execution_instance_payload(row)) + "\n" for row in rows),
+        encoding="utf-8",
+    )
     selected = goal3_swe.select_pilot_instances(rows)
     pilots = [{
         "instance_id": item["instance_id"], "repo": item["repo"],
         "size_bucket": size_bucket(item),
         "gold_file_count": patch_file_count(item["patch"]),
         "payload_sha256": goal3_swe.instance_payload_hash(item),
+        "execution_payload_sha256": goal3_swe.execution_instance_payload_hash(item),
     } for item in selected]
     matrix = {
-        "dataset_revision": "a" * 40, "dataset_arrow_sha256": "b" * 64,
+        "dataset_revision": "a" * 40, "dataset_source_sha256": "b" * 64,
         "selection_algorithm": "python-lite-size-stratified-v1", "pilots": pilots,
     }
     frozen = {
@@ -233,7 +237,7 @@ def _frozen_pilot(tmp_path: Path) -> tuple[Path, Path, dict[str, object]]:
         "experiment_kind": "goal3-swe-bench-live-pilot", "codepacex_commit": "c" * 40,
         "official_evaluator_commit": goal3_swe.ENVIRONMENT["commit"],
         "dataset": goal3_swe.ENVIRONMENT["dataset"], "dataset_split": goal3_swe.ENVIRONMENT["split"],
-        "dataset_revision": matrix["dataset_revision"], "dataset_arrow_sha256": matrix["dataset_arrow_sha256"],
+        "dataset_revision": matrix["dataset_revision"], "dataset_source_sha256": matrix["dataset_source_sha256"],
         "selection_algorithm": matrix["selection_algorithm"],
         "matrix_sha256": goal3_swe.hashlib.sha256(json.dumps(matrix, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
         "provider": "bailian-qwen37-max", "protocol": "openai-compat",
@@ -259,6 +263,48 @@ def test_frozen_pilot_rejects_mismatched_current_commit(
     monkeypatch.setattr(goal3_swe, "current_git_commit", lambda root: "d" * 40)
     with pytest.raises(ValueError, match="current commit"):
         goal3_swe.load_frozen_pilot(freeze_path, root=tmp_path)
+
+
+def test_paid_bundle_redacts_gold_data_and_binds_full_and_execution_payloads(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    source = tmp_path / "goal3-inputs" / "official.jsonl"
+    source.parent.mkdir()
+    rows = [
+        {"instance_id": "one", "repo": "org/one", "platform": "linux", "base_commit": "a" * 40,
+         "patch": _patch(1), "test_patch": "secret-test", "problem_statement": "one"},
+        {"instance_id": "medium", "repo": "org/medium", "platform": "linux", "base_commit": "b" * 40,
+         "patch": _patch(3), "test_patch": "secret-test", "problem_statement": "medium"},
+        {"instance_id": "large", "repo": "org/large", "platform": "linux", "base_commit": "c" * 40,
+         "patch": _patch(5), "test_patch": "secret-test", "problem_statement": "large"},
+    ]
+    source.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    pricing = source.parent / "pricing.json"
+    pricing.write_text(json.dumps({
+        "schema_version": 1, "retrieved_at": "2026-07-19T00:00:00Z",
+        "source_url": "https://pricing.example", "rate_limit_source_url": "https://limits.example",
+        "provider": "bailian-qwen37-max", "model_id": "qwen3.7-max-2026-06-08",
+        "deployment_scope": "Chinese mainland", "region": "China (Beijing)", "currency": "CNY",
+        "token_range": "0<Token<=1M", "unit_tokens": 1000000, "input_price": 12.0,
+        "output_price": 36.0, "requests_per_minute": 600, "tokens_per_minute": 1000000,
+        "assumptions": ["standard list price", "no discounts", "Usage is authoritative"],
+    }), encoding="utf-8")
+    monkeypatch.setattr(goal3_swe, "current_git_commit", lambda root: "c" * 40)
+    output = tmp_path / "goal3-freeze"
+    frozen = goal3_swe.freeze_paid_pilot_bundle(
+        root=tmp_path, dataset_jsonl=source, pricing_snapshot=pricing,
+        output_dir=output, dataset_revision="d" * 40,
+    )
+    dataset_text = (output / "pilot-dataset.jsonl").read_text(encoding="utf-8")
+    assert "patch" not in dataset_text and "secret-test" not in dataset_text
+    assert frozen["codepacex_commit"] == "c" * 40
+    assert all("execution_payload_sha256" in item for item in frozen["pilots"])
+    assert goal3_swe.load_frozen_instances(pilot_freeze=frozen, dataset_jsonl=output / "pilot-dataset.jsonl")
+    with pytest.raises(ValueError, match="already exists"):
+        goal3_swe.freeze_paid_pilot_bundle(
+            root=tmp_path, dataset_jsonl=source, pricing_snapshot=pricing,
+            output_dir=output, dataset_revision="d" * 40,
+        )
 
 
 def test_create_paid_artifacts_is_goal3_only_and_refuses_rewrite(

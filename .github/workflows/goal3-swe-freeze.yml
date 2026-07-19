@@ -1,0 +1,136 @@
+name: Goal 3 SWE pilot freeze
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  freeze:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be
+      PRICING_URL: https://help.aliyun.com/en/model-studio/model-pricing
+      RATE_LIMIT_URL: https://help.aliyun.com/en/model-studio/rate-limit
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install project and frozen official evaluator
+        run: |
+          set -euo pipefail
+          python -m pip install -e . pytest pytest-asyncio
+          evaluator_root="$RUNNER_TEMP/swe-bench-live"
+          git clone --filter=blob:none https://github.com/microsoft/SWE-bench-Live.git "$evaluator_root"
+          git -C "$evaluator_root" checkout --detach "$EVALUATOR_COMMIT"
+          test "$(git -C "$evaluator_root" rev-parse HEAD)" = "$EVALUATOR_COMMIT"
+          python -m pip install -e "$evaluator_root"
+
+      - name: Verify frozen host and public pricing sources
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Linux
+          case "$(uname -m)" in x86_64|amd64) ;; *) exit 1 ;; esac
+          curl --fail --silent --show-error --location "$PRICING_URL" -o "$RUNNER_TEMP/pricing-source.html"
+          curl --fail --silent --show-error --location "$RATE_LIMIT_URL" -o "$RUNNER_TEMP/rate-limit-source.html"
+          test -s "$RUNNER_TEMP/pricing-source.html"
+          test -s "$RUNNER_TEMP/rate-limit-source.html"
+          python -m evals.goal3_swe preflight
+
+      - name: Materialize official rows and pricing snapshot
+        run: |
+          set -euo pipefail
+          DATASET_REVISION="$(git ls-remote https://huggingface.co/datasets/SWE-bench-Live/SWE-bench-Live HEAD | awk 'NR == 1 {print $1}')"
+          test "${#DATASET_REVISION}" = 40
+          export DATASET_REVISION
+          python - "$RUNNER_TEMP/goal3-official-rows.jsonl" "$RUNNER_TEMP/pricing-snapshot.json" "$RUNNER_TEMP/pricing-provenance.json" "$RUNNER_TEMP/pricing-source.html" "$RUNNER_TEMP/rate-limit-source.html" <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from datasets import load_dataset
+
+          pricing_source = Path(sys.argv[4]).read_text(encoding="utf-8")
+          rate_source = Path(sys.argv[5]).read_text(encoding="utf-8")
+          if not re.search(r"qwen3\.7-max-2026-06-08.{0,3000}?CNY 12.{0,3000}?CNY 36", pricing_source, re.S):
+              raise SystemExit("official pricing page no longer confirms CNY 12 / CNY 36 for the frozen model")
+          if not re.search(r"qwen3\.7-max-2026-06-08.{0,3000}?600.{0,3000}?1,000,000", rate_source, re.S):
+              raise SystemExit("official rate-limit page no longer confirms 600 RPM / 1,000,000 TPM for the frozen model")
+          dataset = load_dataset(
+              "SWE-bench-Live/SWE-bench-Live", split="lite",
+              revision=os.environ["DATASET_REVISION"],
+          )
+          rows = [dict(row) for row in dataset]
+          if not rows:
+              raise SystemExit("official Lite dataset was unavailable")
+          Path(sys.argv[1]).write_text(
+              "".join(json.dumps(row, default=str, ensure_ascii=False) + "\n" for row in rows),
+              encoding="utf-8",
+          )
+          snapshot = {
+              "schema_version": 1,
+              "retrieved_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+              "source_url": "https://help.aliyun.com/en/model-studio/model-pricing",
+              "rate_limit_source_url": "https://help.aliyun.com/en/model-studio/rate-limit",
+              "provider": "bailian-qwen37-max",
+              "model_id": "qwen3.7-max-2026-06-08",
+              "deployment_scope": "Chinese mainland",
+              "region": "China (Beijing)",
+              "currency": "CNY",
+              "token_range": "0<Token<=1M",
+              "unit_tokens": 1000000,
+              "input_price": 12.0,
+              "output_price": 36.0,
+              "requests_per_minute": 600,
+              "tokens_per_minute": 1000000,
+              "assumptions": [
+                  "Official standard real-time pay-as-you-go list prices verified from the recorded source URLs.",
+                  "No free quota, promotion, Token Plan credit, batch discount, or cache discount is assumed.",
+                  "Actual Provider Usage remains authoritative for settlement.",
+              ],
+          }
+          Path(sys.argv[2]).write_text(json.dumps(snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          Path(sys.argv[3]).write_text(json.dumps({
+              "model_id": snapshot["model_id"],
+              "pricing_source_sha256": hashlib.sha256(pricing_source.encode()).hexdigest(),
+              "rate_limit_source_sha256": hashlib.sha256(rate_source.encode()).hexdigest(),
+              "pricing_assertion": "CNY 12 input and CNY 36 output per 1 million tokens; standard prices, no cache discount assumed.",
+              "rate_limit_assertion": "600 RPM and 1,000,000 TPM.",
+          }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+          python -m evals.goal3_swe freeze-paid-pilot-bundle \
+            --dataset-jsonl "$RUNNER_TEMP/goal3-official-rows.jsonl" \
+            --dataset-revision "$DATASET_REVISION" \
+            --pricing-snapshot "$RUNNER_TEMP/pricing-snapshot.json" \
+            --freeze-output-dir "$RUNNER_TEMP/goal3-swe"
+          mv "$RUNNER_TEMP/pricing-provenance.json" "$RUNNER_TEMP/goal3-swe/pricing-provenance.json"
+
+      - name: Validate safe frozen contract
+        run: |
+          set -euo pipefail
+          python -m evals.goal3_swe paid-preflight \
+            --dataset-jsonl "$RUNNER_TEMP/goal3-swe/pilot-dataset.jsonl" \
+            --pilot-freeze "$RUNNER_TEMP/goal3-swe/pilot-freeze.json" \
+            --pricing-snapshot "$RUNNER_TEMP/goal3-swe/pricing-snapshot.json" \
+            --budget-authorization "$RUNNER_TEMP/goal3-swe/budget-authorization.json" \
+            --budget-ledger "$RUNNER_TEMP/goal3-swe/budget-ledger.json" \
+            --budget-allocation "$RUNNER_TEMP/goal3-swe/budget-allocation.json"
+          ! rg -n '"(?:patch|test_patch|hints_text|all_hints_text)"' "$RUNNER_TEMP/goal3-swe"
+          test -f "$RUNNER_TEMP/goal3-swe/pricing-provenance.json"
+          python -m evals.secret_scan --artifact-root "$RUNNER_TEMP/goal3-swe"
+
+      - name: Upload immutable paid Pilot freeze
+        uses: actions/upload-artifact@v4
+        with:
+          name: goal3-swe-paid-freeze-${{ github.run_id }}
+          path: ${{ runner.temp }}/goal3-swe
+          if-no-files-found: error
