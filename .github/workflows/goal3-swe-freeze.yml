@@ -2,6 +2,13 @@ name: Goal 3 SWE pilot freeze
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - codex/goal3-swe-live-formal-eval
+    paths:
+      - .github/workflows/goal3-swe-freeze.yml
+      - evals/goal3_swe.py
+      - evals/goal3/**
 
 permissions:
   contents: read
