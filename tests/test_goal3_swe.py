@@ -17,6 +17,16 @@ def _result(*, returncode: int = 0, stdout: str = "", stderr: str = "") -> Simpl
     return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
 
 
+def _official_report(instance_id: str, *, resolved: bool) -> dict[str, object]:
+    return {
+        instance_id: {
+            "patch_is_None": False, "patch_exists": True,
+            "patch_successfully_applied": True, "resolved": resolved,
+            "tests_status": {},
+        },
+    }
+
+
 def _native_preflight_mocks(monkeypatch: pytest.MonkeyPatch, *, system: str = "Linux", machine: str = "x86_64", installed_commit: str | None = None) -> None:
     monkeypatch.setattr(goal3_swe.platform, "system", lambda: system)
     monkeypatch.setattr(goal3_swe.platform, "machine", lambda: machine)
@@ -77,6 +87,67 @@ def test_official_empty_patch_report_is_an_explicit_unresolved_outcome(tmp_path:
         json.dumps({"empty_patch_ids": ["case"]}), encoding="utf-8",
     )
     assert goal3_swe.collect_official_outcomes(tmp_path, {"case"}) == {"case": False}
+
+
+@pytest.mark.parametrize("resolved", [False, True])
+def test_goal3_collector_reads_one_exact_frozen_evaluator_report(
+    tmp_path: Path, resolved: bool,
+) -> None:
+    report_dir = tmp_path / "logs" / "run_evaluation" / "paid-case" / "model" / "case"
+    report_dir.mkdir(parents=True)
+    report = report_dir / "report.json"
+    report.write_text(json.dumps(_official_report("case", resolved=resolved)), encoding="utf-8")
+    path = goal3_swe.official_evaluator_report_path(
+        cwd=tmp_path, run_id="paid-case", model_id="model", instance_id="case",
+    )
+    assert goal3_swe.collect_goal3_official_outcome(path, "case") is resolved
+
+
+@pytest.mark.parametrize(
+    ("payload", "extra_name", "error"),
+    [
+        ({"other": _official_report("other", resolved=False)["other"]}, None, "does not match"),
+        ({"case": {"resolved": False}}, None, "incomplete schema"),
+        (_official_report("case", resolved=False), "report-copy.json", "multiple report candidates"),
+    ],
+)
+def test_goal3_collector_rejects_ambiguous_or_invalid_reports(
+    tmp_path: Path, payload: dict[str, object], extra_name: str | None, error: str,
+) -> None:
+    report_dir = tmp_path / "logs" / "run_evaluation" / "paid-case" / "model" / "case"
+    report_dir.mkdir(parents=True)
+    report = report_dir / "report.json"
+    report.write_text(json.dumps(payload), encoding="utf-8")
+    if extra_name:
+        (report_dir / extra_name).write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(ValueError, match=error):
+            goal3_swe.official_evaluator_report_path(
+                cwd=tmp_path, run_id="paid-case", model_id="model", instance_id="case",
+            )
+    else:
+        with pytest.raises(ValueError, match=error):
+            goal3_swe.collect_goal3_official_outcome(report, "case")
+
+
+def test_goal3_collector_rejects_missing_report(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="report is missing"):
+        goal3_swe.official_evaluator_report_path(
+            cwd=tmp_path, run_id="paid-case", model_id="model", instance_id="case",
+        )
+
+
+@pytest.mark.parametrize("status", ["infrastructure_error", "provider_error", "agent_error"])
+def test_goal3_terminal_events_preserve_the_original_trial_id(
+    tmp_path: Path, status: str,
+) -> None:
+    recorder = goal3_swe.RunRecorder(tmp_path / "goal3-swe", goal3_swe.RunManifest(), run_id=f"terminal-{status}")
+    trial_id = f"swe/terminal-{status}/pilot/1/case"
+    goal3_swe._goal3_terminal(
+        recorder, instance_id="case", trial_id=trial_id, status=status,
+        started=0.0, accounting={"trial_id": trial_id, "request_count": 0, "actual_cny": "0"},
+    )
+    event = json.loads((recorder.path / "events.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert event["trial_id"] == trial_id
 
 
 def test_control_instance_writer_preserves_the_official_patch_and_serializes_dates(tmp_path: Path) -> None:
@@ -386,8 +457,13 @@ def test_execute_requires_confirmation_before_any_preflight_or_provider_path(
     assert called == []
 
 
+@pytest.mark.parametrize(
+    ("resolved", "trial_status", "run_status"),
+    [(True, "resolved", "success"), (False, "unresolved", "task_failure")],
+)
 def test_execute_pilot_preserves_task_logs_and_reaches_official_evaluator(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    resolved: bool, trial_status: str, run_status: str,
 ) -> None:
     """Regression for dynamic instance IDs rejected by the generic Artifact whitelist."""
     runs_dir = tmp_path / "goal3-swe"
@@ -421,7 +497,8 @@ def test_execute_pilot_preserves_task_logs_and_reaches_official_evaluator(
     monkeypatch.setattr(goal3_swe.subprocess, "run", lambda *_args, **_kwargs: _result(stdout="offline trace"))
     evaluator_calls: list[dict[str, object]] = []
     monkeypatch.setattr(goal3_swe, "run_official_evaluator", lambda **kwargs: evaluator_calls.append(kwargs) or _result(stdout="official"))
-    monkeypatch.setattr(goal3_swe, "collect_official_outcomes", lambda _root, ids: {item: True for item in ids})
+    monkeypatch.setattr(goal3_swe, "official_evaluator_report_path", lambda **_kwargs: tmp_path / "report.json")
+    monkeypatch.setattr(goal3_swe, "collect_goal3_official_outcome", lambda *_args: resolved)
 
     class FakeGate:
         def trial_accounting(self, trial_id: str) -> dict[str, object]:
@@ -440,8 +517,17 @@ def test_execute_pilot_preserves_task_logs_and_reaches_official_evaluator(
     )
 
     task_artifacts = json.loads((recorder.path / "task-artifacts.json").read_text(encoding="utf-8"))["artifacts"]
+    terminal_events = [
+        json.loads(line) for line in (recorder.path / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["type"] == "trial_completed"
+    ]
     assert len(evaluator_calls) == 3
-    assert json.loads((recorder.path / "result.json").read_text(encoding="utf-8"))["official_evaluator_completed"] is True
+    result = json.loads((recorder.path / "result.json").read_text(encoding="utf-8"))
+    assert result["official_evaluator_completed"] is True
+    assert result["status"] == run_status and result["scorable"] is True
+    assert result["unscorable_trial_count"] == 0
+    assert all(event["status"] == trial_status for event in terminal_events)
+    assert all(event["trial_id"] == goal3_swe._goal3_trial_id(run_id="offline-artifact-chain", instance_id=event["task_id"]) for event in terminal_events)
     assert {entry["kind"] for entry in task_artifacts} == {"stdout", "stderr", "evaluator"}
     assert {entry["task_id"] for entry in task_artifacts} == {row["instance_id"] for row in rows}
     assert all((recorder.path / "artifacts" / entry["name"]).is_file() for entry in task_artifacts)

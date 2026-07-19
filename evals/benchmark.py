@@ -27,6 +27,7 @@ RESULT_STATUSES = {
     "budget_blocked",
 }
 SCORABLE_STATUSES = {"success", "task_failure"}
+SCORABLE_TRIAL_STATUSES = SCORABLE_STATUSES | {"resolved", "unresolved"}
 RESUMABLE_STATUSES = RESULT_STATUSES - {"success", "dry_run", "budget_blocked"}
 OPTIONAL_JSON = {"usage.json"}
 OPTIONAL_STREAMS = {
@@ -594,12 +595,12 @@ class RunRecorder:
         errors: dict[str, int] = {}
         for event in completed:
             trial_status = str(event.get("status", "infrastructure_error"))
-            if trial_status != "success":
+            if trial_status not in SCORABLE_TRIAL_STATUSES:
                 errors[trial_status] = errors.get(trial_status, 0) + 1
         if not attempts and status not in {"success", "dry_run"}:
             errors[status] = errors.get(status, 0) + 1
         unscorable = sum(
-            1 for event in completed if event.get("status") not in SCORABLE_STATUSES
+            1 for event in completed if event.get("status") not in SCORABLE_TRIAL_STATUSES
         )
         if self._sanitize_run_files():
             status = "infrastructure_error"

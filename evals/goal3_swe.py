@@ -40,6 +40,7 @@ from evals.pilot import (
 from evals.swe_bench_live import (
     instance_payload_hash,
     load_jsonl,
+    official_evaluator_report_path,
     patch_file_count,
     run_official_evaluator,
     select_pilot_instances,
@@ -506,13 +507,15 @@ def _goal3_manifest(*, root: Path, frozen: dict[str, Any], run_id: str) -> RunMa
 
 
 def _goal3_terminal(
-    recorder: RunRecorder, *, instance_id: str, status: str, started: float,
+    recorder: RunRecorder, *, instance_id: str, trial_id: str, status: str, started: float,
     accounting: dict[str, Any], **extra: Any,
 ) -> None:
+    if not trial_id or accounting.get("trial_id") != trial_id:
+        raise ValueError("Goal 3 terminal accounting does not match the Trial ID")
     payload = {
         "task_id": instance_id, "repetition_id": "1", "attempt_id": 1,
         "status": status, "duration_seconds": time.monotonic() - started,
-        "trial_id": accounting.get("trial_id"),
+        "trial_id": trial_id,
         "provider_request_count": accounting.get("request_count", 0),
         "actual_cny": accounting.get("actual_cny", 0),
         **extra,
@@ -599,20 +602,20 @@ def execute_pilot(
                     recorder.write_task_artifact(instance_id, "stdout", exc.stdout or "")
                     recorder.write_task_artifact(instance_id, "stderr", exc.stderr or "")
                     accounting = gate.trial_accounting(trial_id)
-                    _goal3_terminal(recorder, instance_id=instance_id, status="timeout", started=started,
+                    _goal3_terminal(recorder, instance_id=instance_id, trial_id=trial_id, status="timeout", started=started,
                                     accounting=accounting, budget_reconciliation_required=True)
                     recorder.finalize({"status": "timeout", "execution_mode": "live", "official_evaluator_completed": False})
                     return recorder
                 except (OSError, ValueError, subprocess.SubprocessError) as exc:
                     accounting = gate.trial_accounting(trial_id)
-                    _goal3_terminal(recorder, instance_id=instance_id, status="infrastructure_error", started=started,
+                    _goal3_terminal(recorder, instance_id=instance_id, trial_id=trial_id, status="infrastructure_error", started=started,
                                     accounting=accounting, error=str(exc), budget_reconciliation_required=accounting.get("active_reservation") is not None)
                     recorder.finalize({"status": "infrastructure_error", "execution_mode": "live", "official_evaluator_completed": False})
                     return recorder
                 accounting = gate.trial_accounting(trial_id)
                 requests, _input_tokens, _output_tokens = trace_usage(process.stdout or "")
                 if accounting["budget_blocked"]:
-                    _goal3_terminal(recorder, instance_id=instance_id, status="budget_blocked", started=started,
+                    _goal3_terminal(recorder, instance_id=instance_id, trial_id=trial_id, status="budget_blocked", started=started,
                                     accounting=accounting, budget_block_reasons=accounting["budget_block_reasons"])
                     recorder.finalize({"status": "budget_blocked", "execution_mode": "live", "official_evaluator_completed": False})
                     return recorder
@@ -620,7 +623,7 @@ def execute_pilot(
                     reason = "active_reservation" if accounting["active_reservation"] is not None else (
                         "missing_trace_usage" if requests == 0 else "request_count_mismatch"
                     )
-                    _goal3_terminal(recorder, instance_id=instance_id, status="infrastructure_error", started=started,
+                    _goal3_terminal(recorder, instance_id=instance_id, trial_id=trial_id, status="infrastructure_error", started=started,
                                     accounting=accounting, reconciliation_reason=reason,
                                     budget_reconciliation_required=accounting["active_reservation"] is not None)
                     recorder.finalize({"status": "infrastructure_error", "execution_mode": "live", "official_evaluator_completed": False})
@@ -634,19 +637,18 @@ def execute_pilot(
                     "instance_id": instance_id, "model_name_or_path": pilot.model_id, "model_patch": patch,
                 }])
                 if process.returncode != 0 or not patch.strip():
-                    _goal3_terminal(recorder, instance_id=instance_id, status="task_failure", started=started,
+                    _goal3_terminal(recorder, instance_id=instance_id, trial_id=trial_id, status="task_failure", started=started,
                                     accounting=accounting, process_returncode=process.returncode,
                                     empty_patch=not bool(patch.strip()), official_evaluator_completed=False)
                     recorder.finalize({"status": "task_failure", "execution_mode": "live", "official_evaluator_completed": False})
                     return recorder
-                report_dir = recorder.path / "evaluation_results" / instance_id
-                report_dir.mkdir(parents=True)
                 try:
+                    evaluator_run_id = f"{run_id}-{instance_id}"
                     evaluator = run_official_evaluator(
                         dataset_name=ENVIRONMENT["dataset"], split=ENVIRONMENT["split"],
                         predictions_path=recorder.path / f"{instance_id}.prediction.json",
-                        instance_ids=[instance_id], max_workers=1, run_id=f"{run_id}-{instance_id}",
-                        namespace=ENVIRONMENT["evaluator_namespace"], report_dir=report_dir,
+                        instance_ids=[instance_id], max_workers=1, run_id=evaluator_run_id,
+                        namespace=ENVIRONMENT["evaluator_namespace"],
                         cwd=recorder.path, evaluator_architecture="native",
                     )
                     recorder.write_task_artifact(
@@ -654,13 +656,17 @@ def execute_pilot(
                     )
                     if evaluator.returncode != 0:
                         raise ValueError(f"official evaluator failed with exit status {evaluator.returncode}")
-                    resolved = collect_official_outcomes(report_dir, {instance_id})[instance_id]
+                    report_path = official_evaluator_report_path(
+                        cwd=recorder.path, run_id=evaluator_run_id,
+                        model_id=pilot.model_id, instance_id=instance_id,
+                    )
+                    resolved = collect_goal3_official_outcome(report_path, instance_id)
                 except (OSError, ValueError, subprocess.SubprocessError) as exc:
-                    _goal3_terminal(recorder, instance_id=instance_id, status="infrastructure_error", started=started,
+                    _goal3_terminal(recorder, instance_id=instance_id, trial_id=trial_id, status="infrastructure_error", started=started,
                                     accounting=accounting, error=str(exc), official_evaluator_completed=False)
                     recorder.finalize({"status": "infrastructure_error", "execution_mode": "live", "official_evaluator_completed": False})
                     return recorder
-                _goal3_terminal(recorder, instance_id=instance_id, status="success" if resolved else "task_failure", started=started,
+                _goal3_terminal(recorder, instance_id=instance_id, trial_id=trial_id, status="resolved" if resolved else "unresolved", started=started,
                                 accounting=accounting, process_returncode=process.returncode,
                                 empty_patch=False, official_evaluator_completed=True,
                                 official_outcome=resolved, numerator=int(resolved), denominator=1)
@@ -901,6 +907,28 @@ def collect_official_outcomes(report_root: Path, required_ids: set[str]) -> dict
     if set(outcomes) != required_ids:
         raise ValueError(f"official evaluator reports are incomplete: {sorted(required_ids - set(outcomes))}")
     return outcomes
+
+
+def collect_goal3_official_outcome(report_path: Path, instance_id: str) -> bool:
+    """Validate one exact frozen-evaluator report for one Goal 3 Trial."""
+    if report_path.name != "report.json" or not report_path.is_file():
+        raise ValueError("official evaluator report is missing")
+    candidates = sorted(report_path.parent.glob("report*.json"))
+    if candidates != [report_path]:
+        raise ValueError("official evaluator report candidates are ambiguous")
+    try:
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("official evaluator report is unreadable") from exc
+    required = {"patch_is_None", "patch_exists", "patch_successfully_applied", "resolved", "tests_status"}
+    if not isinstance(payload, dict) or set(payload) != {instance_id}:
+        raise ValueError("official evaluator report does not match the current instance")
+    outcome = payload[instance_id]
+    if not isinstance(outcome, dict) or not required.issubset(outcome):
+        raise ValueError("official evaluator report has an incomplete schema")
+    if not isinstance(outcome["resolved"], bool) or not isinstance(outcome["tests_status"], dict):
+        raise ValueError("official evaluator report has an invalid outcome schema")
+    return outcome["resolved"]
 
 
 def ensure_new_paid_pilot_run(*, runs_dir: Path, run_id: str, ledger_path: Path) -> None:

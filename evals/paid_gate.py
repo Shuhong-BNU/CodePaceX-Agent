@@ -815,6 +815,7 @@ class PaidRunGate:
             settlements = [item for item in ledger.settlements if item.trial_id == trial_id]
             blocks = [item for item in ledger.budget_blocks if item.trial_id == trial_id]
             return {
+                "trial_id": trial_id,
                 "request_count": len(charges),
                 "actual_cny": str(_money(sum(
                     (item.actual_cny for item in charges), Decimal("0"),

@@ -408,6 +408,7 @@ def test_unknown_usage_is_conservatively_settled_without_fabricating_tokens(tmp_
     assert ledger.active_reservation is None
     assert not ledger.request_charges
     assert gate.trial_accounting("mcp/task/unknown-usage") == {
+        "trial_id": "mcp/task/unknown-usage",
         "request_count": 0,
         "actual_cny": str(reservation.reserved_cny),
         "reservation_ids": [],
