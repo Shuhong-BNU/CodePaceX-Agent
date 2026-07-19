@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,6 +9,8 @@ from types import SimpleNamespace
 import pytest
 
 import evals.goal3_swe as goal3_swe
+from evals.costing import pricing_snapshot_hash
+from evals.swe_bench_live import patch_file_count, size_bucket
 
 
 def _result(*, returncode: int = 0, stdout: str = "", stderr: str = "") -> SimpleNamespace:
@@ -157,9 +160,9 @@ def test_pilot_freeze_binds_three_fixed_official_instances_and_price_hash(tmp_pa
 def test_goal3_budget_paths_are_named_but_not_created() -> None:
     paths = goal3_swe.goal3_budget_paths()
     assert paths == {
-        "authorization": Path("evals/.runs/goal3-control/budget-authorization.json"),
-        "ledger": Path("evals/.runs/goal3-control/budget-ledger.json"),
-        "allocation": Path("evals/.runs/goal3-control/budget-allocation.json"),
+        "authorization": Path("evals/.runs/goal3-swe/budget-authorization.json"),
+        "ledger": Path("evals/.runs/goal3-swe/budget-ledger.json"),
+        "allocation": Path("evals/.runs/goal3-swe/budget-allocation.json"),
     }
     assert not any(path.exists() for path in paths.values())
 
@@ -187,4 +190,164 @@ def test_active_goal3_ledger_blocks_future_paid_pilot(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="active reservation"):
         goal3_swe.ensure_new_paid_pilot_run(
             runs_dir=tmp_path / "goal3-swe", run_id="new", ledger_path=ledger,
+        )
+
+
+def _frozen_pilot(tmp_path: Path) -> tuple[Path, Path, dict[str, object]]:
+    input_root = tmp_path / "goal3-inputs"
+    input_root.mkdir()
+    pricing_path = input_root / "pricing.json"
+    pricing_path.write_text(json.dumps({
+        "schema_version": 1, "retrieved_at": "2026-07-19T00:00:00Z",
+        "source_url": "https://pricing.example", "rate_limit_source_url": "https://limits.example",
+        "provider": "bailian-qwen37-max", "model_id": "qwen3.7-max-2026-06-08",
+        "deployment_scope": "Chinese mainland", "region": "China (Beijing)", "currency": "CNY",
+        "token_range": "0<Token<=1M", "unit_tokens": 1000000, "input_price": 12.0,
+        "output_price": 36.0, "requests_per_minute": 600, "tokens_per_minute": 1000000,
+        "assumptions": ["standard list price", "no discounts", "Usage is authoritative"],
+    }))
+    pricing = goal3_swe.load_pricing(pricing_path)
+    rows = [
+        {"instance_id": "one", "repo": "org/one", "platform": "linux", "base_commit": "a" * 40,
+         "patch": _patch(1), "problem_statement": "one"},
+        {"instance_id": "medium", "repo": "org/medium", "platform": "linux", "base_commit": "b" * 40,
+         "patch": _patch(3), "problem_statement": "medium"},
+        {"instance_id": "large", "repo": "org/large", "platform": "linux", "base_commit": "c" * 40,
+         "patch": _patch(5), "problem_statement": "large"},
+    ]
+    dataset = input_root / "pilot-dataset.jsonl"
+    dataset.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    selected = goal3_swe.select_pilot_instances(rows)
+    pilots = [{
+        "instance_id": item["instance_id"], "repo": item["repo"],
+        "size_bucket": size_bucket(item),
+        "gold_file_count": patch_file_count(item["patch"]),
+        "payload_sha256": goal3_swe.instance_payload_hash(item),
+    } for item in selected]
+    matrix = {
+        "dataset_revision": "a" * 40, "dataset_arrow_sha256": "b" * 64,
+        "selection_algorithm": "python-lite-size-stratified-v1", "pilots": pilots,
+    }
+    frozen = {
+        "schema_version": 1, "status": "frozen_pending_authorization",
+        "experiment_kind": "goal3-swe-bench-live-pilot", "codepacex_commit": "c" * 40,
+        "official_evaluator_commit": goal3_swe.ENVIRONMENT["commit"],
+        "dataset": goal3_swe.ENVIRONMENT["dataset"], "dataset_split": goal3_swe.ENVIRONMENT["split"],
+        "dataset_revision": matrix["dataset_revision"], "dataset_arrow_sha256": matrix["dataset_arrow_sha256"],
+        "selection_algorithm": matrix["selection_algorithm"],
+        "matrix_sha256": goal3_swe.hashlib.sha256(json.dumps(matrix, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+        "provider": "bailian-qwen37-max", "protocol": "openai-compat",
+        "base_url": "https://llm-ipge9fy38w648m28.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        "api_key_env": "BAILIAN_API_KEY", "model_id": "qwen3.7-max-2026-06-08",
+        "pricing_snapshot_hash": pricing_snapshot_hash(pricing),
+        "experiment_profile": {"schema_version": 1, "tool_loading": "deferred", "compression_profile": "recovery_v1", "permission_strategy": "session_allow", "agent_mode": "single"},
+        "fallback_enabled": False, "retry_budget": 0, "serial": True,
+        "max_provider_requests_per_instance": 50, "maximum_input_tokens_per_request": 128000,
+        "maximum_output_tokens_per_request": 8192,
+        "model_parameters": {"temperature": None, "top_p": None, "max_output_tokens": 8192},
+        "pilots": pilots,
+    }
+    freeze_path = tmp_path / "pilot-freeze.json"
+    freeze_path.write_text(json.dumps(frozen), encoding="utf-8")
+    return freeze_path, dataset, frozen
+
+
+def test_frozen_pilot_rejects_mismatched_current_commit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    freeze_path, _dataset, _frozen = _frozen_pilot(tmp_path)
+    monkeypatch.setattr(goal3_swe, "current_git_commit", lambda root: "d" * 40)
+    with pytest.raises(ValueError, match="current commit"):
+        goal3_swe.load_frozen_pilot(freeze_path, root=tmp_path)
+
+
+def test_create_paid_artifacts_is_goal3_only_and_refuses_rewrite(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "goal3-swe"
+    run_root.mkdir()
+    freeze_path, _dataset, _frozen = _frozen_pilot(tmp_path)
+    pricing_path = tmp_path / "goal3-inputs" / "pricing.json"
+    copied_freeze = run_root / "pilot-freeze.json"
+    copied_pricing = run_root / "pricing-snapshot.json"
+    copied_freeze.write_bytes(freeze_path.read_bytes())
+    copied_pricing.write_bytes(pricing_path.read_bytes())
+    monkeypatch.setattr(goal3_swe, "current_git_commit", lambda root: "c" * 40)
+    paths = {name: run_root / f"budget-{name}.json" for name in ("authorization", "ledger", "allocation")}
+    payload = goal3_swe.create_paid_artifacts(
+        root=tmp_path, pilot_freeze_path=copied_freeze, pricing_snapshot=copied_pricing,
+        budget_authorization=paths["authorization"], budget_ledger=paths["ledger"],
+        budget_allocation=paths["allocation"], authorized_total_cny=Decimal("315.832320"),
+    )
+    assert payload["execution_ceiling_cny"] == "274.636800"
+    assert all(path.exists() for path in paths.values())
+    with pytest.raises(ValueError, match="already exists"):
+        goal3_swe.create_paid_artifacts(
+            root=tmp_path, pilot_freeze_path=copied_freeze, pricing_snapshot=copied_pricing,
+            budget_authorization=paths["authorization"], budget_ledger=paths["ledger"],
+            budget_allocation=paths["allocation"], authorized_total_cny=Decimal("315.832320"),
+        )
+
+
+def test_paid_preflight_does_not_need_or_call_provider(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "goal3-swe"
+    run_root.mkdir()
+    freeze_path, dataset, _frozen = _frozen_pilot(tmp_path)
+    pricing_path = tmp_path / "goal3-inputs" / "pricing.json"
+    copied_freeze = run_root / "pilot-freeze.json"
+    copied_pricing = run_root / "pricing-snapshot.json"
+    copied_freeze.write_bytes(freeze_path.read_bytes())
+    copied_pricing.write_bytes(pricing_path.read_bytes())
+    monkeypatch.setattr(goal3_swe, "current_git_commit", lambda root: "c" * 40)
+    result = goal3_swe.paid_preflight(
+        root=tmp_path, dataset_jsonl=dataset, pilot_freeze_path=copied_freeze,
+        pricing_snapshot=copied_pricing, budget_authorization=run_root / "budget-authorization.json",
+        budget_ledger=run_root / "budget-ledger.json", budget_allocation=run_root / "budget-allocation.json",
+    )
+    assert result["valid"] is True
+    assert result["paid_execution_enabled"] is False
+    assert result["authorization_exists"] is False
+
+
+def test_execute_requires_confirmation_before_any_preflight_or_provider_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    called = []
+    monkeypatch.setattr(goal3_swe, "require_native_preflight", lambda **kwargs: called.append(kwargs))
+    with pytest.raises(ValueError, match="confirm-paid-run"):
+        goal3_swe.execute_pilot(
+            root=tmp_path, dataset_jsonl=tmp_path / "goal3-inputs" / "pilot-dataset.jsonl",
+            runs_dir=tmp_path / "goal3-swe", run_id="new",
+            pilot_freeze_path=tmp_path / "goal3-swe" / "pilot-freeze.json",
+            pricing_snapshot=tmp_path / "goal3-swe" / "pricing-snapshot.json",
+            budget_authorization=tmp_path / "goal3-swe" / "budget-authorization.json",
+            budget_ledger=tmp_path / "goal3-swe" / "budget-ledger.json",
+            budget_allocation=tmp_path / "goal3-swe" / "budget-allocation.json",
+            confirmed=False,
+        )
+    assert called == []
+
+
+def test_paid_contract_rejects_goal2_dataset_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "goal3-swe"
+    run_root.mkdir()
+    freeze_path, dataset, _frozen = _frozen_pilot(tmp_path)
+    pricing_path = tmp_path / "goal3-inputs" / "pricing.json"
+    copied_freeze = run_root / "pilot-freeze.json"
+    copied_pricing = run_root / "pricing-snapshot.json"
+    copied_freeze.write_bytes(freeze_path.read_bytes())
+    copied_pricing.write_bytes(pricing_path.read_bytes())
+    monkeypatch.setattr(goal3_swe, "current_git_commit", lambda root: "c" * 40)
+    goal2_dataset = tmp_path / "goal2-swe" / dataset.name
+    goal2_dataset.parent.mkdir()
+    goal2_dataset.write_bytes(dataset.read_bytes())
+    with pytest.raises(ValueError, match="Goal 2"):
+        goal3_swe.paid_preflight(
+            root=tmp_path, dataset_jsonl=goal2_dataset, pilot_freeze_path=copied_freeze,
+            pricing_snapshot=copied_pricing, budget_authorization=run_root / "budget-authorization.json",
+            budget_ledger=run_root / "budget-ledger.json", budget_allocation=run_root / "budget-allocation.json",
         )
