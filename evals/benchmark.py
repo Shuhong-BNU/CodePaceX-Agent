@@ -33,6 +33,7 @@ OPTIONAL_STREAMS = {
     "permission-events.jsonl", "compression-events.jsonl", "runtime-events.jsonl",
 }
 ALLOWED_ARTIFACTS = {"patch.diff", "test-output.txt", "stdout.txt", "stderr.txt"}
+TASK_ARTIFACT_KINDS = {"stdout", "stderr", "evaluator"}
 SECRET_KEYS = {
     "api_key", "apikey", "x_api_key", "authorization", "bearer", "password",
     "secret", "access_token", "bailian_api_key", "agentrouter_api_key",
@@ -456,6 +457,30 @@ class RunRecorder:
         target = artifact_dir / name
         safe = content if isinstance(content, str) else content.decode(errors="replace")
         self._atomic_write(target, self.redactor.redact(safe).encode())
+        return target
+
+    def write_task_artifact(self, task_id: str, kind: str, content: str | bytes) -> Path:
+        """Store an auditable per-task log without accepting caller-built paths."""
+        if not isinstance(task_id, str) or not task_id:
+            raise ValueError("task artifact requires a non-empty task ID")
+        if kind not in TASK_ARTIFACT_KINDS:
+            raise ValueError("unsupported task artifact kind")
+        task_hash = hashlib.sha256(task_id.encode("utf-8")).hexdigest()
+        name = f"{task_hash}-{kind}.txt"
+        artifact_dir = self.path / "artifacts"
+        artifact_dir.mkdir(exist_ok=True)
+        target = artifact_dir / name
+        safe = content if isinstance(content, str) else content.decode(errors="replace")
+        self._atomic_write(target, self.redactor.redact(safe).encode())
+
+        mapping = self._json_object("task-artifacts.json")
+        entries = mapping.get("artifacts", [])
+        if not isinstance(entries, list):
+            raise ValueError("task artifact mapping is invalid")
+        entry = {"task_id": task_id, "kind": kind, "name": name}
+        if entry not in entries:
+            entries.append(entry)
+            self.write_json("task-artifacts.json", {"artifacts": entries})
         return target
 
     def _sanitize_run_files(self) -> bool:

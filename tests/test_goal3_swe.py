@@ -386,6 +386,67 @@ def test_execute_requires_confirmation_before_any_preflight_or_provider_path(
     assert called == []
 
 
+def test_execute_pilot_preserves_task_logs_and_reaches_official_evaluator(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Regression for dynamic instance IDs rejected by the generic Artifact whitelist."""
+    runs_dir = tmp_path / "goal3-swe"
+    runs_dir.mkdir()
+    freeze_path, dataset, frozen = _frozen_pilot(tmp_path)
+    pricing_path = tmp_path / "goal3-inputs" / "pricing.json"
+    for source, name in ((freeze_path, "pilot-freeze.json"), (pricing_path, "pricing-snapshot.json")):
+        (runs_dir / name).write_bytes(source.read_bytes())
+    rows = [json.loads(line) for line in dataset.read_text(encoding="utf-8").splitlines()]
+    target = frozen["pilots"][0]
+    row = next(item for item in rows if item["instance_id"] == target["instance_id"])
+    row["instance_id"] = "aiogram__aiogram-1594"
+    target["instance_id"] = row["instance_id"]
+    target["execution_payload_sha256"] = goal3_swe.execution_instance_payload_hash(row)
+    target["payload_sha256"] = "a" * 64
+    (runs_dir / "pilot-freeze.json").write_text(json.dumps(frozen), encoding="utf-8")
+    dataset.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    monkeypatch.setattr(goal3_swe, "current_git_commit", lambda _root: "c" * 40)
+    monkeypatch.setenv("BAILIAN_API_KEY", "offline-test-key")
+    monkeypatch.setattr(goal3_swe, "require_native_preflight", lambda **_kwargs: {
+        "native_linux_x86_64": True, "installed_evaluator_commit": goal3_swe.ENVIRONMENT["commit"],
+    })
+    monkeypatch.setattr(goal3_swe, "ensure_new_paid_pilot_run", lambda **_kwargs: None)
+    monkeypatch.setattr(goal3_swe, "_goal3_materialize_instance", lambda *_args: None)
+    monkeypatch.setattr(goal3_swe, "_goal3_extract_patch", lambda _workspace: "diff --git a/a b/a\n")
+    monkeypatch.setattr(goal3_swe, "_child_environment", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(goal3_swe, "_runtime_secrets", lambda _pilot: [])
+    monkeypatch.setattr(goal3_swe, "provider_request_budget_environment", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(goal3_swe, "trace_usage", lambda _trace: (1, 0, 0))
+    monkeypatch.setattr(goal3_swe, "_ingest_trace", lambda *_args: (1, 0, 0))
+    monkeypatch.setattr(goal3_swe.subprocess, "run", lambda *_args, **_kwargs: _result(stdout="offline trace"))
+    evaluator_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(goal3_swe, "run_official_evaluator", lambda **kwargs: evaluator_calls.append(kwargs) or _result(stdout="official"))
+    monkeypatch.setattr(goal3_swe, "collect_official_outcomes", lambda _root, ids: {item: True for item in ids})
+
+    class FakeGate:
+        def trial_accounting(self, trial_id: str) -> dict[str, object]:
+            return {
+                "trial_id": trial_id, "budget_blocked": False, "budget_block_reasons": [],
+                "active_reservation": None, "request_count": 1, "actual_cny": "0.000000",
+            }
+
+    monkeypatch.setattr(goal3_swe, "PaidRunGate", lambda **_kwargs: FakeGate())
+    paths = {name: runs_dir / f"budget-{name}.json" for name in ("authorization", "ledger", "allocation")}
+    recorder = goal3_swe.execute_pilot(
+        root=tmp_path, dataset_jsonl=dataset, runs_dir=runs_dir, run_id="offline-artifact-chain",
+        pilot_freeze_path=runs_dir / "pilot-freeze.json", pricing_snapshot=runs_dir / "pricing-snapshot.json",
+        budget_authorization=paths["authorization"], budget_ledger=paths["ledger"],
+        budget_allocation=paths["allocation"], confirmed=True,
+    )
+
+    task_artifacts = json.loads((recorder.path / "task-artifacts.json").read_text(encoding="utf-8"))["artifacts"]
+    assert len(evaluator_calls) == 3
+    assert json.loads((recorder.path / "result.json").read_text(encoding="utf-8"))["official_evaluator_completed"] is True
+    assert {entry["kind"] for entry in task_artifacts} == {"stdout", "stderr", "evaluator"}
+    assert {entry["task_id"] for entry in task_artifacts} == {row["instance_id"] for row in rows}
+    assert all((recorder.path / "artifacts" / entry["name"]).is_file() for entry in task_artifacts)
+
+
 def test_paid_contract_rejects_goal2_dataset_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:

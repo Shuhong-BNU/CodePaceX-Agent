@@ -593,11 +593,11 @@ def execute_pilot(
                         cwd=workspace, env=child_environment, text=True, capture_output=True,
                         timeout=1800, check=False,
                     )
-                    recorder.write_artifact(f"{instance_id}.stdout.txt", process.stdout or "")
-                    recorder.write_artifact(f"{instance_id}.stderr.txt", process.stderr or "")
+                    recorder.write_task_artifact(instance_id, "stdout", process.stdout or "")
+                    recorder.write_task_artifact(instance_id, "stderr", process.stderr or "")
                 except subprocess.TimeoutExpired as exc:
-                    recorder.write_artifact(f"{instance_id}.stdout.txt", exc.stdout or "")
-                    recorder.write_artifact(f"{instance_id}.stderr.txt", exc.stderr or "")
+                    recorder.write_task_artifact(instance_id, "stdout", exc.stdout or "")
+                    recorder.write_task_artifact(instance_id, "stderr", exc.stderr or "")
                     accounting = gate.trial_accounting(trial_id)
                     _goal3_terminal(recorder, instance_id=instance_id, status="timeout", started=started,
                                     accounting=accounting, budget_reconciliation_required=True)
@@ -649,7 +649,9 @@ def execute_pilot(
                         namespace=ENVIRONMENT["evaluator_namespace"], report_dir=report_dir,
                         cwd=recorder.path, evaluator_architecture="native",
                     )
-                    recorder.write_artifact(f"{instance_id}.evaluator.txt", (evaluator.stdout or "") + "\n" + (evaluator.stderr or ""))
+                    recorder.write_task_artifact(
+                        instance_id, "evaluator", (evaluator.stdout or "") + "\n" + (evaluator.stderr or ""),
+                    )
                     if evaluator.returncode != 0:
                         raise ValueError(f"official evaluator failed with exit status {evaluator.returncode}")
                     resolved = collect_official_outcomes(report_dir, {instance_id})[instance_id]
