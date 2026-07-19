@@ -37,7 +37,9 @@ jobs:
     timeout-minutes: 240
     env:
       EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be
-      FREEZE_ROOT: ${{ runner.temp }}/goal3-freeze/goal3-swe
+      # The downloaded artifact contains the frozen files at its root. `github`
+      # is valid at job scope, unlike the unavailable `runner` context.
+      FREEZE_ROOT: ${{ github.workspace }}/.goal3-freeze
     steps:
       - uses: actions/checkout@v4
 
@@ -52,7 +54,7 @@ jobs:
           name: ${{ inputs.freeze_artifact_name }}
           run-id: ${{ inputs.freeze_run_id }}
           github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/goal3-freeze
+          path: ${{ github.workspace }}/.goal3-freeze
 
       - name: Validate freeze bundle shape
         run: |
@@ -143,5 +145,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: goal3-swe-paid-${{ github.run_id }}
-          path: ${{ runner.temp }}/goal3-freeze/goal3-swe
+          path: ${{ github.workspace }}/.goal3-freeze
           if-no-files-found: warn
