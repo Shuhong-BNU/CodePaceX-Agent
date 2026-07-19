@@ -169,10 +169,12 @@ def test_goal3_budget_paths_are_named_but_not_created() -> None:
 
 def test_paid_workflow_uses_one_goal3_only_artifact_root() -> None:
     workflow = Path(".github/workflows/goal3-swe-paid-pilot.yml").read_text(encoding="utf-8")
-    root = "${{ github.workspace }}/.runs/goal3-swe"
-    assert f"FREEZE_ROOT: {root}" in workflow
+    root = "${{ runner.temp }}/goal3-swe-paid/${{ github.run_id }}"
+    assert 'FREEZE_ROOT="$RUNNER_TEMP/goal3-swe-paid/$GITHUB_RUN_ID"' in workflow
     assert workflow.count(f"path: {root}") == 2
-    assert ".goal3-freeze" not in workflow
+    assert "${{ github.workspace }}/.runs/goal3-swe" not in workflow
+    assert 'test -z "$(git status --porcelain)"' in workflow
+    assert "if: ${{ inputs.execute_paid }}" in workflow
 
 
 def test_existing_goal3_run_is_not_overwritten(tmp_path: Path) -> None:

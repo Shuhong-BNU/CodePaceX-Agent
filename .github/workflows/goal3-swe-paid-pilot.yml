@@ -32,14 +32,11 @@ permissions:
 
 jobs:
   paid-pilot:
-    if: ${{ inputs.execute_paid && inputs.freeze_run_id != '' && inputs.authorized_total_cny != '' }}
+    if: ${{ inputs.freeze_run_id != '' && inputs.authorized_total_cny != '' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 240
     env:
       EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be
-      # Keep the immutable freeze and per-run accounting in one Goal 3-only
-      # root, which the paid-path isolation guard verifies before execution.
-      FREEZE_ROOT: ${{ github.workspace }}/.runs/goal3-swe
     steps:
       - uses: actions/checkout@v4
 
@@ -48,13 +45,21 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      - name: Prepare isolated Goal 3 paid evidence root
+        run: |
+          set -euo pipefail
+          FREEZE_ROOT="$RUNNER_TEMP/goal3-swe-paid/$GITHUB_RUN_ID"
+          test ! -e "$FREEZE_ROOT"
+          mkdir -p "$FREEZE_ROOT"
+          printf 'FREEZE_ROOT=%s\n' "$FREEZE_ROOT" >> "$GITHUB_ENV"
+
       - name: Download immutable Goal 3 freeze bundle
         uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.freeze_artifact_name }}
           run-id: ${{ inputs.freeze_run_id }}
           github-token: ${{ github.token }}
-          path: ${{ github.workspace }}/.runs/goal3-swe
+          path: ${{ runner.temp }}/goal3-swe-paid/${{ github.run_id }}
 
       - name: Validate freeze bundle shape
         run: |
@@ -110,6 +115,8 @@ jobs:
       - name: Recheck native preflight and paid contract
         run: |
           set -euo pipefail
+          git diff --check
+          test -z "$(git status --porcelain)"
           python -m evals.goal3_swe preflight
           python -m evals.goal3_swe paid-preflight \
             --dataset-jsonl "$FREEZE_ROOT/pilot-dataset.jsonl" \
@@ -120,6 +127,7 @@ jobs:
             --budget-allocation "$FREEZE_ROOT/budget-allocation.json"
 
       - name: Execute serial Goal 3 Pilots
+        if: ${{ inputs.execute_paid }}
         env:
           BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
         run: |
@@ -145,5 +153,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: goal3-swe-paid-${{ github.run_id }}
-          path: ${{ github.workspace }}/.runs/goal3-swe
+          path: ${{ runner.temp }}/goal3-swe-paid/${{ github.run_id }}
           if-no-files-found: warn
