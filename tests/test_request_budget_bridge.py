@@ -79,6 +79,32 @@ async def test_compat_client_reserves_before_provider_and_settles_on_usage(monke
 
 
 @pytest.mark.asyncio
+async def test_compat_client_sends_explicit_goal3_completion_contract() -> None:
+    client = OpenAICompatClient(ProviderConfig(
+        "bailian-qwen37-max", "openai-compat", "https://example.invalid",
+        "qwen3.7-max-2026-06-08", api_key="not-a-real-key",
+        max_completion_tokens=8192, enable_thinking=True, thinking_budget=6144,
+    ), max_retries=0)
+    response = _Response([SimpleNamespace(choices=[], usage=_Usage())])
+
+    async def create(**kwargs):
+        assert kwargs["max_completion_tokens"] == 8192
+        assert kwargs["extra_body"] == {
+            "enable_thinking": True, "thinking_budget": 6144,
+        }
+        assert "max_tokens" not in kwargs
+        return response
+
+    client._client = SimpleNamespace(chat=SimpleNamespace(
+        completions=SimpleNamespace(create=create),
+    ))
+    conversation = ConversationManager()
+    conversation.add_user_message("hello")
+    events = [event async for event in client.stream(conversation)]
+    assert any(isinstance(event, StreamEnd) for event in events)
+
+
+@pytest.mark.asyncio
 async def test_compat_client_keeps_reservation_when_provider_returns_no_usage(monkeypatch) -> None:
     budget = _FakeBudget()
     client = _client()

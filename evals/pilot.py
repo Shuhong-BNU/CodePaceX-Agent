@@ -55,6 +55,9 @@ class ModelParameters(BaseModel):
     temperature: float | None = None
     top_p: float | None = None
     max_output_tokens: int | None = Field(default=None, gt=0)
+    max_completion_tokens: int | None = Field(default=None, gt=0)
+    enable_thinking: bool | None = None
+    thinking_budget: int | None = Field(default=None, gt=0)
 
 
 class PilotConfig(BaseModel):
@@ -88,8 +91,20 @@ class PilotConfig(BaseModel):
             raise ValueError("frozen Pilot configuration requires fallback=false and retry_budget=0")
         if self.model_parameters.temperature is not None or self.model_parameters.top_p is not None:
             raise ValueError("temperature and top_p remain unset until a real Pilot is frozen")
-        if self.model_parameters.max_output_tokens != 8192:
-            raise ValueError("Pilot v2 freezes max_output_tokens at 8192")
+        legacy_parameters = {
+            "temperature": None, "top_p": None, "max_output_tokens": 8192,
+            "max_completion_tokens": None, "enable_thinking": None,
+            "thinking_budget": None,
+        }
+        goal3_parameters = {
+            "temperature": None, "top_p": None, "max_output_tokens": None,
+            "max_completion_tokens": 8192, "enable_thinking": True,
+            "thinking_budget": 6144,
+        }
+        if self.model_parameters.model_dump(mode="json") not in (
+            legacy_parameters, goal3_parameters,
+        ):
+            raise ValueError("Pilot v2 requires a frozen output-token contract")
         if self.feature_flags:
             raise ValueError(
                 "Pilot v1 does not map feature_flags to runtime behavior; live runs require {}"
@@ -231,8 +246,14 @@ def _provider_payload(config: PilotConfig) -> dict[str, Any]:
         "name": config.provider, "protocol": config.protocol, "base_url": config.base_url,
         "model": config.model_id, "api_key_env": config.api_key_env,
     }
-    if config.model_parameters.max_output_tokens is not None:
+    if config.model_parameters.max_completion_tokens is not None:
+        provider["max_completion_tokens"] = config.model_parameters.max_completion_tokens
+    elif config.model_parameters.max_output_tokens is not None:
         provider["max_output_tokens"] = config.model_parameters.max_output_tokens
+    if config.model_parameters.enable_thinking is not None:
+        provider["enable_thinking"] = config.model_parameters.enable_thinking
+    if config.model_parameters.thinking_budget is not None:
+        provider["thinking_budget"] = config.model_parameters.thinking_budget
     return {"providers": [provider], "fallback": []}
 
 

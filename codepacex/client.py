@@ -552,6 +552,9 @@ class OpenAICompatClient(LLMClient):
         self.protocol = config.protocol
         self.model = config.model
         self.max_output_tokens = config.get_max_output_tokens()
+        self.max_completion_tokens = config.max_completion_tokens
+        self.enable_thinking = config.enable_thinking
+        self.thinking_budget = config.thinking_budget
         api_key = config.resolve_api_key()
         if not api_key:
             raise AuthenticationError(
@@ -566,7 +569,10 @@ class OpenAICompatClient(LLMClient):
         self._client = AsyncOpenAI(**kwargs)
 
     def set_max_output_tokens(self, tokens: int) -> None:
-        self.max_output_tokens = tokens
+        if self.max_completion_tokens > 0:
+            self.max_completion_tokens = tokens
+        else:
+            self.max_output_tokens = tokens
 
     @staticmethod
     def _convert_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -612,10 +618,18 @@ class OpenAICompatClient(LLMClient):
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
-            "max_tokens": self.max_output_tokens,
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        if self.max_completion_tokens > 0:
+            kwargs["max_completion_tokens"] = self.max_completion_tokens
+        else:
+            kwargs["max_tokens"] = self.max_output_tokens
+        if self.enable_thinking is not None:
+            extra_body = {"enable_thinking": self.enable_thinking}
+            if self.thinking_budget > 0:
+                extra_body["thinking_budget"] = self.thinking_budget
+            kwargs["extra_body"] = extra_body
         if tools:
             kwargs["tools"] = self._convert_tools(tools)
 

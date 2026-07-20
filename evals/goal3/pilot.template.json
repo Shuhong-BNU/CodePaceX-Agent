@@ -6,8 +6,11 @@
   "instance_ids": [],
   "model_id": null,
   "model_parameters": {
+    "enable_thinking": null,
+    "max_completion_tokens": null,
     "max_output_tokens": null,
     "temperature": null,
+    "thinking_budget": null,
     "top_p": null
   },
   "pricing_snapshot": null,

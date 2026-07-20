@@ -86,6 +86,7 @@ class Settlement(BaseModel):
     requests: int | None = Field(default=None, ge=0)
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
+    reasoning_tokens: int | None = Field(default=None, ge=0)
     actual_cny: Decimal = Field(ge=0)
     status: Literal["settled", "cancelled", "conservative_settled"]
     settlement_method: Literal[
@@ -127,6 +128,7 @@ class RequestCharge(BaseModel):
     request_index: int = Field(gt=0)
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
+    reasoning_tokens: int | None = Field(default=None, ge=0)
     actual_cny: Decimal = Field(ge=0)
     recorded_at: str
 
@@ -141,6 +143,26 @@ class BudgetBlock(BaseModel):
     category: BudgetCategory | None = None
     required_cny: Decimal = Field(gt=0)
     reason: Literal["stage_limit", "category_limit", "safety_reserve", "unknown_category"]
+    recorded_at: str
+
+
+class ProviderUsageContractViolation(BaseModel):
+    """A settled request exceeded a frozen usage ceiling."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reservation_id: str
+    trial_id: str
+    stage: BudgetStage
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    reasoning_tokens: int | None = Field(default=None, ge=0)
+    maximum_input_tokens: int = Field(gt=0)
+    maximum_output_tokens: int = Field(gt=0)
+    maximum_reasoning_tokens: int | None = Field(default=None, gt=0)
+    provider_usage: dict[str, Any]
+    violating_metrics: list[Literal["prompt_tokens", "completion_tokens", "reasoning_tokens"]]
+    reason: Literal["provider_usage_contract_violation"] = "provider_usage_contract_violation"
     recorded_at: str
 
 
@@ -167,6 +189,7 @@ class BudgetLedger(BaseModel):
     request_charges: list[RequestCharge] = Field(default_factory=list)
     settlements: list[Settlement] = Field(default_factory=list)
     budget_blocks: list[BudgetBlock] = Field(default_factory=list)
+    usage_contract_violations: list[ProviderUsageContractViolation] = Field(default_factory=list)
     authorization_rebinds: list[AuthorizationRebind] = Field(default_factory=list)
     updated_at: str
 
@@ -232,6 +255,9 @@ def ledger_fingerprint(ledger: BudgetLedger) -> str:
         "request_charges": [item.model_dump(mode="json") for item in ledger.request_charges],
         "settlements": [item.model_dump(mode="json") for item in ledger.settlements],
         "budget_blocks": [item.model_dump(mode="json") for item in ledger.budget_blocks],
+        "usage_contract_violations": [
+            item.model_dump(mode="json") for item in ledger.usage_contract_violations
+        ],
         "authorization_rebinds": [
             item.model_dump(mode="json") for item in ledger.authorization_rebinds
         ],
@@ -679,6 +705,7 @@ class PaidRunGate:
             request_charges=ledger.request_charges[:self.allocation.baseline_request_charge_count],
             settlements=ledger.settlements[:self.allocation.baseline_settlement_count],
             budget_blocks=ledger.budget_blocks[:self.allocation.baseline_budget_block_count],
+            usage_contract_violations=[],
             authorization_rebinds=ledger.authorization_rebinds[:self.allocation.baseline_rebind_count],
             updated_at=ledger.updated_at,
         )
@@ -691,21 +718,25 @@ class PaidRunGate:
 
     def settle(
         self, reservation: Reservation, *, request_usages: list[tuple[int, int]],
+        reasoning_tokens: int | None = None,
     ) -> Settlement:
         if len(request_usages) != 1:
             raise ValueError("each paid reservation must settle exactly one Provider request")
         with self.locked():
-            return self._settle_request(reservation, request_usages[0])
+            return self._settle_request(
+                reservation, request_usages[0], reasoning_tokens=reasoning_tokens,
+            )
 
     def _settle_request(
-        self, reservation: Reservation, request_usage: tuple[int, int],
+        self, reservation: Reservation, request_usage: tuple[int, int], *,
+        reasoning_tokens: int | None,
     ) -> Settlement:
         ledger = self._load_ledger()
         active = ledger.active_reservation
         if active is None or active.reservation_id != reservation.reservation_id:
             raise ValueError("paid trial reservation is not active")
         input_tokens, output_tokens = request_usage
-        if input_tokens < 0 or output_tokens < 0:
+        if input_tokens < 0 or output_tokens < 0 or reasoning_tokens is not None and reasoning_tokens < 0:
             raise ValueError("provider request token usage cannot be negative")
         request_index = 1 + sum(
             item.trial_id == active.trial_id for item in ledger.request_charges
@@ -719,19 +750,17 @@ class PaidRunGate:
         charge = RequestCharge(
             reservation_id=active.reservation_id, trial_id=active.trial_id,
             request_index=request_index, input_tokens=input_tokens,
-            output_tokens=output_tokens,
+            output_tokens=output_tokens, reasoning_tokens=reasoning_tokens,
             actual_cny=actual_cost(
                 self.pricing, input_tokens=input_tokens, output_tokens=output_tokens,
             ), recorded_at=_utc_now(),
         )
         cost = charge.actual_cny
-        if cost > active.reserved_cny:
-            raise ValueError("observed token cost exceeded the reserved ceiling")
         settlement = Settlement(
             reservation_id=active.reservation_id, trial_id=active.trial_id,
             stage=active.stage,
             requests=1, input_tokens=input_tokens,
-            output_tokens=output_tokens, actual_cny=cost,
+            output_tokens=output_tokens, reasoning_tokens=reasoning_tokens, actual_cny=cost,
             status="settled", settlement_method="provider_usage",
             settled_at=_utc_now(),
         )
@@ -741,6 +770,40 @@ class PaidRunGate:
         ledger.active_reservation = None
         self._write_ledger(ledger)
         return settlement
+
+    def record_provider_usage_contract_violation(
+        self, reservation: Reservation, *, input_tokens: int, output_tokens: int,
+        reasoning_tokens: int | None, maximum_input_tokens: int,
+        maximum_output_tokens: int, maximum_reasoning_tokens: int | None,
+        provider_usage: Mapping[str, Any],
+    ) -> ProviderUsageContractViolation | None:
+        violating_metrics: list[Literal["prompt_tokens", "completion_tokens", "reasoning_tokens"]] = []
+        if input_tokens > maximum_input_tokens:
+            violating_metrics.append("prompt_tokens")
+        if output_tokens > maximum_output_tokens:
+            violating_metrics.append("completion_tokens")
+        if reasoning_tokens is not None and maximum_reasoning_tokens is not None and reasoning_tokens > maximum_reasoning_tokens:
+            violating_metrics.append("reasoning_tokens")
+        if not violating_metrics:
+            return None
+        with self.locked():
+            ledger = self._load_ledger()
+            if not any(item.reservation_id == reservation.reservation_id for item in ledger.settlements):
+                raise ValueError("usage contract violation requires a settled Provider request")
+            if any(item.reservation_id == reservation.reservation_id for item in ledger.usage_contract_violations):
+                raise ValueError("Provider usage contract violation is already recorded")
+            violation = ProviderUsageContractViolation(
+                reservation_id=reservation.reservation_id, trial_id=reservation.trial_id,
+                stage=reservation.stage, input_tokens=input_tokens, output_tokens=output_tokens,
+                reasoning_tokens=reasoning_tokens, maximum_input_tokens=maximum_input_tokens,
+                maximum_output_tokens=maximum_output_tokens,
+                maximum_reasoning_tokens=maximum_reasoning_tokens,
+                provider_usage=dict(provider_usage),
+                violating_metrics=violating_metrics, recorded_at=_utc_now(),
+            )
+            ledger.usage_contract_violations.append(violation)
+            self._write_ledger(ledger)
+            return violation
 
     def cancel(
         self, reservation: Reservation, *,
@@ -814,6 +877,9 @@ class PaidRunGate:
             charges = [item for item in ledger.request_charges if item.trial_id == trial_id]
             settlements = [item for item in ledger.settlements if item.trial_id == trial_id]
             blocks = [item for item in ledger.budget_blocks if item.trial_id == trial_id]
+            violations = [
+                item for item in ledger.usage_contract_violations if item.trial_id == trial_id
+            ]
             return {
                 "trial_id": trial_id,
                 "request_count": len(charges),
@@ -826,6 +892,9 @@ class PaidRunGate:
                 "reservation_ids": [item.reservation_id for item in charges],
                 "budget_blocked": bool(blocks),
                 "budget_block_reasons": [item.reason for item in blocks],
+                "provider_usage_contract_violation": (
+                    violations[-1].model_dump(mode="json") if violations else None
+                ),
                 "active_reservation": (
                     ledger.active_reservation.model_dump(mode="json")
                     if ledger.active_reservation is not None
@@ -870,6 +939,7 @@ _REQUEST_BUDGET_KEYS = (
     "CODEPACEX_BUDGET_TRIAL_ID",
     "CODEPACEX_BUDGET_MAX_INPUT_TOKENS",
     "CODEPACEX_BUDGET_MAX_OUTPUT_TOKENS",
+    "CODEPACEX_BUDGET_MAX_REASONING_TOKENS",
 )
 
 
@@ -877,6 +947,7 @@ def provider_request_budget_environment(
     gate: PaidRunGate, *, trial_id: str,
     maximum_input_tokens_per_request: int,
     maximum_output_tokens_per_request: int,
+    maximum_reasoning_tokens_per_request: int | None = None,
 ) -> dict[str, str]:
     """Return the explicit, non-secret environment contract for one Trial.
 
@@ -889,6 +960,8 @@ def provider_request_budget_environment(
         raise ValueError("Provider request budget requires a frozen pricing path")
     if min(maximum_input_tokens_per_request, maximum_output_tokens_per_request) <= 0:
         raise ValueError("positive per-request token ceilings are required")
+    if maximum_reasoning_tokens_per_request is not None and maximum_reasoning_tokens_per_request <= 0:
+        raise ValueError("positive reasoning token ceilings are required")
     return {
         _REQUEST_BUDGET_ENV: "1",
         "CODEPACEX_BUDGET_ROOT": str(gate.root),
@@ -902,6 +975,10 @@ def provider_request_budget_environment(
         "CODEPACEX_BUDGET_TRIAL_ID": trial_id,
         "CODEPACEX_BUDGET_MAX_INPUT_TOKENS": str(maximum_input_tokens_per_request),
         "CODEPACEX_BUDGET_MAX_OUTPUT_TOKENS": str(maximum_output_tokens_per_request),
+        "CODEPACEX_BUDGET_MAX_REASONING_TOKENS": (
+            str(maximum_reasoning_tokens_per_request)
+            if maximum_reasoning_tokens_per_request is not None else ""
+        ),
     }
 
 
@@ -910,12 +987,14 @@ def provider_request_budget_scope(
     gate: PaidRunGate, *, trial_id: str,
     maximum_input_tokens_per_request: int,
     maximum_output_tokens_per_request: int,
+    maximum_reasoning_tokens_per_request: int | None = None,
 ) -> Iterator[None]:
     """Temporarily bind an in-process experiment request to its Trial."""
     updates = provider_request_budget_environment(
         gate, trial_id=trial_id,
         maximum_input_tokens_per_request=maximum_input_tokens_per_request,
         maximum_output_tokens_per_request=maximum_output_tokens_per_request,
+        maximum_reasoning_tokens_per_request=maximum_reasoning_tokens_per_request,
     )
     previous = {key: os.environ.get(key) for key in _REQUEST_BUDGET_KEYS}
     os.environ.update(updates)
@@ -934,11 +1013,13 @@ class ProviderRequestBudget:
 
     def __init__(self, gate: PaidRunGate, *, trial_id: str,
                  maximum_input_tokens_per_request: int,
-                 maximum_output_tokens_per_request: int) -> None:
+                 maximum_output_tokens_per_request: int,
+                 maximum_reasoning_tokens_per_request: int | None = None) -> None:
         self.gate = gate
         self.trial_id = trial_id
         self.maximum_input_tokens_per_request = maximum_input_tokens_per_request
         self.maximum_output_tokens_per_request = maximum_output_tokens_per_request
+        self.maximum_reasoning_tokens_per_request = maximum_reasoning_tokens_per_request
 
     @classmethod
     def from_environment(cls) -> ProviderRequestBudget | None:
@@ -952,7 +1033,9 @@ class ProviderRequestBudget:
             for key in _REQUEST_BUDGET_KEYS if key != _REQUEST_BUDGET_ENV
         }
         missing = [key for key, value in required.items()
-                   if not value and key != "CODEPACEX_BUDGET_ALLOCATION"]
+                   if not value and key not in {
+                       "CODEPACEX_BUDGET_ALLOCATION", "CODEPACEX_BUDGET_MAX_REASONING_TOKENS",
+                   }]
         if missing:
             raise ValueError("incomplete experimental Provider request budget contract")
         allocation = required["CODEPACEX_BUDGET_ALLOCATION"] or None
@@ -971,6 +1054,10 @@ class ProviderRequestBudget:
             ),
             maximum_output_tokens_per_request=int(
                 required["CODEPACEX_BUDGET_MAX_OUTPUT_TOKENS"]
+            ),
+            maximum_reasoning_tokens_per_request=(
+                int(required["CODEPACEX_BUDGET_MAX_REASONING_TOKENS"])
+                if required["CODEPACEX_BUDGET_MAX_REASONING_TOKENS"] else None
             ),
         )
 
@@ -993,10 +1080,36 @@ class ProviderRequestBudget:
             "request_output_tokens": 0,
             "provider_usage": provider_usage,
         })
-        return self.gate.settle(
-            reservation, request_usages=[(input_tokens, output_tokens)],
+        details = provider_usage.get("completion_tokens_details")
+        reasoning_tokens = (
+            int(details["reasoning_tokens"])
+            if isinstance(details, Mapping) and details.get("reasoning_tokens") is not None
+            else None
         )
+        settlement = self.gate.settle(
+            reservation, request_usages=[(input_tokens, output_tokens)],
+            reasoning_tokens=reasoning_tokens,
+        )
+        violation = self.gate.record_provider_usage_contract_violation(
+            reservation, input_tokens=input_tokens, output_tokens=output_tokens,
+            reasoning_tokens=reasoning_tokens,
+            maximum_input_tokens=self.maximum_input_tokens_per_request,
+            maximum_output_tokens=self.maximum_output_tokens_per_request,
+            maximum_reasoning_tokens=self.maximum_reasoning_tokens_per_request,
+            provider_usage=provider_usage,
+        )
+        if violation is not None:
+            raise ProviderUsageContractViolationError(violation)
+        return settlement
 
 
 class ProviderUsageUnknown(RuntimeError):
     """A request may have been billed but has no durable Provider Usage."""
+
+
+class ProviderUsageContractViolationError(RuntimeError):
+    """Provider Usage was settled but exceeded the frozen request contract."""
+
+    def __init__(self, violation: ProviderUsageContractViolation) -> None:
+        self.violation = violation
+        super().__init__("provider_usage_contract_violation")

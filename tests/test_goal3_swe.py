@@ -218,11 +218,12 @@ def test_pilot_freeze_binds_three_fixed_official_instances_and_price_hash(tmp_pa
     payload = goal3_swe.freeze_pilot_config(
         dataset_jsonl=dataset, output=output, dataset_revision="official-revision",
         provider="verified-provider", model_id="verified-model",
-        model_parameters={"temperature": None, "top_p": None, "max_output_tokens": 8192},
+        model_parameters=goal3_swe.GOAL3_MODEL_PARAMETERS,
         pricing_snapshot_hash="a" * 64,
     )
     assert payload["status"] == "frozen"
     assert payload["experiment_kind"] == "goal3-swe-bench-live-pilot"
+    assert payload["model_parameters"] == goal3_swe.GOAL3_MODEL_PARAMETERS
     assert payload["instance_ids"] == ["large", "medium", "one"]
     assert set(payload["instance_payload_hashes"]) == set(payload["instance_ids"])
     assert json.loads(output.read_text()) == payload
@@ -329,7 +330,7 @@ def _frozen_pilot(tmp_path: Path) -> tuple[Path, Path, dict[str, object]]:
         "fallback_enabled": False, "retry_budget": 0, "serial": True,
         "max_provider_requests_per_instance": 50, "maximum_input_tokens_per_request": 128000,
         "maximum_output_tokens_per_request": 8192,
-        "model_parameters": {"temperature": None, "top_p": None, "max_output_tokens": 8192},
+        "model_parameters": dict(goal3_swe.GOAL3_MODEL_PARAMETERS),
         "pilots": pilots,
     }
     freeze_path = tmp_path / "pilot-freeze.json"
@@ -436,6 +437,7 @@ def test_paid_preflight_does_not_need_or_call_provider(
     assert result["valid"] is True
     assert result["paid_execution_enabled"] is False
     assert result["authorization_exists"] is False
+    assert result["model_parameters"] == goal3_swe.GOAL3_MODEL_PARAMETERS
 
 
 def test_execute_requires_confirmation_before_any_preflight_or_provider_path(
@@ -531,6 +533,70 @@ def test_execute_pilot_preserves_task_logs_and_reaches_official_evaluator(
     assert {entry["kind"] for entry in task_artifacts} == {"stdout", "stderr", "evaluator"}
     assert {entry["task_id"] for entry in task_artifacts} == {row["instance_id"] for row in rows}
     assert all((recorder.path / "artifacts" / entry["name"]).is_file() for entry in task_artifacts)
+
+
+def test_execute_pilot_stops_after_settled_provider_usage_contract_violation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    runs_dir = tmp_path / "goal3-swe"
+    runs_dir.mkdir()
+    freeze_path, dataset, frozen = _frozen_pilot(tmp_path)
+    pricing_path = tmp_path / "goal3-inputs" / "pricing.json"
+    for source, name in ((freeze_path, "pilot-freeze.json"), (pricing_path, "pricing-snapshot.json")):
+        (runs_dir / name).write_bytes(source.read_bytes())
+    monkeypatch.setattr(goal3_swe, "current_git_commit", lambda _root: "c" * 40)
+    monkeypatch.setenv("BAILIAN_API_KEY", "offline-test-key")
+    monkeypatch.setattr(goal3_swe, "require_native_preflight", lambda **_kwargs: {
+        "native_linux_x86_64": True, "installed_evaluator_commit": goal3_swe.ENVIRONMENT["commit"],
+    })
+    monkeypatch.setattr(goal3_swe, "ensure_new_paid_pilot_run", lambda **_kwargs: None)
+    monkeypatch.setattr(goal3_swe, "_goal3_materialize_instance", lambda *_args: None)
+    monkeypatch.setattr(goal3_swe, "_child_environment", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(goal3_swe, "_runtime_secrets", lambda _pilot: [])
+    monkeypatch.setattr(goal3_swe, "provider_request_budget_environment", lambda *_args, **_kwargs: {})
+    subprocess_calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        goal3_swe.subprocess, "run",
+        lambda *_args, **_kwargs: subprocess_calls.append(_args) or _result(stdout="offline trace"),
+    )
+
+    class FakeGate:
+        def trial_accounting(self, trial_id: str) -> dict[str, object]:
+            return {
+                "trial_id": trial_id, "budget_blocked": False, "budget_block_reasons": [],
+                "active_reservation": None, "request_count": 1, "actual_cny": "0.123456",
+                "provider_usage_contract_violation": {
+                    "trial_id": trial_id,
+                    "reason": "provider_usage_contract_violation",
+                    "violating_metrics": ["completion_tokens"],
+                },
+            }
+
+    monkeypatch.setattr(goal3_swe, "PaidRunGate", lambda **_kwargs: FakeGate())
+    paths = {name: runs_dir / f"budget-{name}.json" for name in ("authorization", "ledger", "allocation")}
+    recorder = goal3_swe.execute_pilot(
+        root=tmp_path, dataset_jsonl=dataset, runs_dir=runs_dir, run_id="offline-contract-violation",
+        pilot_freeze_path=runs_dir / "pilot-freeze.json", pricing_snapshot=runs_dir / "pricing-snapshot.json",
+        budget_authorization=paths["authorization"], budget_ledger=paths["ledger"],
+        budget_allocation=paths["allocation"], confirmed=True,
+    )
+    terminal_events = [
+        json.loads(line) for line in (recorder.path / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["type"] == "trial_completed"
+    ]
+    result = json.loads((recorder.path / "result.json").read_text(encoding="utf-8"))
+    provider_processes = [
+        args for args in subprocess_calls
+        if args and isinstance(args[0], list) and "codepacex" in args[0]
+    ]
+    assert len(provider_processes) == len(terminal_events) == 1
+    assert terminal_events[0]["status"] == "infrastructure_error"
+    assert terminal_events[0]["reason"] == "provider_usage_contract_violation"
+    assert terminal_events[0]["trial_id"] == goal3_swe._goal3_trial_id(
+        run_id="offline-contract-violation", instance_id=terminal_events[0]["task_id"],
+    )
+    assert result["status"] == "infrastructure_error"
+    assert result["official_evaluator_completed"] is False
 
 
 def test_paid_contract_rejects_goal2_dataset_path(

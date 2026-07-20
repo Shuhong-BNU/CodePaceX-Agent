@@ -63,6 +63,16 @@ QEMU_MARKERS = ("qemu", "tcg", "virtual cpu")
 MAXIMUM_REQUESTS_PER_INSTANCE = 50
 MAXIMUM_INPUT_TOKENS_PER_REQUEST = 128_000
 MAXIMUM_OUTPUT_TOKENS_PER_REQUEST = 8192
+GOAL3_ENABLE_THINKING = True
+GOAL3_THINKING_BUDGET = 6144
+GOAL3_MODEL_PARAMETERS = {
+    "temperature": None,
+    "top_p": None,
+    "max_output_tokens": None,
+    "max_completion_tokens": MAXIMUM_OUTPUT_TOKENS_PER_REQUEST,
+    "enable_thinking": GOAL3_ENABLE_THINKING,
+    "thinking_budget": GOAL3_THINKING_BUDGET,
+}
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 EXECUTION_INSTANCE_FIELDS = (
     "instance_id", "repo", "base_commit", "problem_statement", "platform",
@@ -118,7 +128,10 @@ def load_goal3_pilot_template(path: Path = DEFAULT_PILOT_TEMPLATE) -> dict[str, 
         raise ValueError("Goal 3 Pilot template must reserve exactly three later-frozen instances")
     if payload["fallback_enabled"] is not False or payload["retry_budget"] != 0 or payload["serial"] is not True:
         raise ValueError("Goal 3 Pilot template requires no fallback, no retry, and serial execution")
-    if payload["model_parameters"] != {"temperature": None, "top_p": None, "max_output_tokens": None}:
+    if payload["model_parameters"] != {
+        "temperature": None, "top_p": None, "max_output_tokens": None,
+        "max_completion_tokens": None, "enable_thinking": None, "thinking_budget": None,
+    }:
         raise ValueError("Goal 3 Pilot template has unrecognized model parameters")
     return payload
 
@@ -148,7 +161,7 @@ def freeze_pilot_config(
         raise ValueError("Goal 3 Pilot freeze requires explicit dataset, Provider, and model identities")
     if not re.fullmatch(r"[0-9a-f]{64}", pricing_snapshot_hash):
         raise ValueError("Goal 3 Pilot freeze requires an explicit pricing snapshot hash")
-    if set(model_parameters) != {"temperature", "top_p", "max_output_tokens"}:
+    if model_parameters != GOAL3_MODEL_PARAMETERS:
         raise ValueError("Goal 3 Pilot freeze has unrecognized model parameters")
     selected = select_pilot_instances(load_jsonl(dataset_jsonl))
     instance_ids = [str(item["instance_id"]) for item in selected]
@@ -257,7 +270,7 @@ def freeze_paid_pilot_bundle(
         "max_provider_requests_per_instance": MAXIMUM_REQUESTS_PER_INSTANCE,
         "maximum_input_tokens_per_request": MAXIMUM_INPUT_TOKENS_PER_REQUEST,
         "maximum_output_tokens_per_request": MAXIMUM_OUTPUT_TOKENS_PER_REQUEST,
-        "model_parameters": {"temperature": None, "top_p": None, "max_output_tokens": 8192},
+        "model_parameters": GOAL3_MODEL_PARAMETERS,
         "pilots": pilots,
     }
     paths = {
@@ -321,7 +334,7 @@ def load_frozen_pilot(
     profile = ExperimentProfile.model_validate(payload["experiment_profile"])
     if profile.canonical_payload() != payload["experiment_profile"]:
         raise ValueError("Goal 3 Pilot freeze has an invalid experiment profile")
-    if payload["model_parameters"] != {"temperature": None, "top_p": None, "max_output_tokens": 8192}:
+    if payload["model_parameters"] != GOAL3_MODEL_PARAMETERS:
         raise ValueError("Goal 3 Pilot freeze changed model parameters")
     pilots = payload["pilots"]
     if not isinstance(pilots, list) or len(pilots) != 3:
@@ -589,6 +602,7 @@ def execute_pilot(
                         gate, trial_id=trial_id,
                         maximum_input_tokens_per_request=MAXIMUM_INPUT_TOKENS_PER_REQUEST,
                         maximum_output_tokens_per_request=MAXIMUM_OUTPUT_TOKENS_PER_REQUEST,
+                        maximum_reasoning_tokens_per_request=GOAL3_THINKING_BUDGET,
                     ))
                     process = subprocess.run(
                         [sys.executable, "-m", "codepacex", "-p", _goal3_inference_prompt(instance),
@@ -614,6 +628,20 @@ def execute_pilot(
                     return recorder
                 accounting = gate.trial_accounting(trial_id)
                 requests, _input_tokens, _output_tokens = trace_usage(process.stdout or "")
+                violation = accounting.get("provider_usage_contract_violation")
+                if violation is not None:
+                    _goal3_terminal(
+                        recorder, instance_id=instance_id, trial_id=trial_id,
+                        status="infrastructure_error", started=started, accounting=accounting,
+                        reason="provider_usage_contract_violation",
+                        provider_usage_contract_violation=violation,
+                        budget_reconciliation_required=False,
+                    )
+                    recorder.finalize({
+                        "status": "infrastructure_error", "execution_mode": "live",
+                        "official_evaluator_completed": False,
+                    })
+                    return recorder
                 if accounting["budget_blocked"]:
                     _goal3_terminal(recorder, instance_id=instance_id, trial_id=trial_id, status="budget_blocked", started=started,
                                     accounting=accounting, budget_block_reasons=accounting["budget_block_reasons"])
@@ -701,6 +729,7 @@ def paid_preflight(
         "paid_execution_enabled": False,
         "instance_ids": [str(instance["instance_id"]) for instance in instances],
         "pricing_snapshot_hash": frozen["pricing_snapshot_hash"],
+        "model_parameters": frozen["model_parameters"],
         "authorization_exists": budget_authorization.exists(),
         "ledger_exists": budget_ledger.exists(),
         "allocation_exists": budget_allocation.exists(),

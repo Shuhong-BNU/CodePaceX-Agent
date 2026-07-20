@@ -11,6 +11,8 @@ from evals.paid_gate import (
     BudgetAuthorization,
     BudgetLedger,
     PaidRunGate,
+    ProviderRequestBudget,
+    ProviderUsageContractViolationError,
     StageCBudgetAllocation,
     actual_cost,
     authorization_hash,
@@ -94,6 +96,7 @@ def test_gate_reserves_and_settles_each_provider_request_in_one_trial(tmp_path: 
         "actual_cny": "0.030000",
         "input_tokens": 1000,
         "output_tokens": 500,
+        "reasoning_tokens": None,
         "recorded_at": ledger["request_charges"][0]["recorded_at"],
         "request_index": 1,
         "reservation_id": reservation.reservation_id,
@@ -139,7 +142,7 @@ def test_gate_settles_provider_overage_when_total_cost_remains_reserved(tmp_path
     assert settlement.actual_cny == Decimal("0.012048")
 
 
-def test_gate_rejects_provider_usage_when_actual_cost_exceeds_reservation(tmp_path: Path) -> None:
+def test_gate_settles_provider_usage_when_actual_cost_exceeds_reservation(tmp_path: Path) -> None:
     gate = _gate(tmp_path)
     with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
         "evals.paid_gate._git_is_clean", return_value=True,
@@ -149,8 +152,65 @@ def test_gate_rejects_provider_usage_when_actual_cost_exceeds_reservation(tmp_pa
             maximum_input_tokens_per_request=1000,
             maximum_output_tokens_per_request=500,
         )
-        with pytest.raises(ValueError, match="observed token cost exceeded"):
-            gate.settle(reservation, request_usages=[(1000, 501)])
+        settlement = gate.settle(reservation, request_usages=[(1000, 501)])
+    assert settlement.actual_cny == Decimal("0.030036")
+    ledger = BudgetLedger.model_validate_json((tmp_path / "ledger.json").read_text(encoding="utf-8"))
+    assert ledger.active_reservation is None
+    assert ledger.request_charges[0].output_tokens == 501
+    assert ledger.settlements[0].actual_cny == Decimal("0.030036")
+
+
+@pytest.mark.parametrize(
+    ("prompt_tokens", "completion_tokens", "reasoning_tokens", "violates"),
+    [
+        (128_000, 8192, 6144, False),
+        (128_000, 8193, 6144, True),
+        (128_000, 8192, 6145, True),
+        (128_001, 8192, 6144, True),
+    ],
+)
+def test_provider_usage_contract_settles_truthfully_before_failing_closed(
+    tmp_path: Path, prompt_tokens: int, completion_tokens: int,
+    reasoning_tokens: int, violates: bool,
+) -> None:
+    gate = _gate(tmp_path, total="1000")
+    budget = ProviderRequestBudget(
+        gate, trial_id="swe/contract/one", maximum_input_tokens_per_request=128_000,
+        maximum_output_tokens_per_request=8192,
+        maximum_reasoning_tokens_per_request=6144,
+    )
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ):
+        reservation = budget.reserve_before_request()
+        usage = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "completion_tokens_details": {"reasoning_tokens": reasoning_tokens},
+        }
+        if violates:
+            with pytest.raises(ProviderUsageContractViolationError) as exc_info:
+                budget.settle_after_usage(reservation, usage)
+            assert exc_info.value.violation.reason == "provider_usage_contract_violation"
+        else:
+            settlement = budget.settle_after_usage(reservation, usage)
+            assert settlement.output_tokens == 8192
+            assert settlement.reasoning_tokens == 6144
+    ledger = BudgetLedger.model_validate_json((tmp_path / "ledger.json").read_text(encoding="utf-8"))
+    assert ledger.active_reservation is None
+    assert len(ledger.request_charges) == len(ledger.settlements) == 1
+    assert ledger.request_charges[0].input_tokens == prompt_tokens
+    assert ledger.request_charges[0].output_tokens == completion_tokens
+    assert ledger.request_charges[0].reasoning_tokens == reasoning_tokens
+    assert ledger.settlements[0].actual_cny == actual_cost(
+        gate.pricing, input_tokens=prompt_tokens, output_tokens=completion_tokens,
+    )
+    assert bool(ledger.usage_contract_violations) is violates
+    if violates:
+        violation = ledger.usage_contract_violations[0]
+        assert violation.trial_id == reservation.trial_id
+        assert violation.reservation_id == reservation.reservation_id
+        assert violation.provider_usage == usage
 
 
 def test_gate_fails_closed_when_worst_next_trial_exceeds_remaining_budget(tmp_path: Path) -> None:
@@ -414,6 +474,7 @@ def test_unknown_usage_is_conservatively_settled_without_fabricating_tokens(tmp_
         "reservation_ids": [],
         "budget_blocked": False,
         "budget_block_reasons": [],
+        "provider_usage_contract_violation": None,
         "active_reservation": None,
         "settlement_count": 1,
         "usage_unknown": True,
