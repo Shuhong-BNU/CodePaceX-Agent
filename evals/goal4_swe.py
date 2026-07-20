@@ -52,6 +52,7 @@ from evals.paid_gate import (
     authorization_hash,
     ledger_fingerprint,
     provider_request_budget_environment,
+    reconcile_unknown_usage,
     worst_case_reservation,
 )
 from evals.permission_study import trace_usage
@@ -652,6 +653,7 @@ def paid_preflight(*, root: Path, freeze_path: Path, dataset_jsonl: Path, pricin
 def execute_batch(
     *, root: Path, freeze_path: Path, dataset_jsonl: Path, pricing_path: Path,
     evidence_root: Path, batch: Literal["A", "B"], run_id: str, confirmed: bool,
+    instance_ids: set[str] | None = None, retry_of: str | None = None,
 ) -> RunRecorder:
     """Execute one pre-registered batch strictly serially, stopping on hard errors."""
     root, evidence_root = root.resolve(), evidence_root.resolve()
@@ -665,7 +667,12 @@ def execute_batch(
         (instance, task) for instance, task in zip(instances, frozen["tasks"], strict=True)
         if task["batch"] == batch
     ]
-    if len(selected) != sum(BATCH_TARGETS[batch].values()):
+    if instance_ids is not None:
+        unknown = instance_ids - {str(instance["instance_id"]) for instance, _task in selected}
+        if unknown:
+            raise ValueError(f"Goal 4 retry task is not registered in Batch {batch}: {sorted(unknown)}")
+        selected = [(instance, task) for instance, task in selected if str(instance["instance_id"]) in instance_ids]
+    if not selected or (instance_ids is None and len(selected) != sum(BATCH_TARGETS[batch].values())):
         raise ValueError(f"Goal 4 Batch {batch} has an invalid task count")
     pricing = load_pricing(pricing_path)
     if pricing_snapshot_hash(pricing) != frozen["pricing_snapshot_hash"]:
@@ -695,6 +702,7 @@ def execute_batch(
                 "task_id": instance_id, "repetition_id": "1", "attempt_id": 1,
                 "trial_id": trial_id, "batch": batch, "budget_mode": "per_provider_request",
                 "matrix_task_sha256": task["execution_payload_sha256"],
+                "retry_of": retry_of,
             })
             with tempfile.TemporaryDirectory(prefix=f"codepacex-goal4-{instance_id}-") as temp_text:
                 workspace = Path(temp_text) / "repo"
@@ -721,7 +729,7 @@ def execute_batch(
                     recorder.write_task_artifact(instance_id, "stderr", exc.stderr or "")
                     accounting = gate.trial_accounting(trial_id)
                     _terminal(recorder, instance_id=instance_id, trial_id=trial_id, status="agent_error", started=started,
-                              accounting=accounting, reason="timeout", official_evaluator_completed=False)
+                              accounting=accounting, reason="timeout", retry_of=retry_of, official_evaluator_completed=False)
                     recorder.finalize({"status": "infrastructure_error", "execution_mode": "live", "batch": batch})
                     update_parent_ledger(evidence_root)
                     return recorder
@@ -944,6 +952,64 @@ def evaluator_recovery(
     return recovery
 
 
+def close_unknown_provider_outcome(
+    *, root: Path, freeze_path: Path, evidence_root: Path, batch: Literal["A", "B"],
+    run_id: str, instance_id: str, trial_id: str, reservation_id: str,
+    request_ordinal: int,
+) -> dict[str, Any]:
+    """Conservatively close one irrecoverable Provider reservation.
+
+    This writes a new management artifact and appends one conservative
+    settlement to the existing ledger; it never edits the original Trial.
+    """
+    root, evidence_root = root.resolve(), evidence_root.resolve()
+    _require_goal4_path(evidence_root)
+    frozen = load_formal_freeze(freeze_path, root=root)
+    paths = _batch_paths(evidence_root, batch)
+    authorization = BudgetAuthorization.model_validate_json(paths["authorization"].read_text(encoding="utf-8"))
+    ledger = BudgetLedger.model_validate_json(paths["ledger"].read_text(encoding="utf-8"))
+    active = ledger.active_reservation
+    if active is None or active.reservation_id != reservation_id or active.trial_id != trial_id:
+        raise ValueError("unknown Provider close does not match the active reservation")
+    run = evidence_root / run_id
+    events_path = run / "events.jsonl"
+    if not events_path.exists():
+        raise ValueError("unknown Provider close Trial run is missing")
+    terminals = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    terminal = next((event for event in terminals if event.get("type") == "trial_completed" and event.get("task_id") == instance_id), None)
+    if terminal is None or terminal.get("status") != "infrastructure_error" or terminal.get("reason") != "active_reservation":
+        raise ValueError("unknown Provider close requires the preserved active-reservation Trial terminal")
+    if request_ordinal != int(terminal.get("provider_request_count", 0)) + 1:
+        raise ValueError("unknown Provider close request ordinal does not follow durable Usage")
+    evidence_gap = (
+        f"unknown_provider_outcome_conservative_close: request ordinal {request_ordinal}; "
+        "httpx.ConnectTimeout/APITimeoutError; no Provider request ID, response headers, "
+        "durable Usage, or billing record could be uniquely correlated; authorization source: "
+        "user Goal 4 unknown Provider reservation recovery authorization"
+    )
+    settlement = reconcile_unknown_usage(
+        paths["ledger"], authorization=authorization,
+        reservation_id=reservation_id, evidence_gap=evidence_gap,
+    )
+    parent = update_parent_ledger(evidence_root)
+    audit = {
+        "schema_version": 1, "operation": "unknown_provider_outcome_conservative_close",
+        "authorization_source": "user Goal 4 unknown Provider reservation recovery authorization",
+        "freeze_commit": frozen["codepacex_commit"], "matrix_sha256": frozen["matrix_sha256"],
+        "batch": batch, "run_id": run_id, "trial_id": trial_id, "instance_id": instance_id,
+        "reservation_id": reservation_id, "request_ordinal": request_ordinal,
+        "timeout_type": "httpx.ConnectTimeout/APITimeoutError",
+        "verified_provider_cost_cny": str(sum((item.actual_cny for item in ledger.request_charges if item.trial_id == trial_id), Decimal("0"))),
+        "uncertain_maximum_exposure_cny": str(settlement.actual_cny),
+        "settlement_status": settlement.status, "settlement_method": settlement.settlement_method,
+        "usage_status": settlement.usage_status, "evidence_gap": evidence_gap,
+        "settled_at": settlement.settled_at, "active_reservation_after": parent["active_reservation"],
+    }
+    target = evidence_root / "recovery" / f"unknown-provider-close-{run_id}-{instance_id}.json"
+    _write_json_new(target, audit)
+    return audit
+
+
 def _trial_events(evidence_root: Path) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for path in sorted(evidence_root.glob("*/events.jsonl")):
@@ -967,8 +1033,19 @@ def evidence_summary(*, root: Path, freeze_path: Path, evidence_root: Path) -> d
         task_id = event.get("task_id")
         if task_id in by_id:
             by_id[task_id].append(event)
-    invalid = [key for key, values in by_id.items() if len(values) != 1]
-    terminals = [values[0] for values in by_id.values() if len(values) == 1]
+    invalid = []
+    terminals = []
+    attempt_count = 0
+    retry_count = 0
+    for key, values in by_id.items():
+        attempt_count += len(values)
+        retry_count += sum(1 for event in values if event.get("retry_of"))
+        if not values:
+            invalid.append(key)
+            continue
+        ordered = sorted(values, key=lambda event: float(event.get("timestamp", 0)))
+        final = next((event for event in reversed(ordered) if event.get("status") in {"resolved", "unresolved"}), ordered[-1])
+        terminals.append(final)
     statuses = {"resolved": 0, "unresolved": 0, "infrastructure_error": 0, "provider_error": 0, "agent_error": 0}
     for event in terminals:
         status = event.get("status")
@@ -1007,6 +1084,7 @@ def evidence_summary(*, root: Path, freeze_path: Path, evidence_root: Path) -> d
     return {
         "schema_version": 1, "matrix_sha256": frozen["matrix_sha256"], "registered": 20,
         "attempted": len(terminals), "completed": len(terminals),
+        "paid_trial_attempts": attempt_count, "infrastructure_retry_count": retry_count,
         "scorable": statuses["resolved"] + statuses["unresolved"], **statuses,
         "resolved_rate": Decimal(statuses["resolved"]) / Decimal(20),
         "scorable_rate": Decimal(statuses["resolved"] + statuses["unresolved"]) / Decimal(20),
@@ -1101,7 +1179,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Goal 4 formal SWE-bench-Live runner")
     parser.add_argument("command", choices=[
         "validate", "preflight", "freeze-formal", "prepare-paid-artifacts", "zero-provider",
-        "paid-preflight", "execute-batch", "control-empty", "control-gold", "evaluator-recovery", "finalize", "validate-claims",
+        "paid-preflight", "execute-batch", "close-unknown-provider-outcome", "control-empty", "control-gold", "evaluator-recovery", "finalize", "validate-claims",
     ])
     parser.add_argument("--freeze", type=Path, default=DEFAULT_RUNS_DIR / "formal-freeze.json")
     parser.add_argument("--dataset-jsonl", type=Path)
@@ -1113,6 +1191,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--batch", choices=["A", "B"])
     parser.add_argument("--run-id")
     parser.add_argument("--instance-id")
+    parser.add_argument("--instance-ids")
+    parser.add_argument("--retry-of")
+    parser.add_argument("--trial-id")
+    parser.add_argument("--reservation-id")
+    parser.add_argument("--request-ordinal", type=int)
     parser.add_argument("--control-runs-dir", type=Path, default=DEFAULT_CONTROL_RUNS_DIR)
     parser.add_argument("--claims", type=Path)
     parser.add_argument("--confirm-paid-run", action="store_true")
@@ -1158,7 +1241,18 @@ def main(argv: list[str] | None = None) -> int:
                 root=root, freeze_path=args.freeze, dataset_jsonl=args.dataset_jsonl,
                 pricing_path=args.pricing_snapshot, evidence_root=args.evidence_root,
                 batch=args.batch, run_id=args.run_id, confirmed=args.confirm_paid_run,
+                instance_ids=(set(filter(None, args.instance_ids.split(","))) if args.instance_ids else None),
+                retry_of=args.retry_of,
             ).path)}
+        elif args.command == "close-unknown-provider-outcome":
+            if not all((args.batch, args.run_id, args.instance_id, args.trial_id, args.reservation_id, args.request_ordinal)):
+                raise ValueError("close-unknown-provider-outcome requires batch, run, instance, trial, reservation, and ordinal")
+            payload = close_unknown_provider_outcome(
+                root=root, freeze_path=args.freeze, evidence_root=args.evidence_root,
+                batch=args.batch, run_id=args.run_id, instance_id=args.instance_id,
+                trial_id=args.trial_id, reservation_id=args.reservation_id,
+                request_ordinal=args.request_ordinal,
+            )
         elif args.command in {"control-empty", "control-gold"}:
             if args.source_dataset_jsonl is None or args.instance_id is None or args.run_id is None:
                 raise ValueError("control requires source dataset, instance ID, and run ID")

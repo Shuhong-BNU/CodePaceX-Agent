@@ -115,6 +115,15 @@ def test_pilot_schema_compatibility_does_not_change_formal_request_ceiling() -> 
     assert goal4.MAXIMUM_REQUESTS_PER_INSTANCE == 40
 
 
+def test_retry_selection_is_bounded_to_registered_instance() -> None:
+    rows = _rows()
+    selected = goal4.select_formal_matrix(rows)
+    assignments = goal4.assign_batches(selected)
+    batch_a = [str(item["instance_id"]) for item, batch in assignments if batch == "A"]
+    assert len(batch_a) == 5
+    assert batch_a[0] in {str(item["instance_id"]) for item in selected}
+
+
 def test_empty_control_accepts_official_empty_patch_summary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
