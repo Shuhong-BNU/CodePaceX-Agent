@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "repository": "https://github.com/microsoft/SWE-bench-Live",
+  "branch": "python-only",
+  "commit": "ad79b850f15e33992e96f03f6e97f05ddf9aa0be",
+  "dataset": "SWE-bench-Live/SWE-bench-Live",
+  "split": "lite",
+  "evaluator_namespace": "starryzhang",
+  "installation": "isolated-editable-checkout",
+  "docker_required": true,
+  "native_host_required": true,
+  "allowed_architectures": ["x86_64", "amd64"],
+  "notes": [
+    "Goal 4 accepts only a clean native Linux x86_64 or amd64 host.",
+    "The exact Lite revision is frozen in the immutable formal bundle."
+  ]
+}

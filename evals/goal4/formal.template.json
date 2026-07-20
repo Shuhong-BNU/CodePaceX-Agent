@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "status": "candidate_unverified",
+  "experiment_kind": "goal4-swe-bench-live-formal",
+  "formal_instances": 20,
+  "batches": {"A": 5, "B": 15},
+  "size_buckets": {"one_file": 8, "two_to_four_files": 8, "five_plus_files": 4},
+  "fallback_enabled": false,
+  "retry_budget": 0,
+  "serial": true,
+  "max_provider_requests_per_instance": 40
+}
