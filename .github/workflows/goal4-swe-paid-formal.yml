@@ -39,6 +39,9 @@ jobs:
       EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Paid execution must use the commit bound into Freeze 29765616278.
+          ref: a3fb2f2235a7c53f7535ea6a743f1e0c2623afe4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -96,6 +99,9 @@ jobs:
       EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Paid execution must use the commit bound into Freeze 29765616278.
+          ref: a3fb2f2235a7c53f7535ea6a743f1e0c2623afe4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
