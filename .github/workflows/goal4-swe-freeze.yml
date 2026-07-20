@@ -119,11 +119,13 @@ jobs:
           python -m evals.secret_scan --artifact-root "$RUNNER_TEMP/goal4-swe"
           python -m evals.secret_scan --artifact-root "$RUNNER_TEMP/goal4-swe-control"
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: goal4-swe-formal-freeze-${{ github.run_id }}
           path: ${{ runner.temp }}/goal4-swe
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: goal4-swe-controls-${{ github.run_id }}
           path: ${{ runner.temp }}/goal4-swe-control

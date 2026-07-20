@@ -54,6 +54,7 @@ from evals.paid_gate import (
 )
 from evals.permission_study import trace_usage
 from evals.pilot import PilotConfig
+from evals.swe_inference import collect_official_outcomes
 from evals.swe_bench_live import (
     FORMAL_SIZE_TARGETS,
     instance_payload_hash,
@@ -843,10 +844,9 @@ def run_control(
         recorder.write_task_artifact(instance_id, "evaluator", (result.stdout or "") + "\n" + (result.stderr or ""))
         if result.returncode:
             raise ValueError(f"official evaluator failed with exit status {result.returncode}")
-        report = official_evaluator_report_path(
-            cwd=recorder.path, run_id=run_id, model_id=f"goal4-control-{control}", instance_id=instance_id,
-        )
-        resolved = collect_goal3_official_outcome(report, instance_id)
+        # Controls use the same tolerant official report discovery as the accepted
+        # Goal 3 control workflow; paid Trials still require one exact report path.
+        resolved = collect_official_outcomes(recorder.path, {instance_id})[instance_id]
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         recorder.event("control_completed", {"control": control, "instance_id": instance_id, "error": str(exc), "evaluator_completed": False})
         recorder.finalize({"status": "infrastructure_error", "execution_mode": "control", "scorable": False})
@@ -854,7 +854,7 @@ def run_control(
     recorder.event("control_completed", {
         "control": control, "instance_id": instance_id, "expected_resolved": expected, "resolved": resolved,
         "evaluator_completed": True, "model_called": False, "network_called": False,
-        "provider_network_called": False, "evaluator_report_sha256": _sha256(report),
+        "provider_network_called": False,
     })
     recorder.finalize({
         "status": "success" if resolved == expected else "task_failure", "execution_mode": "control",
