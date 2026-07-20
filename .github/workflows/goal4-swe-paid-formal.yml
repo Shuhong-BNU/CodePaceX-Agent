@@ -21,6 +21,10 @@ on:
         required: true
         default: false
         type: boolean
+  push:
+    branches: [codex/goal4-swe-live-formal-eval]
+    paths:
+      - .github/workflows/goal4-swe-paid-formal.yml
 
 permissions:
   actions: read
@@ -28,7 +32,7 @@ permissions:
 
 jobs:
   batch-a:
-    if: ${{ inputs.freeze_run_id != '' && inputs.execute_paid }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.freeze_run_id != '' && inputs.execute_paid }}
     runs-on: ubuntu-22.04
     timeout-minutes: 360
     env:
