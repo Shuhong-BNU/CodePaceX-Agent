@@ -37,6 +37,7 @@ from evals.goal3_swe import (
     _ingest_trace,
     _provider_payload,
     _runtime_secrets,
+    collect_official_outcomes as collect_goal3_control_outcomes,
     collect_goal3_official_outcome,
     require_native_preflight,
 )
@@ -844,9 +845,20 @@ def run_control(
         recorder.write_task_artifact(instance_id, "evaluator", (result.stdout or "") + "\n" + (result.stderr or ""))
         if result.returncode:
             raise ValueError(f"official evaluator failed with exit status {result.returncode}")
-        # Controls use the same tolerant official report discovery as the accepted
-        # Goal 3 control workflow; paid Trials still require one exact report path.
-        resolved = collect_official_outcomes(recorder.path, {instance_id})[instance_id]
+        if control == "empty":
+            # The official evaluator deliberately skips per-instance reports for
+            # empty patches, but emits its own summary with empty_patch_ids.
+            # Treat that documented zero-patch outcome as completed and unresolved.
+            output = (result.stdout or "") + "\n" + (result.stderr or "")
+            if "No instances to run." not in output or "Instances with empty patches: 1" not in output:
+                raise ValueError("official evaluator did not confirm empty-patch handling")
+            resolved = collect_goal3_control_outcomes(recorder.path, {instance_id})[instance_id]
+            if resolved:
+                raise ValueError("official evaluator accepted an empty-patch control")
+        else:
+            # Paid Trials still require one exact report path. Gold controls may
+            # use tolerant report discovery because they are evaluator-only.
+            resolved = collect_official_outcomes(recorder.path, {instance_id})[instance_id]
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         recorder.event("control_completed", {"control": control, "instance_id": instance_id, "error": str(exc), "evaluator_completed": False})
         recorder.finalize({"status": "infrastructure_error", "execution_mode": "control", "scorable": False})
@@ -855,11 +867,13 @@ def run_control(
         "control": control, "instance_id": instance_id, "expected_resolved": expected, "resolved": resolved,
         "evaluator_completed": True, "model_called": False, "network_called": False,
         "provider_network_called": False,
+        "empty_patch_rejected_by_evaluator": control == "empty",
     })
     recorder.finalize({
         "status": "success" if resolved == expected else "task_failure", "execution_mode": "control",
         "scorable": False, "official_evaluator_completed": True, "resolved": resolved,
         "expected_resolved": expected,
+        "empty_patch_rejected_by_evaluator": control == "empty",
     })
     return recorder
 

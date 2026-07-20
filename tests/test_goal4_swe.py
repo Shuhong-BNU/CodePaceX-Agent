@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -100,3 +101,42 @@ def test_budget_contract_is_exact() -> None:
     assert goal4.BATCH_AUTHORIZATION["A"] == goal4.Decimal("421.109760")
     assert goal4.BATCH_AUTHORIZATION["B"] == goal4.Decimal("1263.329280")
     assert goal4.PARENT_AUTHORIZATION == goal4.Decimal("1684.439040")
+
+
+def test_empty_control_accepts_official_empty_patch_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source.jsonl"
+    instance = _rows()[0]
+    instance_id = str(instance["instance_id"])
+    _write_jsonl(source, [instance])
+    monkeypatch.setattr(goal4, "current_git_commit", lambda _root: "c" * 40)
+    monkeypatch.setattr(goal4, "require_native_preflight", lambda *, root: {
+        "installed_evaluator_commit": "e" * 40,
+    })
+
+    def fake_evaluator(**kwargs: object) -> subprocess.CompletedProcess[str]:
+        cwd = Path(str(kwargs["cwd"]))
+        (cwd / "official-empty-summary.json").write_text(json.dumps({
+            "empty_patch_ids": [instance_id],
+        }), encoding="utf-8")
+        return subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="No instances to run.\nInstances with empty patches: 1\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(goal4, "run_official_evaluator", fake_evaluator)
+    recorder = goal4.run_control(
+        root=tmp_path, source_dataset_jsonl=source, instance_id=instance_id,
+        control="empty", runs_dir=tmp_path / "goal4-controls", run_id="empty-control",
+    )
+    result = json.loads((recorder.path / "result.json").read_text(encoding="utf-8"))
+    events = [json.loads(line) for line in (recorder.path / "events.jsonl").read_text().splitlines()]
+    terminal = next(event for event in events if event["type"] == "control_completed")
+    assert result["status"] == "success"
+    assert result["resolved"] is False
+    assert result["official_evaluator_completed"] is True
+    assert result["empty_patch_rejected_by_evaluator"] is True
+    assert terminal["evaluator_completed"] is True
+    assert terminal["empty_patch_rejected_by_evaluator"] is True
