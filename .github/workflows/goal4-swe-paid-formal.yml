@@ -40,8 +40,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Paid execution must use the commit bound into Freeze 29765616278.
-          ref: a3fb2f2235a7c53f7535ea6a743f1e0c2623afe4
+          # Paid execution must use the commit bound into Freeze 29767622411.
+          ref: 463ddb02df3238e9b54f2770cca6137735066491
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -100,8 +100,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Paid execution must use the commit bound into Freeze 29765616278.
-          ref: a3fb2f2235a7c53f7535ea6a743f1e0c2623afe4
+          # Paid execution must use the commit bound into Freeze 29767622411.
+          ref: 463ddb02df3238e9b54f2770cca6137735066491
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
