@@ -103,6 +103,18 @@ def test_budget_contract_is_exact() -> None:
     assert goal4.PARENT_AUTHORIZATION == goal4.Decimal("1684.439040")
 
 
+def test_pilot_schema_compatibility_does_not_change_formal_request_ceiling() -> None:
+    config = goal4._pilot_config({
+        "provider": "bailian-qwen37-max", "protocol": "openai-compat",
+        "base_url": "https://llm-ipge9fy38w648m28.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        "api_key_env": "BAILIAN_API_KEY", "model_id": "qwen3.7-max-2026-06-08",
+        "model_parameters": goal4.FORMAL_MODEL_PARAMETERS,
+        "experiment_profile": goal4._goal4_profile().canonical_payload(),
+    })
+    assert config.max_iterations == 50
+    assert goal4.MAXIMUM_REQUESTS_PER_INSTANCE == 40
+
+
 def test_empty_control_accepts_official_empty_patch_summary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

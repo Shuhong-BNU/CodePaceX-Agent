@@ -560,6 +560,8 @@ def zero_provider_check(*, root: Path, freeze_path: Path, pricing_path: Path, ev
 
 
 def _pilot_config(frozen: dict[str, Any]) -> PilotConfig:
+    # PilotConfig v2 fixes this compatibility field at 50. The actual formal
+    # Agent limit is passed explicitly to the CLI and remains frozen at 40.
     return PilotConfig.model_validate({
         "schema_version": 2, "experiment_kind": "pilot", "provider": frozen["provider"],
         "protocol": frozen["protocol"], "base_url": frozen["base_url"],
@@ -567,7 +569,7 @@ def _pilot_config(frozen: dict[str, Any]) -> PilotConfig:
         "fallback_enabled": False, "model_parameters": frozen["model_parameters"],
         "retry_budget": 0, "task_ids": [], "repetitions": 1, "feature_flags": {},
         "experiment_profile": frozen["experiment_profile"],
-        "max_iterations": frozen["max_provider_requests_per_instance"],
+        "max_iterations": 50,
     })
 
 
@@ -707,7 +709,8 @@ def execute_batch(
                     ))
                     process = subprocess.run(
                         [sys.executable, "-m", "codepacex", "-p", _goal3_inference_prompt(instance),
-                         "--output-format", "stream-json", "--experiment-profile", str(profile_path)],
+                         "--output-format", "stream-json", "--experiment-profile", str(profile_path),
+                         "--max-iterations", str(MAXIMUM_REQUESTS_PER_INSTANCE)],
                         cwd=workspace, env=child_environment, text=True, capture_output=True,
                         timeout=1800, check=False,
                     )
@@ -742,9 +745,16 @@ def execute_batch(
                     recorder.finalize({"status": "infrastructure_error", "execution_mode": "live", "batch": batch})
                     update_parent_ledger(evidence_root)
                     return recorder
-                if requests == 0 or accounting["request_count"] != requests:
+                if (
+                    requests == 0
+                    or accounting["request_count"] != requests
+                    or requests > MAXIMUM_REQUESTS_PER_INSTANCE
+                ):
                     _terminal(recorder, instance_id=instance_id, trial_id=trial_id, status="infrastructure_error", started=started,
-                              accounting=accounting, reason="missing_or_mismatched_trace_usage", official_evaluator_completed=False)
+                              accounting=accounting,
+                              reason=("request_ceiling_contract_violation" if requests > MAXIMUM_REQUESTS_PER_INSTANCE
+                                      else "missing_or_mismatched_trace_usage"),
+                              official_evaluator_completed=False)
                     recorder.finalize({"status": "infrastructure_error", "execution_mode": "live", "batch": batch})
                     update_parent_ledger(evidence_root)
                     return recorder
