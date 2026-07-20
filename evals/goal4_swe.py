@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import statistics
 import subprocess
 import sys
@@ -820,6 +821,7 @@ def run_control(
     if control == "gold" and (not isinstance(gold_patch, str) or not gold_patch.strip()):
         raise ValueError("Goal 4 gold control requires the official gold patch")
     patch = "" if control == "empty" else str(gold_patch)
+    patch_sha256 = hashlib.sha256(patch.encode()).hexdigest()
     expected = control == "gold"
     manifest = RunManifest(
         experiment_kind="goal4-swe-bench-live-control", provider="none", model_id=f"goal4-control-{control}",
@@ -832,6 +834,7 @@ def run_control(
     }])
     recorder.event("control_started", {
         "control": control, "instance_id": instance_id, "expected_resolved": expected,
+        "patch_sha256": patch_sha256,
         "model_called": False, "network_called": False, "provider_network_called": False,
         "evaluator_commit": preflight["installed_evaluator_commit"],
     })
@@ -863,6 +866,11 @@ def run_control(
         recorder.event("control_completed", {"control": control, "instance_id": instance_id, "error": str(exc), "evaluator_completed": False})
         recorder.finalize({"status": "infrastructure_error", "execution_mode": "control", "scorable": False})
         return recorder
+    finally:
+        # The evaluator's transient checkout contains upstream source, test logs,
+        # and (for gold controls) the Gold patch. It is not control evidence.
+        shutil.rmtree(recorder.path / "logs", ignore_errors=True)
+        (recorder.path / "predictions.json").unlink(missing_ok=True)
     recorder.event("control_completed", {
         "control": control, "instance_id": instance_id, "expected_resolved": expected, "resolved": resolved,
         "evaluator_completed": True, "model_called": False, "network_called": False,

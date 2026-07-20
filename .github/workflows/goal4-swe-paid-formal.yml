@@ -76,7 +76,7 @@ jobs:
           python -m evals.goal4_swe execute-batch --confirm-paid-run --batch A --run-id "${{ inputs.run_prefix }}-batch-a" --freeze "$root/formal-freeze.json" --dataset-jsonl "$root/formal-dataset.jsonl" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
       - name: Secret scan Batch A evidence
         if: always()
-        run: python -m evals.secret_scan --artifact-root "$RUNNER_TEMP/goal4-swe-paid/$GITHUB_RUN_ID"
+        run: python -m evals.secret_scan --artifact-root "$RUNNER_TEMP/goal4-swe-paid/$GITHUB_RUN_ID" --untrusted-json-field problem_statement
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -137,7 +137,7 @@ jobs:
         run: |
           root="$RUNNER_TEMP/goal4-swe-paid/$GITHUB_RUN_ID"
           python -m evals.goal4_swe finalize --freeze "$root/formal-freeze.json" --evidence-root "$root"
-          python -m evals.secret_scan --artifact-root "$root"
+          python -m evals.secret_scan --artifact-root "$root" --untrusted-json-field problem_statement
       - uses: actions/upload-artifact@v4
         if: always()
         with:

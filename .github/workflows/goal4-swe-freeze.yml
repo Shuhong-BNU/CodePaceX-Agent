@@ -116,8 +116,8 @@ jobs:
           PY
       - name: Secret scan immutable artifacts
         run: |
-          python -m evals.secret_scan --artifact-root "$RUNNER_TEMP/goal4-swe"
-          python -m evals.secret_scan --artifact-root "$RUNNER_TEMP/goal4-swe-control"
+          python -m evals.secret_scan --artifact-root "$RUNNER_TEMP/goal4-swe" --untrusted-json-field problem_statement
+          python -m evals.secret_scan --artifact-root "$RUNNER_TEMP/goal4-swe-control" --untrusted-json-field problem_statement
       - uses: actions/upload-artifact@v4
         if: always()
         with:

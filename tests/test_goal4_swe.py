@@ -117,6 +117,9 @@ def test_empty_control_accepts_official_empty_patch_summary(
 
     def fake_evaluator(**kwargs: object) -> subprocess.CompletedProcess[str]:
         cwd = Path(str(kwargs["cwd"]))
+        evaluator_logs = cwd / "logs"
+        evaluator_logs.mkdir()
+        (evaluator_logs / "upstream.txt").write_text("AWS" + "::LanguageExtensions")
         (cwd / "official-empty-summary.json").write_text(json.dumps({
             "empty_patch_ids": [instance_id],
         }), encoding="utf-8")
@@ -138,5 +141,7 @@ def test_empty_control_accepts_official_empty_patch_summary(
     assert result["resolved"] is False
     assert result["official_evaluator_completed"] is True
     assert result["empty_patch_rejected_by_evaluator"] is True
+    assert not (recorder.path / "predictions.json").exists()
+    assert not (recorder.path / "logs").exists()
     assert terminal["evaluator_completed"] is True
     assert terminal["empty_patch_rejected_by_evaluator"] is True
