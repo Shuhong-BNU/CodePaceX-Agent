@@ -115,3 +115,17 @@ The frozen configuration is [`pilot.qwen.yaml`](pilot.qwen.yaml): Bailian Qwen t
 Cross-Goal study status, units, sample boundaries, and results are recorded in [`EVALUATION_HISTORY.md`](EVALUATION_HISTORY.md). Run, Artifact, commit, SHA-256, retention, and audit boundaries are recorded in [`EVALUATION_ARTIFACT_INDEX.md`](EVALUATION_ARTIFACT_INDEX.md). Unlike units are never added into a single "total experiments" count, and CI, dry-runs, preflights, secret scans, and pytest runs are not formal Provider experiments.
 
 The current formal boundary includes a three-task Goal 3 paid Pilot with 3/3 scorable and 1 resolved / 2 unresolved, plus Goal 4's pre-registered 20-task Python-only Lite subset at `GOAL4_ACCEPTED`, 20/20 scorable, and 4 resolved / 16 unresolved. The zero-provider attribution of Goal 4's 16 unresolved instances is in [`GOAL4_FAILURE_ANALYSIS.md`](GOAL4_FAILURE_ANALYSIS.md) and [`goal4_failure_taxonomy.csv`](goal4_failure_taxonomy.csv). It is evidence organization, not a new experiment or a change to the formal result.
+
+## Stage B Agent Validation Gates
+
+Stage B adds a default-disabled, explicitly enabled deterministic validation
+profile for future code-changing Agent sessions: reproduction or a structured
+exception before editing, a contract inventory, post-edit target tests, bounded
+pre/post regression comparison, and shared 20/30/36 request checkpoints. It
+does not rerun or alter Goal 4's historical 4/20 result and makes no Provider
+request. The implementation boundary and activation contract are documented in
+[`STAGE_B_CHARTER.md`](STAGE_B_CHARTER.md),
+[`STAGE_B_DESIGN.md`](STAGE_B_DESIGN.md), and
+[`STAGE_B_REPORT.md`](STAGE_B_REPORT.md). `evals.stage_b_replay` replays only a
+sanitized trace into a new local output directory and always labels its output
+`replay_only=true`, `provider_requests=0`, and `formal_experiment=false`.

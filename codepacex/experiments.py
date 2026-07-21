@@ -55,14 +55,19 @@ class ExperimentProfile(BaseModel):
     validation_mode: ValidationMode = ValidationMode.DISABLED
 
     def canonical_payload(self) -> dict[str, Any]:
-        return self.model_dump(mode="json")
+        payload = self.model_dump(mode="json")
+        # Preserve the byte-level identity of pre-Stage-B frozen profiles.  An
+        # enabled profile carries this field and is therefore hash-distinct.
+        if self.validation_mode is ValidationMode.DISABLED:
+            payload.pop("validation_mode", None)
+        return payload
 
     def profile_hash(self) -> str:
         return canonical_hash(self.canonical_payload())
 
     def effective_runtime(self) -> dict[str, Any]:
         """Return the concrete switches applied by the runtime assembler."""
-        return {
+        runtime = {
             "schema_version": self.schema_version,
             "tool_loading": self.tool_loading.value,
             "defer_mcp_tools": self.tool_loading is ToolLoading.DEFERRED,
@@ -82,9 +87,13 @@ class ExperimentProfile(BaseModel):
             ),
             "agent_mode": self.agent_mode.value,
             "multi_agent_tools_enabled": self.agent_mode is AgentMode.MULTI,
-            "validation_mode": self.validation_mode.value,
-            "stage_b_validation_enabled": self.validation_mode is ValidationMode.STAGE_B,
         }
+        if self.validation_mode is ValidationMode.STAGE_B:
+            runtime.update({
+                "validation_mode": self.validation_mode.value,
+                "stage_b_validation_enabled": True,
+            })
+        return runtime
 
     def runtime_contract_hash(self) -> str:
         return canonical_hash(self.effective_runtime())

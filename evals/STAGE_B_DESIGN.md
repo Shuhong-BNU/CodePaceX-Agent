@@ -521,8 +521,9 @@ Two small design adjustments were made while preserving scope:
   process environment behavior. The variables are absent while validation is
   disabled.
 
-`ExperimentProfile.validation_mode` is an explicit, hash-bound activation
-field. It appears in both the profile hash and runtime contract hash, so a future
-Stage C freeze can record it in the manifest and cannot silently resume under a
-different validation profile. Existing profiles default to `disabled`; no
+`ExperimentProfile.validation_mode` is an explicit, hash-bound activation field
+when enabled. It appears in both the profile hash and runtime contract hash for a
+future Stage C freeze, so that run cannot silently resume under a different
+validation profile. The disabled default is deliberately omitted from canonical
+payloads to preserve the byte-level hashes of historical frozen profiles; no
 historical Goal 4 manifest is changed or reinterpreted.

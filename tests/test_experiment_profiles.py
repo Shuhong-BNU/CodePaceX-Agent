@@ -33,6 +33,7 @@ def test_profile_is_closed_and_typed() -> None:
     assert profile.permission_strategy is PermissionStrategy.DEFAULT
     assert profile.agent_mode is AgentMode.SINGLE
     assert profile.validation_mode.value == "disabled"
+    assert "validation_mode" not in profile.canonical_payload()
 
     with pytest.raises(ValidationError):
         _profile(tool_loading="invented")
@@ -59,8 +60,6 @@ def test_effective_runtime_maps_every_profile_field() -> None:
         "sandbox_auto_allow_requested": True,
         "agent_mode": "multi",
         "multi_agent_tools_enabled": True,
-        "validation_mode": "disabled",
-        "stage_b_validation_enabled": False,
     }
 
 
