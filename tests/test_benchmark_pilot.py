@@ -66,6 +66,12 @@ def test_task_artifacts_map_dynamic_ids_to_safe_auditable_names(tmp_path: Path) 
     assert json.loads((recorder.path / "task-artifacts.json").read_text(encoding="utf-8"))["artifacts"] == [
         {"task_id": task_id, "kind": "stdout", "name": expected_name},
     ]
+    report = recorder.write_task_artifact(task_id, "evaluator_report", '{"resolved": false}')
+    expected_report_name = hashlib.sha256(task_id.encode("utf-8")).hexdigest() + "-evaluator_report.txt"
+    assert report.name == expected_report_name
+    assert json.loads((recorder.path / "task-artifacts.json").read_text(encoding="utf-8"))["artifacts"][-1] == {
+        "task_id": task_id, "kind": "evaluator_report", "name": expected_report_name,
+    }
 
 
 def test_task_artifacts_keep_the_regular_artifact_allowlist_strict(tmp_path: Path) -> None:

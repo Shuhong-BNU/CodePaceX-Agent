@@ -34,7 +34,7 @@ OPTIONAL_STREAMS = {
     "permission-events.jsonl", "compression-events.jsonl", "runtime-events.jsonl",
 }
 ALLOWED_ARTIFACTS = {"patch.diff", "test-output.txt", "stdout.txt", "stderr.txt"}
-TASK_ARTIFACT_KINDS = {"stdout", "stderr", "evaluator"}
+TASK_ARTIFACT_KINDS = {"stdout", "stderr", "evaluator", "evaluator_report"}
 SECRET_KEYS = {
     "api_key", "apikey", "x_api_key", "authorization", "bearer", "password",
     "secret", "access_token", "bailian_api_key", "agentrouter_api_key",

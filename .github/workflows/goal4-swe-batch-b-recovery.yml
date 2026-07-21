@@ -1,0 +1,287 @@
+name: Goal 4 SWE Batch B recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      freeze_run_id:
+        description: Run ID containing the new immutable Goal 4 Freeze
+        required: true
+        type: string
+      freeze_artifact_name:
+        description: Exact new Goal 4 Freeze Artifact name
+        required: true
+        type: string
+      freeze_commit:
+        description: Exact commit recorded by the new Freeze
+        required: true
+        type: string
+      source_run_id:
+        description: Immutable blocked paid run
+        required: true
+        default: '29795711075'
+        type: string
+      source_artifact_name:
+        description: Immutable blocked evidence Artifact
+        required: true
+        default: goal4-swe-formal-evidence-29795711075
+        type: string
+      source_archive_sha256:
+        description: SHA-256 of the immutable source Artifact ZIP
+        required: true
+        default: a0e0bec0d38e2c1331c5986b4d7fa2eb9868e62971c079534770d18dc420e864
+        type: string
+      run_prefix:
+        description: New unused recovery run prefix
+        required: true
+        default: goal4-batch-b-recovery
+        type: string
+      execute_paid:
+        description: Explicitly permit Provider requests
+        required: true
+        default: false
+        type: boolean
+      authorize_blocked_retry:
+        description: Explicitly authorize retrying the blocked Trial
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.freeze_commit }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Download new Freeze
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.freeze_artifact_name }}
+          run-id: ${{ inputs.freeze_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/goal4-new-freeze
+      - name: Download and verify immutable source archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test '${{ inputs.source_run_id }}' = '29795711075'
+          test '${{ inputs.source_artifact_name }}' = 'goal4-swe-formal-evidence-29795711075'
+          test '${{ inputs.source_archive_sha256 }}' = 'a0e0bec0d38e2c1331c5986b4d7fa2eb9868e62971c079534770d18dc420e864'
+          artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/${{ inputs.source_run_id }}/artifacts" --jq '.artifacts[] | select(.name == "${{ inputs.source_artifact_name }}") | .id')"
+          test -n "$artifact_id"
+          test "$(printf '%s\n' "$artifact_id" | wc -l | tr -d ' ')" = 1
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$RUNNER_TEMP/goal4-source.zip"
+          printf '%s  %s\n' '${{ inputs.source_archive_sha256 }}' "$RUNNER_TEMP/goal4-source.zip" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/goal4-recovery-source"
+          unzip -q "$RUNNER_TEMP/goal4-source.zip" -d "$RUNNER_TEMP/goal4-recovery-source"
+      - name: Install controller and compact only evaluator transients
+        run: |
+          set -euo pipefail
+          python -m pip install -e . pytest pytest-asyncio
+          git diff --check
+          test -z "$(git status --porcelain)"
+          root="$RUNNER_TEMP/goal4-recovery-source"
+          python -m evals.goal4_swe compact-evaluator-transients \
+            --evidence-root "$root" \
+            --source-run-id '${{ inputs.source_run_id }}' \
+            --source-artifact-name '${{ inputs.source_artifact_name }}' \
+            --source-archive-sha256 '${{ inputs.source_archive_sha256 }}'
+      - name: Rebind copied evidence and prove zero-provider continuation
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/goal4-recovery-source"
+          freeze="$RUNNER_TEMP/goal4-new-freeze"
+          zero="$RUNNER_TEMP/goal4-zero-provider"
+          mkdir -p "$zero"
+          cp "$freeze/formal-freeze.json" "$freeze/formal-dataset.jsonl" "$freeze/formal-matrix.json" "$freeze/pricing-provenance.json" "$freeze/pricing-snapshot.json" "$zero/"
+          python -m evals.goal4_swe prepare-paid-artifacts --freeze "$zero/formal-freeze.json" --pricing-snapshot "$zero/pricing-snapshot.json" --evidence-root "$zero"
+          python -m evals.goal4_swe zero-provider --freeze "$zero/formal-freeze.json" --pricing-snapshot "$zero/pricing-snapshot.json" --evidence-root "$zero" > "$zero/zero-provider.json"
+          python - "$zero/zero-provider.json" <<'PY'
+          import json, sys
+          result = json.load(open(sys.argv[1]))
+          expected = {
+              'provider_requests': 0, 'usage': 0, 'cost_cny': '0.000000',
+              'trials': 0, 'evaluator_executions': 0, 'active_reservation': None,
+          }
+          if not result.get('valid') or any(result.get(key) != value for key, value in expected.items()):
+              raise SystemExit('zero-provider contract failed')
+          PY
+          cp "$root/formal-freeze.json" "$root/formal-freeze-before-$GITHUB_RUN_ID.json"
+          cp "$freeze/formal-freeze.json" "$freeze/formal-dataset.jsonl" "$freeze/formal-matrix.json" "$freeze/pricing-provenance.json" "$freeze/pricing-snapshot.json" "$root/"
+          python -m evals.goal4_swe prepare-recovery-artifacts --old-freeze "$root/formal-freeze-before-$GITHUB_RUN_ID.json" --freeze "$root/formal-freeze.json" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
+          python -m evals.goal4_swe paid-preflight --freeze "$root/formal-freeze.json" --dataset-jsonl "$root/formal-dataset.jsonl" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
+          cp "$zero/zero-provider.json" "$root/recovery/zero-provider-$GITHUB_RUN_ID.json"
+      - name: Verify exact blocked state
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/goal4-recovery-source"
+          python - "$root" '${{ inputs.freeze_commit }}' <<'PY'
+          import json, sys
+          from pathlib import Path
+          root, commit = Path(sys.argv[1]), sys.argv[2]
+          frozen = json.loads((root / 'formal-freeze.json').read_text())
+          if frozen['codepacex_commit'] != commit:
+              raise SystemExit('new Freeze commit identity mismatch')
+          events = []
+          for path in sorted(root.glob('*/events.jsonl')):
+              events.extend(json.loads(line) for line in path.read_text().splitlines() if line.strip())
+          starts = [event for event in events if event.get('type') == 'trial_started']
+          completed = [event for event in events if event.get('type') == 'trial_completed']
+          by_task = {}
+          for event in completed:
+              by_task.setdefault(event.get('task_id'), []).append(event)
+          final = {}
+          for task_id, values in by_task.items():
+              ordered = sorted(values, key=lambda item: float(item.get('timestamp', 0)))
+              final[task_id] = next((item for item in reversed(ordered) if item.get('status') in {'resolved', 'unresolved'}), ordered[-1])
+          statuses = [item.get('status') for item in final.values()]
+          if len(starts) != 11 or sum(bool(item.get('retry_of')) for item in starts) != 1:
+              raise SystemExit('paid Trial attempt or historical retry count changed')
+          if len(final) != 10 or statuses.count('resolved') != 4 or statuses.count('unresolved') != 5 or statuses.count('infrastructure_error') != 1:
+              raise SystemExit('blocked terminal evidence changed')
+          batch_a_ids = {task['instance_id'] for task in frozen['tasks'] if task['batch'] == 'A'}
+          if len(batch_a_ids) != 5 or any(final.get(task_id, {}).get('status') not in {'resolved', 'unresolved'} for task_id in batch_a_ids):
+              raise SystemExit('Batch A is not 5/5 scorable')
+          blocker = final.get('bridgecrewio__checkov-6895', {})
+          if blocker.get('reason') != 'missing_or_mismatched_trace_usage' or blocker.get('provider_request_count') != 0 or blocker.get('actual_cny') != '0.000000':
+              raise SystemExit('blocked Trial identity or zero-cost accounting changed')
+          batch_a = json.loads((root / 'accounts/batch-a-ledger.json').read_text())
+          batch_b = json.loads((root / 'accounts/batch-b-ledger.json').read_text())
+          parent = json.loads((root / 'accounts/parent-ledger.json').read_text())
+          methods = [item['settlement_method'] for item in batch_a['settlements']]
+          if len(batch_a['request_charges']) != 138 or len(methods) != 139 or methods.count('conservative_reserved_amount') != 1:
+              raise SystemExit('Batch A accounting changed')
+          if len(batch_b['request_charges']) != 72 or len(batch_b['settlements']) != 72:
+              raise SystemExit('Batch B accounting changed')
+          if parent['request_charge_count'] != 210 or parent['settlement_count'] != 211 or parent['spent_cny'] != '45.334836':
+              raise SystemExit('parent accounting changed')
+          if any(ledger['active_reservation'] is not None or ledger['usage_contract_violations'] for ledger in (batch_a, batch_b)) or parent['active_reservation'] is not None:
+              raise SystemExit('accounting has a hard blocker')
+          matrix_ids = [task['instance_id'] for task in frozen['tasks']]
+          unrun = [task_id for task_id in matrix_ids if task_id not in final]
+          if len(unrun) != 10:
+              raise SystemExit('remaining registered task count changed')
+          compaction = json.loads((root / 'recovery/evaluator-transient-compaction.json').read_text())
+          if compaction['preserved_report_count'] != 9 or list(root.rglob('logs')):
+              raise SystemExit('evaluator transient compaction is incomplete')
+          state = {'schema_version': 1, 'blocked_retry_instance_id': 'bridgecrewio__checkov-6895', 'remaining_unrun_instance_ids': unrun}
+          (root / 'recovery/batch-b-recovery-state.json').write_text(json.dumps(state, indent=2, sort_keys=True) + '\n')
+          PY
+          python -m evals.secret_scan --artifact-root "$root" --untrusted-json-field problem_statement
+      - uses: actions/upload-artifact@v4
+        with:
+          name: goal4-swe-batch-b-recovery-preflight-${{ github.run_id }}
+          path: ${{ runner.temp }}/goal4-recovery-source
+          if-no-files-found: error
+
+  paid-recovery:
+    needs: preflight
+    if: ${{ inputs.execute_paid && inputs.authorize_blocked_retry }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    env:
+      EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.freeze_commit }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - uses: actions/download-artifact@v4
+        with:
+          name: goal4-swe-batch-b-recovery-preflight-${{ github.run_id }}
+          path: ${{ runner.temp }}/goal4-recovery
+      - name: Install frozen evaluator
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Linux
+          case "$(uname -m)" in x86_64|amd64) ;; *) exit 1 ;; esac
+          docker version
+          python -m pip install -e . pytest pytest-asyncio
+          evaluator_root="$RUNNER_TEMP/swe-bench-live"
+          git clone --filter=blob:none https://github.com/microsoft/SWE-bench-Live.git "$evaluator_root"
+          git -C "$evaluator_root" checkout --detach "$EVALUATOR_COMMIT"
+          python -m pip install -e "$evaluator_root"
+          python -m evals.goal4_swe preflight
+      - name: Record explicit retry authorization
+        run: |
+          python - "$RUNNER_TEMP/goal4-recovery" <<'PY'
+          import hashlib, json, os, shutil, sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          prior = root / 'recovery/source-finalization-29795711075'
+          prior.mkdir()
+          preserved = []
+          for name in ('GOAL4_FINAL_REPORT.md', 'claims.goal4.json'):
+              source = root / 'reports' / name
+              target = prior / name
+              digest = hashlib.sha256(source.read_bytes()).hexdigest()
+              shutil.move(source, target)
+              preserved.append({'path': str(target.relative_to(root)), 'sha256': digest})
+          record = {
+              'schema_version': 1, 'github_run_id': os.environ['GITHUB_RUN_ID'],
+              'github_actor': os.environ['GITHUB_ACTOR'],
+              'freeze_commit': '${{ inputs.freeze_commit }}',
+              'source_run_id': '29795711075', 'retry_instance_id': 'bridgecrewio__checkov-6895',
+              'execute_paid': True, 'authorize_blocked_retry': True,
+              'preserved_source_finalization': preserved,
+          }
+          (root / 'recovery/paid-retry-authorization.json').write_text(json.dumps(record, indent=2, sort_keys=True) + '\n')
+          PY
+      - name: Retry only the blocked infrastructure Trial
+        env:
+          BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$BAILIAN_API_KEY"
+          root="$RUNNER_TEMP/goal4-recovery"
+          python -m evals.goal4_swe execute-batch --confirm-paid-run --batch B --run-id '${{ inputs.run_prefix }}-infra-retry' --retry-of 'goal4-resume-29795408466-batch-b' --instance-ids 'bridgecrewio__checkov-6895' --freeze "$root/formal-freeze.json" --dataset-jsonl "$root/formal-dataset.jsonl" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
+          python - "$root" '${{ inputs.run_prefix }}-infra-retry' <<'PY'
+          import json, sys
+          from pathlib import Path
+          root, run_id = Path(sys.argv[1]), sys.argv[2]
+          events = [json.loads(line) for line in (root / run_id / 'events.jsonl').read_text().splitlines()]
+          terminal = [item for item in events if item.get('type') == 'trial_completed']
+          if len(terminal) != 1 or terminal[0].get('status') not in {'resolved', 'unresolved'}:
+              raise SystemExit('authorized infrastructure retry did not become scorable')
+          ledger = json.loads((root / 'accounts/batch-b-ledger.json').read_text())
+          if ledger['active_reservation'] is not None or ledger['usage_contract_violations'] or ledger['budget_blocks']:
+              raise SystemExit('authorized infrastructure retry left an accounting blocker')
+          PY
+      - name: Execute the ten never-run Batch B tasks strictly serially
+        env:
+          BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/goal4-recovery"
+          remaining="$(python - "$root/recovery/batch-b-recovery-state.json" <<'PY'
+          import json, sys
+          print(','.join(json.load(open(sys.argv[1]))['remaining_unrun_instance_ids']))
+          PY
+          )"
+          test "$(printf '%s\n' "$remaining" | awk -F, '{print NF}')" = 10
+          python -m evals.goal4_swe execute-batch --confirm-paid-run --batch B --run-id '${{ inputs.run_prefix }}-remaining' --instance-ids "$remaining" --freeze "$root/formal-freeze.json" --dataset-jsonl "$root/formal-dataset.jsonl" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
+      - name: Finalize recovery evidence
+        if: always()
+        run: |
+          root="$RUNNER_TEMP/goal4-recovery"
+          python -m evals.goal4_swe finalize --freeze "$root/formal-freeze.json" --evidence-root "$root"
+          python -m evals.secret_scan --artifact-root "$root" --untrusted-json-field problem_statement
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: goal4-swe-formal-recovery-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/goal4-recovery
+          if-no-files-found: warn

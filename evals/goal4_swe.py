@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import venv
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -588,6 +589,16 @@ def _trial_id(run_id: str, batch: str, instance_id: str) -> str:
     return f"swe/goal4/{run_id}/batch-{batch.lower()}/1/{instance_id}"
 
 
+def _isolated_task_environment(environment: dict[str, str], task_venv: Path) -> dict[str, str]:
+    """Keep task-installed packages out of the benchmark controller interpreter."""
+    bin_dir = task_venv / ("Scripts" if os.name == "nt" else "bin")
+    isolated = dict(environment)
+    isolated["VIRTUAL_ENV"] = str(task_venv)
+    isolated["PATH"] = str(bin_dir) + os.pathsep + environment.get("PATH", "")
+    isolated["PYTHONNOUSERSITE"] = "1"
+    return isolated
+
+
 def _manifest(*, root: Path, frozen: dict[str, Any], run_id: str, batch: str) -> RunManifest:
     profile = ExperimentProfile.model_validate(frozen["experiment_profile"])
     tasks = [task["instance_id"] for task in frozen["tasks"] if task["batch"] == batch]
@@ -710,7 +721,9 @@ def execute_batch(
                 workspace = Path(temp_text) / "repo"
                 try:
                     _goal3_materialize_instance(instance, workspace)
-                    child_environment = dict(environment)
+                    task_venv = Path(temp_text) / "tool-venv"
+                    venv.EnvBuilder(with_pip=True, system_site_packages=True).create(task_venv)
+                    child_environment = _isolated_task_environment(environment, task_venv)
                     child_environment.update(provider_request_budget_environment(
                         gate, trial_id=trial_id,
                         maximum_input_tokens_per_request=MAXIMUM_INPUT_TOKENS_PER_REQUEST,
@@ -800,6 +813,11 @@ def execute_batch(
                         cwd=recorder.path, run_id=evaluator_run_id, model_id=pilot.model_id, instance_id=instance_id,
                     )
                     resolved = collect_goal3_official_outcome(report_path, instance_id)
+                    structured_report = recorder.write_task_artifact(
+                        instance_id, "evaluator_report", report_path.read_text(encoding="utf-8"),
+                    )
+                    if _sha256(structured_report) != _sha256(report_path):
+                        raise ValueError("structured evaluator report differs from official report")
                 except (OSError, ValueError, subprocess.SubprocessError) as exc:
                     _terminal(recorder, instance_id=instance_id, trial_id=trial_id, status="infrastructure_error", started=started,
                               accounting=accounting, error=str(exc), patch_sha256=patch_hash,
@@ -808,12 +826,15 @@ def execute_batch(
                     recorder.finalize({"status": "infrastructure_error", "execution_mode": "live", "batch": batch})
                     update_parent_ledger(evidence_root)
                     return recorder
+                shutil.rmtree(recorder.path / "logs", ignore_errors=True)
                 _terminal(recorder, instance_id=instance_id, trial_id=trial_id,
                           status="resolved" if resolved else "unresolved", started=started, accounting=accounting,
                           process_returncode=process.returncode, empty_patch=not bool(patch.strip()),
                           patch_sha256=patch_hash, prediction_file=prediction_name,
                           official_evaluator_completed=True, official_outcome=resolved,
-                          evaluator_report_sha256=_sha256(report_path), numerator=int(resolved), denominator=1)
+                          evaluator_report_sha256=_sha256(structured_report),
+                          evaluator_report_artifact=structured_report.name,
+                          numerator=int(resolved), denominator=1)
                 resolved_count += int(resolved)
     update_parent_ledger(evidence_root)
     recorder.finalize({
@@ -954,6 +975,111 @@ def evaluator_recovery(
     return recovery
 
 
+def _evidence_tree_hash(evidence_root: Path) -> str:
+    files = {
+        str(path.relative_to(evidence_root)): _sha256(path)
+        for path in sorted(evidence_root.rglob("*"))
+        if path.is_file() and not path.is_symlink()
+    }
+    return canonical_hash(files)
+
+
+def compact_evaluator_transients(
+    *, root: Path, evidence_root: Path, source_run_id: str,
+    source_artifact_name: str, source_archive_sha256: str,
+) -> dict[str, Any]:
+    """Preserve official reports before removing copied evaluator transients."""
+    evidence_root = evidence_root.resolve()
+    _require_goal4_path(evidence_root)
+    if not re.fullmatch(r"[1-9][0-9]*", source_run_id):
+        raise ValueError("source GitHub run ID is invalid")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", source_artifact_name):
+        raise ValueError("source Artifact name is invalid")
+    if not re.fullmatch(r"[0-9a-f]{64}", source_archive_sha256):
+        raise ValueError("source Artifact archive SHA-256 is invalid")
+    index_path = evidence_root / "recovery" / "evaluator-transient-compaction.json"
+    if index_path.exists():
+        raise ValueError("evaluator transients were already compacted")
+
+    source_tree_sha256 = _evidence_tree_hash(evidence_root)
+    reports: list[dict[str, Any]] = []
+    transient_dirs: list[Path] = []
+    pending: list[tuple[Path, Path, dict[str, Any]]] = []
+    for events_path in sorted(evidence_root.glob("*/events.jsonl")):
+        run = events_path.parent
+        logs = run / "logs"
+        if not logs.is_dir():
+            continue
+        terminals = []
+        for line in events_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            event = json.loads(line)
+            if event.get("type") == "trial_completed" and event.get("official_evaluator_completed") is True:
+                terminals.append(event)
+        source_reports = sorted(logs.rglob("report.json"))
+        if len(source_reports) != len(terminals):
+            raise ValueError(f"{run.name} evaluator report count differs from completed terminals")
+        unmatched = set(source_reports)
+        for terminal in terminals:
+            expected = terminal.get("evaluator_report_sha256")
+            if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
+                raise ValueError("completed evaluator terminal has no valid report SHA-256")
+            matches = [path for path in unmatched if _sha256(path) == expected]
+            if len(matches) != 1:
+                raise ValueError("official evaluator report does not uniquely match its terminal SHA-256")
+            source = matches[0]
+            unmatched.remove(source)
+            payload = json.loads(source.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("official evaluator report is not a JSON object")
+            task_id = terminal.get("task_id")
+            trial_id = terminal.get("trial_id")
+            if not isinstance(task_id, str) or not isinstance(trial_id, str):
+                raise ValueError("official evaluator terminal identity is invalid")
+            task_hash = hashlib.sha256(task_id.encode("utf-8")).hexdigest()
+            target = evidence_root / "recovery" / "evaluator-reports" / run.name / f"{task_hash}.json"
+            entry = {
+                "run_id": run.name,
+                "task_id": task_id,
+                "trial_id": trial_id,
+                "report_sha256": expected,
+                "source_path": str(source.relative_to(evidence_root)),
+                "preserved_path": str(target.relative_to(evidence_root)),
+            }
+            pending.append((source, target, entry))
+        if unmatched:
+            raise ValueError(f"{run.name} has unmatched evaluator reports")
+        transient_dirs.append(logs)
+    if not pending or not transient_dirs:
+        raise ValueError("no evaluator transients were found")
+
+    for source, target, entry in pending:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(source.read_bytes())
+        if _sha256(target) != entry["report_sha256"]:
+            raise ValueError("preserved evaluator report changed")
+        reports.append(entry)
+    for logs in transient_dirs:
+        shutil.rmtree(logs)
+    index = {
+        "schema_version": 1,
+        "source_github_run_id": source_run_id,
+        "source_artifact_name": source_artifact_name,
+        "source_archive_sha256": source_archive_sha256,
+        "source_extracted_tree_sha256": source_tree_sha256,
+        "compaction_commit": current_git_commit(root.resolve()),
+        "preserved_report_count": len(reports),
+        "removed_transient_directories": [
+            str(path.relative_to(evidence_root)) for path in transient_dirs
+        ],
+        "reports": reports,
+    }
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    index_path.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return index
+
+
 def close_unknown_provider_outcome(
     *, root: Path, freeze_path: Path, evidence_root: Path, batch: Literal["A", "B"],
     run_id: str, instance_id: str, trial_id: str, reservation_id: str,
@@ -1087,7 +1213,7 @@ def prepare_recovery_artifacts(
     return update_parent_ledger(evidence_root)
 
 
-def _trial_events(evidence_root: Path) -> list[dict[str, Any]]:
+def _trial_events(evidence_root: Path, event_type: str) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for path in sorted(evidence_root.glob("*/events.jsonl")):
         for line in path.read_text(encoding="utf-8").splitlines():
@@ -1095,7 +1221,7 @@ def _trial_events(evidence_root: Path) -> list[dict[str, Any]]:
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if event.get("type") == "trial_completed":
+            if event.get("type") == event_type:
                 event["_run_path"] = str(path.parent.relative_to(evidence_root))
                 events.append(event)
     return events
@@ -1103,7 +1229,8 @@ def _trial_events(evidence_root: Path) -> list[dict[str, Any]]:
 
 def evidence_summary(*, root: Path, freeze_path: Path, evidence_root: Path) -> dict[str, Any]:
     frozen = load_formal_freeze(freeze_path, root=root.resolve())
-    events = _trial_events(evidence_root)
+    events = _trial_events(evidence_root, "trial_completed")
+    starts = _trial_events(evidence_root, "trial_started")
     expected = {task["instance_id"]: task for task in frozen["tasks"]}
     by_id: dict[str, list[dict[str, Any]]] = {instance_id: [] for instance_id in expected}
     for event in events:
@@ -1112,11 +1239,10 @@ def evidence_summary(*, root: Path, freeze_path: Path, evidence_root: Path) -> d
             by_id[task_id].append(event)
     invalid = []
     terminals = []
-    attempt_count = 0
-    retry_count = 0
+    expected_starts = [event for event in starts if event.get("task_id") in expected]
+    attempt_count = len(expected_starts)
+    retry_count = sum(1 for event in expected_starts if event.get("retry_of"))
     for key, values in by_id.items():
-        attempt_count += len(values)
-        retry_count += sum(1 for event in values if event.get("retry_of"))
         if not values:
             invalid.append(key)
             continue
@@ -1130,17 +1256,26 @@ def evidence_summary(*, root: Path, freeze_path: Path, evidence_root: Path) -> d
     parent = update_parent_ledger(evidence_root)
     request_charges = parent["request_charge_count"]
     settlements = parent["settlement_count"]
+    ledgers = [_load_child_ledger(_batch_paths(evidence_root, batch)["ledger"]) for batch in ("A", "B")]
+    settlement_items = [item for ledger in ledgers for item in ledger.settlements]
+    provider_usage_settlements = sum(
+        item.status == "settled" and item.settlement_method == "provider_usage" and item.usage_status == "known"
+        for item in settlement_items
+    )
+    conservative_settlements = sum(
+        item.status == "conservative_settled" and item.settlement_method == "conservative_reserved_amount" and item.usage_status == "unknown"
+        for item in settlement_items
+    )
+    valid_settlements = provider_usage_settlements + conservative_settlements
+    usage_contract_violations = sum(len(ledger.usage_contract_violations) for ledger in ledgers)
     charges = [
-        charge for batch in ("A", "B")
-        for charge in _load_child_ledger(_batch_paths(evidence_root, batch)["ledger"]).request_charges
+        charge for ledger in ledgers for charge in ledger.request_charges
     ]
     input_tokens = sum(charge.input_tokens for charge in charges)
     completion_tokens = sum(charge.output_tokens for charge in charges)
     reasoning_tokens = sum(charge.reasoning_tokens or 0 for charge in charges)
     uncertain_exposure = sum(
-        (item.actual_cny for batch in ("A", "B")
-         for item in _load_child_ledger(_batch_paths(evidence_root, batch)["ledger"]).settlements
-         if item.status == "conservative_settled"),
+        (item.actual_cny for item in settlement_items if item.status == "conservative_settled"),
         Decimal("0"),
     )
     verified_provider_cost = Decimal(parent["spent_cny"]) - uncertain_exposure
@@ -1148,7 +1283,8 @@ def evidence_summary(*, root: Path, freeze_path: Path, evidence_root: Path) -> d
         not invalid and len(terminals) == 20 and
         statuses["infrastructure_error"] == statuses["provider_error"] == statuses["agent_error"] == 0 and
         statuses["resolved"] + statuses["unresolved"] == 20 and
-        request_charges == settlements and parent["active_reservation"] is None and parent["budget_block_count"] == 0
+        provider_usage_settlements == request_charges and settlements == valid_settlements and
+        usage_contract_violations == 0 and parent["active_reservation"] is None and parent["budget_block_count"] == 0
     )
     costs = [Decimal(str(event.get("actual_cny", "0"))) for event in terminals]
     durations = [float(event.get("duration_seconds", 0)) for event in terminals]
@@ -1185,6 +1321,9 @@ def evidence_summary(*, root: Path, freeze_path: Path, evidence_root: Path) -> d
         "median_cost_per_task": str(_money(Decimal(str(statistics.median(costs))))) if costs else None,
         "median_elapsed_seconds": str(statistics.median(durations)) if durations else None,
         "active_reservation": parent["active_reservation"], "settlements": settlements,
+        "provider_usage_settlements": provider_usage_settlements,
+        "conservative_settlements": conservative_settlements,
+        "usage_contract_violations": usage_contract_violations,
         "invalid_terminal_task_ids": invalid, "accepted": complete,
         "per_task": terminals, "per_task_costs": [str(cost) for cost in costs],
         "by_bucket": by_bucket, "by_repository": by_repo,
@@ -1211,6 +1350,7 @@ def finalize_evidence(*, root: Path, freeze_path: Path, evidence_root: Path) -> 
         f"- Resolved / unresolved: {summary['resolved']} / {summary['unresolved']}",
         f"- Infrastructure / Provider / Agent errors: {summary['infrastructure_error']} / {summary['provider_error']} / {summary['agent_error']}",
         f"- Total requests: {summary['total_requests']}",
+        f"- Provider Usage / conservative settlements: {summary['provider_usage_settlements']} / {summary['conservative_settlements']}",
         f"- Input / completion / reasoning Tokens: {summary['input_tokens']} / {summary['completion_tokens']} / {summary['reasoning_tokens']}",
         f"- Total cost: CNY {summary['total_cost_cny']}",
         f"- Verified actual Provider cost: CNY {summary['verified_actual_provider_cost_cny']}",
@@ -1270,7 +1410,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Goal 4 formal SWE-bench-Live runner")
     parser.add_argument("command", choices=[
         "validate", "preflight", "freeze-formal", "prepare-paid-artifacts", "zero-provider",
-        "paid-preflight", "prepare-recovery-artifacts", "execute-batch", "close-unknown-provider-outcome", "control-empty", "control-gold", "evaluator-recovery", "finalize", "validate-claims",
+        "paid-preflight", "prepare-recovery-artifacts", "compact-evaluator-transients",
+        "execute-batch", "close-unknown-provider-outcome", "control-empty", "control-gold",
+        "evaluator-recovery", "finalize", "validate-claims",
     ])
     parser.add_argument("--freeze", type=Path, default=DEFAULT_RUNS_DIR / "formal-freeze.json")
     parser.add_argument("--old-freeze", type=Path)
@@ -1285,6 +1427,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--instance-id")
     parser.add_argument("--instance-ids")
     parser.add_argument("--retry-of")
+    parser.add_argument("--source-run-id")
+    parser.add_argument("--source-artifact-name")
+    parser.add_argument("--source-archive-sha256")
     parser.add_argument("--trial-id")
     parser.add_argument("--reservation-id")
     parser.add_argument("--request-ordinal", type=int)
@@ -1332,6 +1477,15 @@ def main(argv: list[str] | None = None) -> int:
             payload = prepare_recovery_artifacts(
                 root=root, old_freeze_path=args.old_freeze, new_freeze_path=args.freeze,
                 pricing_path=args.pricing_snapshot, evidence_root=args.evidence_root,
+            )
+        elif args.command == "compact-evaluator-transients":
+            if not all((args.source_run_id, args.source_artifact_name, args.source_archive_sha256)):
+                raise ValueError("compact-evaluator-transients requires source Artifact provenance")
+            payload = compact_evaluator_transients(
+                root=root, evidence_root=args.evidence_root,
+                source_run_id=args.source_run_id,
+                source_artifact_name=args.source_artifact_name,
+                source_archive_sha256=args.source_archive_sha256,
             )
         elif args.command == "execute-batch":
             if args.dataset_jsonl is None or args.batch is None or args.run_id is None:
