@@ -15,6 +15,18 @@ on:
         description: Commit recorded by the new recovery Freeze
         required: true
         type: string
+      source_evidence_artifact_id:
+        description: Exact failed recovery Artifact ID to continue
+        required: true
+        type: string
+      source_evidence_archive_sha256:
+        description: SHA-256 of the exact failed recovery Artifact archive
+        required: true
+        type: string
+      reservation_id:
+        description: Exact active reservation to conservatively close
+        required: true
+        type: string
       run_prefix:
         description: New unused recovery run prefix
         required: true
@@ -52,44 +64,93 @@ jobs:
           run-id: ${{ inputs.freeze_run_id }}
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/goal4-freeze
-      - name: Download immutable blocked evidence
+      - name: Download and verify the exact failed recovery evidence
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          artifact_id="$(gh api repos/$GITHUB_REPOSITORY/actions/artifacts/8486382695 --jq .id)"
-          test "$artifact_id" = 8486382695
-          gh api repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip > "$RUNNER_TEMP/goal4-blocked.zip"
-          printf '%s  %s\n' '2085b856b55b5df46118ef1935b846ecdc2ff01ff9f08fc4fabf7595144f1d30' "$RUNNER_TEMP/goal4-blocked.zip" | sha256sum --check
-          unzip -q "$RUNNER_TEMP/goal4-blocked.zip" -d "$RUNNER_TEMP/goal4-recovery"
-      - name: Verify zero-provider recovery preflight
+          test '${{ inputs.source_evidence_artifact_id }}' = '8492031370'
+          test '${{ inputs.source_evidence_archive_sha256 }}' = '73d881919986eb4b09f039f1b092eb08cabf442aadd7c8136df161cfe27b7578'
+          test '${{ inputs.reservation_id }}' = 'b0fe95a87fe846059c5381c171b96c47'
+          artifact_id="$(gh api repos/$GITHUB_REPOSITORY/actions/artifacts/${{ inputs.source_evidence_artifact_id }} --jq .id)"
+          test "$artifact_id" = '${{ inputs.source_evidence_artifact_id }}'
+          gh api repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip > "$RUNNER_TEMP/goal4-source.zip"
+          printf '%s  %s\n' '${{ inputs.source_evidence_archive_sha256 }}' "$RUNNER_TEMP/goal4-source.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/goal4-source.zip" -d "$RUNNER_TEMP/goal4-recovery"
+      - name: Verify source evidence and conservatively close the exact reservation
         run: |
           set -euo pipefail
           python -m pip install -e . pytest pytest-asyncio
           root="$RUNNER_TEMP/goal4-recovery"
           freeze="$RUNNER_TEMP/goal4-freeze"
-          python - "$root" "$freeze" '${{ inputs.freeze_commit }}' <<'PY'
+          python - "$root" "$freeze" '${{ inputs.freeze_commit }}' '${{ inputs.reservation_id }}' <<'PY'
           import json, sys
+          from decimal import Decimal
           from pathlib import Path
-          root, freeze, commit = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+          from evals.goal4_swe import update_parent_ledger
+          from evals.paid_gate import BudgetAuthorization, BudgetLedger, reconcile_unknown_usage
+
+          root, freeze = Path(sys.argv[1]), Path(sys.argv[2])
+          commit, reservation_id = sys.argv[3], sys.argv[4]
+          # The dispatch ref may be main; only this exact Freeze commit is evaluated.
           new = json.loads((freeze / 'formal-freeze.json').read_text())
           if new['codepacex_commit'] != commit:
               raise SystemExit('recovery Freeze commit mismatch')
           if new['matrix_sha256'] != '9ff16e850b92a6eb0bd1338cb85253a605fdfb0e0aa77180488382eca353972a':
               raise SystemExit('formal matrix changed')
-          events = [json.loads(line) for path in root.glob('*/events.jsonl') for line in path.read_text().splitlines() if line]
-          final = {}
-          for event in sorted((item for item in events if item.get('type') == 'trial_completed'), key=lambda item: item.get('timestamp', 0)):
-              final[event['task_id']] = event
-          if final['dynaconf__dynaconf-1225'].get('reason') != 'request_ceiling_contract_violation':
-              raise SystemExit('blocked Dynaconf evidence mismatch')
-          expected = {'dynaconf__dynaconf-1249', 'instructlab__instructlab-2540'}
-          if {task['instance_id'] for task in new['tasks'] if task['instance_id'] not in final} != expected:
-              raise SystemExit('recovery scope is not exactly the two unrun instances')
+          source = json.loads((root / 'formal-freeze.json').read_text())
+          if any(source[key] != new[key] for key in ('codepacex_commit', 'matrix_sha256', 'pricing_snapshot_hash', 'prompt_sha256', 'tool_schema_sha256')):
+              raise SystemExit('source Artifact Freeze identity mismatch')
+          run_id = 'goal4-request-ceiling-29819584141-r1-dynaconf-retry'
+          instance_id = 'dynaconf__dynaconf-1225'
+          trial_id = f'swe/goal4/{run_id}/batch-b/1/{instance_id}'
+          events = [json.loads(line) for line in (root / run_id / 'events.jsonl').read_text().splitlines() if line]
+          terminal = [event for event in events if event.get('type') == 'trial_completed' and event.get('task_id') == instance_id]
+          if len(terminal) != 1 or terminal[0].get('status') != 'infrastructure_error' or terminal[0].get('reason') != 'active_reservation':
+              raise SystemExit('failed Dynaconf terminal evidence mismatch')
+          if terminal[0].get('provider_request_count') != 0 or terminal[0].get('official_evaluator_completed'):
+              raise SystemExit('failed Dynaconf terminal cannot be reconciled')
+          ledger_path = root / 'accounts' / 'batch-b-ledger.json'
+          parent_path = root / 'accounts' / 'parent-ledger.json'
+          authorization = BudgetAuthorization.model_validate_json((root / 'accounts' / 'batch-b-authorization.json').read_text())
+          ledger = BudgetLedger.model_validate_json(ledger_path.read_text())
+          parent_before = json.loads(parent_path.read_text())
+          active = ledger.active_reservation
+          if active is None or active.reservation_id != reservation_id or active.trial_id != trial_id or active.reserved_cny != Decimal('1.830912'):
+              raise SystemExit('authorized reservation mismatch')
+          if any(item.reservation_id == reservation_id for item in ledger.request_charges + ledger.settlements):
+              raise SystemExit('reservation already has a charge or settlement')
+          charges_before, settlements_before = len(ledger.request_charges), len(ledger.settlements)
+          settlement = reconcile_unknown_usage(
+              ledger_path, authorization=authorization, reservation_id=reservation_id,
+              evidence_gap='HTTP 500 Batch backend error; no trustworthy Provider Usage or billable token record; conservative close authorized for the exact failed recovery reservation',
+          )
+          parent_after = update_parent_ledger(root)
+          ledger_after = BudgetLedger.model_validate_json(ledger_path.read_text())
+          if ledger_after.active_reservation is not None or len(ledger_after.request_charges) != charges_before or len(ledger_after.settlements) != settlements_before + 1:
+              raise SystemExit('conservative close did not close exactly one reservation')
+          if settlement.actual_cny != Decimal('1.830912') or any(getattr(settlement, field, None) is not None for field in ('requests', 'input_tokens', 'output_tokens', 'reasoning_tokens')):
+              raise SystemExit('conservative close fabricated Provider Usage')
+          ledgers = [BudgetLedger.model_validate_json((root / 'accounts' / f'batch-{batch}-ledger.json').read_text()) for batch in ('a', 'b')]
+          conservative = [item.actual_cny for child_ledger in ledgers for item in child_ledger.settlements if item.status == 'conservative_settled']
+          verified = sum((item.actual_cny for ledger in ledgers for item in ledger.request_charges), Decimal('0'))
+          if sum(conservative, Decimal('0')) != Decimal('5.492736') or verified != Decimal('121.323096') or parent_after['spent_cny'] != '126.815832':
+              raise SystemExit('conservative accounting total mismatch')
+          if parent_after['settlement_count'] != parent_before['settlement_count'] + 1:
+              raise SystemExit('parent settlement count did not increase once')
+          audit = {
+              'schema_version': 1, 'operation': 'unknown_provider_outcome_conservative_close',
+              'reservation_id': reservation_id, 'trial_id': trial_id, 'run_id': run_id,
+              'reason': 'HTTP 500 Batch backend error / unknown Provider outcome / missing Usage',
+              'actual_cny': str(settlement.actual_cny), 'requests': None, 'input_tokens': None,
+              'output_tokens': None, 'reasoning_tokens': None, 'active_reservation_after': parent_after['active_reservation'],
+          }
+          target = root / 'recovery' / f'unknown-provider-close-{run_id}-{instance_id}.json'
+          if target.exists():
+              raise SystemExit('conservative close audit already exists')
+          target.write_text(json.dumps(audit, indent=2, sort_keys=True) + '\n')
           PY
-          cp "$root/formal-freeze.json" "$root/formal-freeze.before-recovery.json"
           cp "$freeze/formal-freeze.json" "$freeze/formal-dataset.jsonl" "$freeze/formal-matrix.json" "$freeze/pricing-provenance.json" "$freeze/pricing-snapshot.json" "$root/"
-          python -m evals.goal4_swe prepare-recovery-artifacts --old-freeze "$root/formal-freeze.before-recovery.json" --freeze "$root/formal-freeze.json" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
           python -m evals.goal4_swe paid-preflight --freeze "$root/formal-freeze.json" --dataset-jsonl "$root/formal-dataset.jsonl" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
           python -m evals.secret_scan --artifact-root "$root" --untrusted-json-field problem_statement
       - uses: actions/upload-artifact@v4
@@ -123,6 +184,43 @@ jobs:
           git clone --filter=blob:none https://github.com/microsoft/SWE-bench-Live.git "$RUNNER_TEMP/swe-bench-live"
           git -C "$RUNNER_TEMP/swe-bench-live" checkout --detach "$EVALUATOR_COMMIT"
           python -m pip install -e "$RUNNER_TEMP/swe-bench-live"
+          cat > "$RUNNER_TEMP/reconcile-goal4-active.py" <<'PY'
+          import json, sys
+          from pathlib import Path
+          from evals.goal4_swe import update_parent_ledger
+          from evals.paid_gate import BudgetAuthorization, BudgetLedger, reconcile_unknown_usage
+
+          root, run_id, instance_id = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+          ledger_path = root / 'accounts' / 'batch-b-ledger.json'
+          ledger = BudgetLedger.model_validate_json(ledger_path.read_text())
+          active = ledger.active_reservation
+          if active is None:
+              raise SystemExit(0)
+          trial_id = f'swe/goal4/{run_id}/batch-b/1/{instance_id}'
+          if active.trial_id != trial_id:
+              raise SystemExit('unexpected active reservation belongs to a different Trial')
+          events = [json.loads(line) for line in (root / run_id / 'events.jsonl').read_text().splitlines() if line]
+          terminal = [event for event in events if event.get('type') == 'trial_completed' and event.get('task_id') == instance_id]
+          if len(terminal) != 1 or terminal[0].get('status') != 'infrastructure_error' or terminal[0].get('reason') != 'active_reservation':
+              raise SystemExit('active reservation is not a conservatively closable infrastructure terminal')
+          authorization = BudgetAuthorization.model_validate_json((root / 'accounts' / 'batch-b-authorization.json').read_text())
+          settlement = reconcile_unknown_usage(
+              ledger_path, authorization=authorization, reservation_id=active.reservation_id,
+              evidence_gap='final authorized Goal 4 continuation encountered an infrastructure terminal with no durable Provider Usage; conservative close under the bounded user authorization',
+          )
+          parent = update_parent_ledger(root)
+          audit = {
+              'schema_version': 1, 'operation': 'unknown_provider_outcome_conservative_close',
+              'run_id': run_id, 'instance_id': instance_id, 'trial_id': trial_id,
+              'reservation_id': settlement.reservation_id, 'actual_cny': str(settlement.actual_cny),
+              'requests': None, 'input_tokens': None, 'output_tokens': None, 'reasoning_tokens': None,
+              'active_reservation_after': parent['active_reservation'],
+          }
+          target = root / 'recovery' / f'unknown-provider-close-{run_id}-{instance_id}.json'
+          if target.exists():
+              raise SystemExit('conservative close audit already exists')
+          target.write_text(json.dumps(audit, indent=2, sort_keys=True) + '\n')
+          PY
       - name: Preserve immutable blocked finalization
         run: |
           set -euo pipefail
@@ -134,34 +232,103 @@ jobs:
             shasum -a 256 "$root/reports/$name" > "$destination/$name.sha256"
             mv "$root/reports/$name" "$destination/$name"
           done
-      - name: Retry only the blocked Dynaconf Trial
+      - name: Retry Dynaconf 1225 exactly once
         env:
           BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
         run: |
           set -euo pipefail
           test -n "$BAILIAN_API_KEY"
           root="$RUNNER_TEMP/goal4-recovery"
-          python -m evals.goal4_swe execute-batch --confirm-paid-run --batch B --run-id '${{ inputs.run_prefix }}-dynaconf-retry' --retry-of 'goal4-authorized-29801985031-02-batch-b-remaining' --instance-ids dynaconf__dynaconf-1225 --freeze "$root/formal-freeze.json" --dataset-jsonl "$root/formal-dataset.jsonl" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
-          python - "$root" '${{ inputs.run_prefix }}-dynaconf-retry' <<'PY'
+          python -m evals.goal4_swe execute-batch --confirm-paid-run --batch B --run-id '${{ inputs.run_prefix }}-dynaconf-retry' --retry-of 'goal4-request-ceiling-29819584141-r1-dynaconf-retry' --instance-ids dynaconf__dynaconf-1225 --freeze "$root/formal-freeze.json" --dataset-jsonl "$root/formal-dataset.jsonl" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
+      - name: Conservatively close Dynaconf 1225 only if its new terminal is active-reservation
+        if: always()
+        run: python "$RUNNER_TEMP/reconcile-goal4-active.py" "$RUNNER_TEMP/goal4-recovery" '${{ inputs.run_prefix }}-dynaconf-retry' dynaconf__dynaconf-1225
+      - name: Gate Dynaconf 1225 before any later task
+        if: always()
+        run: |
+          python - "$RUNNER_TEMP/goal4-recovery" '${{ inputs.run_prefix }}-dynaconf-retry' dynaconf__dynaconf-1225 <<'PY'
           import json, sys
           from pathlib import Path
-          root, run_id = Path(sys.argv[1]), sys.argv[2]
+          root, run_id, instance_id = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
           events = [json.loads(line) for line in (root / run_id / 'events.jsonl').read_text().splitlines()]
-          terminal = [item for item in events if item.get('type') == 'trial_completed']
+          terminal = [item for item in events if item.get('type') == 'trial_completed' and item.get('task_id') == instance_id]
           ledger = json.loads((root / 'accounts/batch-b-ledger.json').read_text())
           if len(terminal) != 1 or terminal[0].get('status') not in {'resolved', 'unresolved'}:
               raise SystemExit('Dynaconf retry is not scorable')
+          trial_id = terminal[0]['trial_id']
+          charges = [item for item in ledger['request_charges'] if item['trial_id'] == trial_id]
+          settlements = [item for item in ledger['settlements'] if item['trial_id'] == trial_id]
           if not terminal[0].get('official_evaluator_completed') or ledger['active_reservation'] is not None:
               raise SystemExit('Dynaconf retry evidence or accounting is incomplete')
+          if not 0 < terminal[0]['provider_request_count'] <= 40 or not (len(charges) == len(settlements) == terminal[0]['provider_request_count']):
+              raise SystemExit('Dynaconf retry request accounting is incomplete or over ceiling')
+          if any(item['status'] != 'settled' or item['settlement_method'] != 'provider_usage' or item['usage_status'] != 'known' for item in settlements):
+              raise SystemExit('Dynaconf retry has unknown Provider outcome')
           PY
-      - name: Run only the two registered never-run tasks strictly serially
+      # Scope: dynaconf__dynaconf-1249,instructlab__instructlab-2540 are deliberately executed one at a time.
+      # The historical goal4-authorized-29801985031-02-batch-b-remaining Trial remains immutable provenance.
+      - name: Run Dynaconf 1249 once after the Dynaconf 1225 gate
         env:
           BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
         run: |
           set -euo pipefail
           test -n "$BAILIAN_API_KEY"
           root="$RUNNER_TEMP/goal4-recovery"
-          python -m evals.goal4_swe execute-batch --confirm-paid-run --batch B --run-id '${{ inputs.run_prefix }}-remaining' --instance-ids dynaconf__dynaconf-1249,instructlab__instructlab-2540 --freeze "$root/formal-freeze.json" --dataset-jsonl "$root/formal-dataset.jsonl" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
+          python -m evals.goal4_swe execute-batch --confirm-paid-run --batch B --run-id '${{ inputs.run_prefix }}-dynaconf-1249' --instance-ids dynaconf__dynaconf-1249 --freeze "$root/formal-freeze.json" --dataset-jsonl "$root/formal-dataset.jsonl" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
+      - name: Conservatively close Dynaconf 1249 only if its new terminal is active-reservation
+        if: always()
+        run: python "$RUNNER_TEMP/reconcile-goal4-active.py" "$RUNNER_TEMP/goal4-recovery" '${{ inputs.run_prefix }}-dynaconf-1249' dynaconf__dynaconf-1249
+      - name: Gate Dynaconf 1249 before InstructLab
+        if: always()
+        run: |
+          python - "$RUNNER_TEMP/goal4-recovery" '${{ inputs.run_prefix }}-dynaconf-1249' dynaconf__dynaconf-1249 <<'PY'
+          import json, sys
+          from pathlib import Path
+          root, run_id, instance_id = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+          events = [json.loads(line) for line in (root / run_id / 'events.jsonl').read_text().splitlines()]
+          terminal = [item for item in events if item.get('type') == 'trial_completed' and item.get('task_id') == instance_id]
+          ledger = json.loads((root / 'accounts/batch-b-ledger.json').read_text())
+          if len(terminal) != 1 or terminal[0].get('status') not in {'resolved', 'unresolved'} or not terminal[0].get('official_evaluator_completed'):
+              raise SystemExit('Dynaconf 1249 is not scorable')
+          trial_id = terminal[0]['trial_id']
+          charges = [item for item in ledger['request_charges'] if item['trial_id'] == trial_id]
+          settlements = [item for item in ledger['settlements'] if item['trial_id'] == trial_id]
+          if ledger['active_reservation'] is not None or not 0 < terminal[0]['provider_request_count'] <= 40 or not (len(charges) == len(settlements) == terminal[0]['provider_request_count']):
+              raise SystemExit('Dynaconf 1249 accounting is incomplete or over ceiling')
+          if any(item['status'] != 'settled' or item['settlement_method'] != 'provider_usage' or item['usage_status'] != 'known' for item in settlements):
+              raise SystemExit('Dynaconf 1249 has unknown Provider outcome')
+          PY
+      - name: Run InstructLab 2540 once after the Dynaconf 1249 gate
+        env:
+          BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+        run: |
+          set -euo pipefail
+          : "${BAILIAN_API_KEY:?BAILIAN_API_KEY is required}"
+          root="$RUNNER_TEMP/goal4-recovery"
+          python -m evals.goal4_swe execute-batch --confirm-paid-run --batch B --run-id '${{ inputs.run_prefix }}-instructlab-2540' --instance-ids instructlab__instructlab-2540 --freeze "$root/formal-freeze.json" --dataset-jsonl "$root/formal-dataset.jsonl" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
+      - name: Conservatively close InstructLab 2540 only if its new terminal is active-reservation
+        if: always()
+        run: python "$RUNNER_TEMP/reconcile-goal4-active.py" "$RUNNER_TEMP/goal4-recovery" '${{ inputs.run_prefix }}-instructlab-2540' instructlab__instructlab-2540
+      - name: Gate InstructLab 2540 final evidence
+        if: always()
+        run: |
+          python - "$RUNNER_TEMP/goal4-recovery" '${{ inputs.run_prefix }}-instructlab-2540' instructlab__instructlab-2540 <<'PY'
+          import json, sys
+          from pathlib import Path
+          root, run_id, instance_id = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+          events = [json.loads(line) for line in (root / run_id / 'events.jsonl').read_text().splitlines()]
+          terminal = [item for item in events if item.get('type') == 'trial_completed' and item.get('task_id') == instance_id]
+          ledger = json.loads((root / 'accounts/batch-b-ledger.json').read_text())
+          if len(terminal) != 1 or terminal[0].get('status') not in {'resolved', 'unresolved'} or not terminal[0].get('official_evaluator_completed'):
+              raise SystemExit('InstructLab 2540 is not scorable')
+          trial_id = terminal[0]['trial_id']
+          charges = [item for item in ledger['request_charges'] if item['trial_id'] == trial_id]
+          settlements = [item for item in ledger['settlements'] if item['trial_id'] == trial_id]
+          if ledger['active_reservation'] is not None or not 0 < terminal[0]['provider_request_count'] <= 40 or not (len(charges) == len(settlements) == terminal[0]['provider_request_count']):
+              raise SystemExit('InstructLab 2540 accounting is incomplete or over ceiling')
+          if any(item['status'] != 'settled' or item['settlement_method'] != 'provider_usage' or item['usage_status'] != 'known' for item in settlements):
+              raise SystemExit('InstructLab 2540 has unknown Provider outcome')
+          PY
       - name: Finalize and scan recovery evidence
         if: always()
         run: |
