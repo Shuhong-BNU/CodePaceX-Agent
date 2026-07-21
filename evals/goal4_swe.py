@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
@@ -45,6 +46,7 @@ from evals.goal3_swe import (
 from evals.paid_gate import (
     BudgetAuthorization,
     BudgetLedger,
+    AuthorizationRebind,
     PaidRunGate,
     StageCBudgetAllocation,
     _money,
@@ -964,7 +966,9 @@ def close_unknown_provider_outcome(
     """
     root, evidence_root = root.resolve(), evidence_root.resolve()
     _require_goal4_path(evidence_root)
-    frozen = load_formal_freeze(freeze_path, root=root)
+    # Historical reconciliation is intentionally allowed against the old
+    # Freeze; it must not require the current checkout to match that commit.
+    frozen = load_formal_freeze(freeze_path)
     paths = _batch_paths(evidence_root, batch)
     authorization = BudgetAuthorization.model_validate_json(paths["authorization"].read_text(encoding="utf-8"))
     ledger = BudgetLedger.model_validate_json(paths["ledger"].read_text(encoding="utf-8"))
@@ -1008,6 +1012,70 @@ def close_unknown_provider_outcome(
     target = evidence_root / "recovery" / f"unknown-provider-close-{run_id}-{instance_id}.json"
     _write_json_new(target, audit)
     return audit
+
+
+def prepare_recovery_artifacts(
+    *, root: Path, old_freeze_path: Path, new_freeze_path: Path,
+    pricing_path: Path, evidence_root: Path,
+) -> dict[str, Any]:
+    """Rebind a conservatively closed paid root to the current Freeze."""
+    root, evidence_root = root.resolve(), evidence_root.resolve()
+    _require_goal4_path(evidence_root)
+    new_frozen = load_formal_freeze(new_freeze_path, root=root)
+    old_frozen = load_formal_freeze(old_freeze_path)
+    if old_frozen["matrix_sha256"] != new_frozen["matrix_sha256"]:
+        raise ValueError("recovery Freeze matrix changed")
+    pricing = load_pricing(pricing_path)
+    if pricing_snapshot_hash(pricing) != new_frozen["pricing_snapshot_hash"]:
+        raise ValueError("recovery pricing snapshot mismatch")
+    for batch in ("A", "B"):
+        paths = _batch_paths(evidence_root, batch)
+        old_auth = BudgetAuthorization.model_validate_json(paths["authorization"].read_text(encoding="utf-8"))
+        ledger = BudgetLedger.model_validate_json(paths["ledger"].read_text(encoding="utf-8"))
+        if ledger.active_reservation is not None:
+            raise ValueError("recovery requires active_reservation=null")
+        new_auth = old_auth.model_copy(update={
+            "experiment_commit": new_frozen["codepacex_commit"],
+            "authorized_at": "goal4-recovery-rebind",
+        })
+        old_hash = authorization_hash(old_auth)
+        new_hash = authorization_hash(new_auth)
+        if ledger.authorization_hash != old_hash:
+            raise ValueError("recovery ledger authorization mismatch")
+        ledger.authorization_rebinds.append(AuthorizationRebind(
+            previous_authorization_hash=old_hash, authorization_hash=new_hash,
+            previous_allocation_hash=ledger.allocation_hash,
+            rebound_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        ))
+        ledger.authorization_hash = new_hash
+        ledger.allocation_hash = None
+        ledger.updated_at = "goal4-recovery-rebind"
+        paths["authorization"].write_text(json.dumps(new_auth.model_dump(mode="json"), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        from evals.paid_gate import _write_ledger_atomic
+        _write_ledger_atomic(paths["ledger"], ledger)
+        execution = _batch_execution_ceiling(pricing, batch)
+        remaining = _money(execution - ledger.spent_cny)
+        allocation = StageCBudgetAllocation(
+            experiment_commit=new_frozen["codepacex_commit"],
+            pricing_snapshot_hash=new_frozen["pricing_snapshot_hash"],
+            baseline_ledger_sha256=ledger_fingerprint(ledger),
+            baseline_authorization_hash=new_hash,
+            baseline_spent_cny=ledger.spent_cny,
+            baseline_request_charge_count=len(ledger.request_charges),
+            baseline_settlement_count=len(ledger.settlements),
+            baseline_budget_block_count=len(ledger.budget_blocks),
+            baseline_rebind_count=len(ledger.authorization_rebinds),
+            safety_reserve_cny=_money(BATCH_AUTHORIZATION[batch] - execution),
+            spendable_total_cny=ledger.spent_cny + remaining,
+            category_limits_cny={"swe": remaining, "mcp": Decimal("0"), "retention": Decimal("0"), "permission": Decimal("0"), "multi_agent": Decimal("0"), "long_session": Decimal("0")},
+        )
+        paths["allocation"].write_text(json.dumps(allocation.model_dump(mode="json"), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    parent_path = _parent_paths(evidence_root)["authorization"]
+    parent = json.loads(parent_path.read_text(encoding="utf-8"))
+    parent["experiment_commit"] = new_frozen["codepacex_commit"]
+    parent["status"] = "recovery_rebound"
+    parent_path.write_text(json.dumps(parent, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return update_parent_ledger(evidence_root)
 
 
 def _trial_events(evidence_root: Path) -> list[dict[str, Any]]:
@@ -1060,6 +1128,13 @@ def evidence_summary(*, root: Path, freeze_path: Path, evidence_root: Path) -> d
     input_tokens = sum(charge.input_tokens for charge in charges)
     completion_tokens = sum(charge.output_tokens for charge in charges)
     reasoning_tokens = sum(charge.reasoning_tokens or 0 for charge in charges)
+    uncertain_exposure = sum(
+        (item.actual_cny for batch in ("A", "B")
+         for item in _load_child_ledger(_batch_paths(evidence_root, batch)["ledger"]).settlements
+         if item.status == "conservative_settled"),
+        Decimal("0"),
+    )
+    verified_provider_cost = Decimal(parent["spent_cny"]) - uncertain_exposure
     complete = (
         not invalid and len(terminals) == 20 and
         statuses["infrastructure_error"] == statuses["provider_error"] == statuses["agent_error"] == 0 and
@@ -1091,6 +1166,9 @@ def evidence_summary(*, root: Path, freeze_path: Path, evidence_root: Path) -> d
         "total_requests": request_charges, "input_tokens": input_tokens,
         "completion_tokens": completion_tokens, "reasoning_tokens": reasoning_tokens,
         "total_cost_cny": parent["spent_cny"],
+        "verified_actual_provider_cost_cny": str(_money(verified_provider_cost)),
+        "uncertain_maximum_exposure_cny": str(_money(uncertain_exposure)),
+        "combined_conservative_budget_consumption_cny": parent["spent_cny"],
         "average_requests_per_attempted": _decimal_average(Decimal(request_charges), len(terminals)),
         "average_cost_per_attempted": _decimal_average(total_cost, len(terminals)),
         "average_cost_per_scorable": _decimal_average(total_cost, statuses["resolved"] + statuses["unresolved"]),
@@ -1126,6 +1204,10 @@ def finalize_evidence(*, root: Path, freeze_path: Path, evidence_root: Path) -> 
         f"- Total requests: {summary['total_requests']}",
         f"- Input / completion / reasoning Tokens: {summary['input_tokens']} / {summary['completion_tokens']} / {summary['reasoning_tokens']}",
         f"- Total cost: CNY {summary['total_cost_cny']}",
+        f"- Verified actual Provider cost: CNY {summary['verified_actual_provider_cost_cny']}",
+        f"- Uncertain maximum exposure: CNY {summary['uncertain_maximum_exposure_cny']}",
+        f"- Combined conservative budget consumption: CNY {summary['combined_conservative_budget_consumption_cny']}",
+        f"- Paid Trial attempts / infrastructure retries: {summary['paid_trial_attempts']} / {summary['infrastructure_retry_count']}",
         f"- Active reservation: {summary['active_reservation']}",
         f"- Average requests per attempted: {summary['average_requests_per_attempted']}",
         f"- Average cost per attempted / scorable / resolved: {summary['average_cost_per_attempted']} / {summary['average_cost_per_scorable']} / {summary['average_cost_per_resolved']}",
@@ -1179,9 +1261,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Goal 4 formal SWE-bench-Live runner")
     parser.add_argument("command", choices=[
         "validate", "preflight", "freeze-formal", "prepare-paid-artifacts", "zero-provider",
-        "paid-preflight", "execute-batch", "close-unknown-provider-outcome", "control-empty", "control-gold", "evaluator-recovery", "finalize", "validate-claims",
+        "paid-preflight", "prepare-recovery-artifacts", "execute-batch", "close-unknown-provider-outcome", "control-empty", "control-gold", "evaluator-recovery", "finalize", "validate-claims",
     ])
     parser.add_argument("--freeze", type=Path, default=DEFAULT_RUNS_DIR / "formal-freeze.json")
+    parser.add_argument("--old-freeze", type=Path)
     parser.add_argument("--dataset-jsonl", type=Path)
     parser.add_argument("--source-dataset-jsonl", type=Path)
     parser.add_argument("--pricing-snapshot", type=Path, default=DEFAULT_RUNS_DIR / "pricing-snapshot.json")
@@ -1232,6 +1315,13 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("paid-preflight requires --dataset-jsonl")
             payload = paid_preflight(
                 root=root, freeze_path=args.freeze, dataset_jsonl=args.dataset_jsonl,
+                pricing_path=args.pricing_snapshot, evidence_root=args.evidence_root,
+            )
+        elif args.command == "prepare-recovery-artifacts":
+            if args.old_freeze is None:
+                raise ValueError("prepare-recovery-artifacts requires --old-freeze")
+            payload = prepare_recovery_artifacts(
+                root=root, old_freeze_path=args.old_freeze, new_freeze_path=args.freeze,
                 pricing_path=args.pricing_snapshot, evidence_root=args.evidence_root,
             )
         elif args.command == "execute-batch":
