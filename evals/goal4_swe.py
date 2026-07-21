@@ -1036,6 +1036,7 @@ def prepare_recovery_artifacts(
             raise ValueError("recovery requires active_reservation=null")
         new_auth = old_auth.model_copy(update={
             "experiment_commit": new_frozen["codepacex_commit"],
+            "pricing_snapshot_hash": new_frozen["pricing_snapshot_hash"],
             "authorized_at": "goal4-recovery-rebind",
         })
         old_hash = authorization_hash(old_auth)
