@@ -6,10 +6,15 @@ from evals.secret_scan import line_has_credential, scan_artifact_roots
 
 def test_tracked_secret_scanner_covers_assignments_bearer_and_encoded_credentials() -> None:
     assert line_has_credential("BAILIAN_" + "API_KEY=live_credential_value")
+    assert line_has_credential("AWS_SECRET_" + "ACCESS_KEY=live_credential_value")
+    assert line_has_credential("DATABASE_" + "URL=postgresql://user:credential@db.internal/app")
     assert line_has_credential("Authorization: " + "Bear" + "er credential-value-123")
     assert line_has_credential("https://user:" + "encoded%2Fpassword@proxy.internal")
     assert not line_has_credential('{"type":"thinking","text":"AWS::AccountId"}')
     assert not line_has_credential('{"type":"thinking","text":"AWS::LanguageExtensions"}')
+    assert not line_has_credential('TopicArn: "arn:aws:sns:us-east-1:123456789012:topic"')
+    assert not line_has_credential("action: aws:runShellScript")
+    assert not line_has_credential("library database: /tmp/beets/library.db")
     assert not line_has_credential("BAILIAN_API_KEY=test-only-bailian-key")
     assert not line_has_credential("https://user:password@example.test")
 

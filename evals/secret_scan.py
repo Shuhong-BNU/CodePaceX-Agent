@@ -15,9 +15,15 @@ from pathlib import Path
 
 
 _PATTERNS = (
-    # A double-colon namespace such as AWS::AccountId is public source text,
-    # not an assignment carrying a credential value.
-    re.compile(r"(?i)\b(?:bailian|agentrouter|dashscope|github|aws(?:_access)?|database)[a-z0-9_]*\s*(?::(?!:)|=)\s*['\"]?[^\s'\"]{8,}"),
+    # Match credential field names rather than public source namespaces or
+    # labels such as arn:aws:... and "database: /tmp/library.db".
+    re.compile(
+        r"(?i)\b(?:"
+        r"(?:bailian|agentrouter|dashscope)_api_key|github_token|"
+        r"aws_(?:access_key_id|secret_access_key|session_token)|"
+        r"database_(?:url|password|passwd|secret|token|api_key)"
+        r")\s*(?::(?!:)|=)\s*['\"]?[^\s'\"]{8,}"
+    ),
     re.compile(r"(?i)\bbearer\s+[a-z0-9._~+/%=-]{12,}"),
     re.compile(r"https?://[^\s/@:]+:[^\s/@]+@[^\s/]+"),
     re.compile(r"\bsk-(?:ant-)?[a-z0-9_-]{12,}\b", re.IGNORECASE),
