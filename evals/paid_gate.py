@@ -150,6 +150,18 @@ class BudgetBlock(BaseModel):
     recorded_at: str
 
 
+class ProviderRequestCeilingBlock(BaseModel):
+    """A per-Trial request refusal recorded before Provider transport."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    trial_id: str
+    maximum_provider_requests: int = Field(gt=0)
+    attempted_request_index: int = Field(gt=0)
+    reason: Literal["provider_request_ceiling"] = "provider_request_ceiling"
+    recorded_at: str
+
+
 class ProviderUsageContractViolation(BaseModel):
     """A settled request exceeded a frozen usage ceiling."""
 
@@ -193,6 +205,7 @@ class BudgetLedger(BaseModel):
     request_charges: list[RequestCharge] = Field(default_factory=list)
     settlements: list[Settlement] = Field(default_factory=list)
     budget_blocks: list[BudgetBlock] = Field(default_factory=list)
+    provider_request_ceiling_blocks: list[ProviderRequestCeilingBlock] = Field(default_factory=list)
     usage_contract_violations: list[ProviderUsageContractViolation] = Field(default_factory=list)
     authorization_rebinds: list[AuthorizationRebind] = Field(default_factory=list)
     updated_at: str
@@ -259,6 +272,9 @@ def ledger_fingerprint(ledger: BudgetLedger) -> str:
         "request_charges": [item.model_dump(mode="json") for item in ledger.request_charges],
         "settlements": [item.model_dump(mode="json") for item in ledger.settlements],
         "budget_blocks": [item.model_dump(mode="json") for item in ledger.budget_blocks],
+        "provider_request_ceiling_blocks": [
+            item.model_dump(mode="json") for item in ledger.provider_request_ceiling_blocks
+        ],
         "usage_contract_violations": [
             item.model_dump(mode="json") for item in ledger.usage_contract_violations
         ],
@@ -908,6 +924,10 @@ class PaidRunGate:
             violations = [
                 item for item in ledger.usage_contract_violations if item.trial_id == trial_id
             ]
+            ceiling_blocks = [
+                item for item in ledger.provider_request_ceiling_blocks
+                if item.trial_id == trial_id
+            ]
             return {
                 "trial_id": trial_id,
                 "request_count": len(charges),
@@ -922,6 +942,10 @@ class PaidRunGate:
                 "budget_block_reasons": [item.reason for item in blocks],
                 "provider_usage_contract_violation": (
                     violations[-1].model_dump(mode="json") if violations else None
+                ),
+                "provider_request_ceiling_blocked": bool(ceiling_blocks),
+                "provider_request_ceiling_block": (
+                    ceiling_blocks[-1].model_dump(mode="json") if ceiling_blocks else None
                 ),
                 "active_reservation": (
                     ledger.active_reservation.model_dump(mode="json")
@@ -968,6 +992,7 @@ _REQUEST_BUDGET_KEYS = (
     "CODEPACEX_BUDGET_MAX_INPUT_TOKENS",
     "CODEPACEX_BUDGET_MAX_OUTPUT_TOKENS",
     "CODEPACEX_BUDGET_MAX_REASONING_TOKENS",
+    "CODEPACEX_BUDGET_MAX_REQUESTS_PER_TRIAL",
 )
 
 
@@ -976,6 +1001,7 @@ def provider_request_budget_environment(
     maximum_input_tokens_per_request: int,
     maximum_output_tokens_per_request: int,
     maximum_reasoning_tokens_per_request: int | None = None,
+    maximum_provider_requests_per_trial: int | None = None,
 ) -> dict[str, str]:
     """Return the explicit, non-secret environment contract for one Trial.
 
@@ -990,6 +1016,8 @@ def provider_request_budget_environment(
         raise ValueError("positive per-request token ceilings are required")
     if maximum_reasoning_tokens_per_request is not None and maximum_reasoning_tokens_per_request <= 0:
         raise ValueError("positive reasoning token ceilings are required")
+    if maximum_provider_requests_per_trial is not None and maximum_provider_requests_per_trial <= 0:
+        raise ValueError("positive per-Trial request ceiling is required")
     return {
         _REQUEST_BUDGET_ENV: "1",
         "CODEPACEX_BUDGET_ROOT": str(gate.root),
@@ -1007,6 +1035,10 @@ def provider_request_budget_environment(
             str(maximum_reasoning_tokens_per_request)
             if maximum_reasoning_tokens_per_request is not None else ""
         ),
+        "CODEPACEX_BUDGET_MAX_REQUESTS_PER_TRIAL": (
+            str(maximum_provider_requests_per_trial)
+            if maximum_provider_requests_per_trial is not None else ""
+        ),
     }
 
 
@@ -1016,6 +1048,7 @@ def provider_request_budget_scope(
     maximum_input_tokens_per_request: int,
     maximum_output_tokens_per_request: int,
     maximum_reasoning_tokens_per_request: int | None = None,
+    maximum_provider_requests_per_trial: int | None = None,
 ) -> Iterator[None]:
     """Temporarily bind an in-process experiment request to its Trial."""
     updates = provider_request_budget_environment(
@@ -1023,6 +1056,7 @@ def provider_request_budget_scope(
         maximum_input_tokens_per_request=maximum_input_tokens_per_request,
         maximum_output_tokens_per_request=maximum_output_tokens_per_request,
         maximum_reasoning_tokens_per_request=maximum_reasoning_tokens_per_request,
+        maximum_provider_requests_per_trial=maximum_provider_requests_per_trial,
     )
     previous = {key: os.environ.get(key) for key in _REQUEST_BUDGET_KEYS}
     os.environ.update(updates)
@@ -1042,12 +1076,14 @@ class ProviderRequestBudget:
     def __init__(self, gate: PaidRunGate, *, trial_id: str,
                  maximum_input_tokens_per_request: int,
                  maximum_output_tokens_per_request: int,
-                 maximum_reasoning_tokens_per_request: int | None = None) -> None:
+                 maximum_reasoning_tokens_per_request: int | None = None,
+                 maximum_provider_requests_per_trial: int | None = None) -> None:
         self.gate = gate
         self.trial_id = trial_id
         self.maximum_input_tokens_per_request = maximum_input_tokens_per_request
         self.maximum_output_tokens_per_request = maximum_output_tokens_per_request
         self.maximum_reasoning_tokens_per_request = maximum_reasoning_tokens_per_request
+        self.maximum_provider_requests_per_trial = maximum_provider_requests_per_trial
 
     @classmethod
     def from_environment(cls) -> ProviderRequestBudget | None:
@@ -1063,6 +1099,7 @@ class ProviderRequestBudget:
         missing = [key for key, value in required.items()
                    if not value and key not in {
                        "CODEPACEX_BUDGET_ALLOCATION", "CODEPACEX_BUDGET_MAX_REASONING_TOKENS",
+                       "CODEPACEX_BUDGET_MAX_REQUESTS_PER_TRIAL",
                    }]
         if missing:
             raise ValueError("incomplete experimental Provider request budget contract")
@@ -1087,9 +1124,32 @@ class ProviderRequestBudget:
                 int(required["CODEPACEX_BUDGET_MAX_REASONING_TOKENS"])
                 if required["CODEPACEX_BUDGET_MAX_REASONING_TOKENS"] else None
             ),
+            maximum_provider_requests_per_trial=(
+                int(required["CODEPACEX_BUDGET_MAX_REQUESTS_PER_TRIAL"])
+                if required["CODEPACEX_BUDGET_MAX_REQUESTS_PER_TRIAL"] else None
+            ),
         )
 
     def reserve_before_request(self) -> Reservation:
+        if self.maximum_provider_requests_per_trial is not None:
+            with self.gate.locked():
+                ledger = self.gate._load_ledger()
+                attempted_request_index = 1 + sum(
+                    item.trial_id == self.trial_id for item in ledger.request_charges
+                )
+                if attempted_request_index > self.maximum_provider_requests_per_trial:
+                    ledger.provider_request_ceiling_blocks.append(ProviderRequestCeilingBlock(
+                        trial_id=self.trial_id,
+                        maximum_provider_requests=self.maximum_provider_requests_per_trial,
+                        attempted_request_index=attempted_request_index,
+                        recorded_at=_utc_now(),
+                    ))
+                    self.gate._write_ledger(ledger)
+                    raise ProviderRequestCeilingExceeded(
+                        trial_id=self.trial_id,
+                        maximum_provider_requests=self.maximum_provider_requests_per_trial,
+                        attempted_request_index=attempted_request_index,
+                    )
         return self.gate.reserve(
             self.trial_id, maximum_requests=1,
             maximum_input_tokens_per_request=self.maximum_input_tokens_per_request,
@@ -1140,6 +1200,23 @@ class ProviderRequestBudget:
 
 class ProviderUsageUnknown(RuntimeError):
     """A request may have been billed but has no durable Provider Usage."""
+
+
+class ProviderRequestCeilingExceeded(RuntimeError):
+    """A frozen per-Trial request ceiling stopped a call before transport."""
+
+    def __init__(
+        self, *, trial_id: str, maximum_provider_requests: int,
+        attempted_request_index: int,
+    ) -> None:
+        self.trial_id = trial_id
+        self.maximum_provider_requests = maximum_provider_requests
+        self.attempted_request_index = attempted_request_index
+        super().__init__(
+            "provider_request_ceiling: "
+            f"trial={trial_id} attempted_request_index={attempted_request_index} "
+            f"maximum_provider_requests={maximum_provider_requests}"
+        )
 
 
 class ProviderUsageContractViolationError(RuntimeError):

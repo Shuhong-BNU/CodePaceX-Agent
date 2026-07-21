@@ -12,6 +12,7 @@ from evals.paid_gate import (
     BudgetLedger,
     PaidRunGate,
     ProviderRequestBudget,
+    ProviderRequestCeilingExceeded,
     ProviderUsageContractViolationError,
     StageCBudgetAllocation,
     actual_cost,
@@ -103,6 +104,55 @@ def test_gate_reserves_and_settles_each_provider_request_in_one_trial(tmp_path: 
         "trial_id": "mcp/task/1",
     }
     assert ledger["request_charges"][1]["request_index"] == 2
+
+
+@pytest.mark.parametrize("request_count", [39, 40])
+def test_provider_request_ceiling_allows_through_the_frozen_boundary(
+    tmp_path: Path, request_count: int,
+) -> None:
+    gate = _gate(tmp_path, total="1000")
+    budget = ProviderRequestBudget(
+        gate, trial_id="swe/goal4/boundary", maximum_input_tokens_per_request=1000,
+        maximum_output_tokens_per_request=500, maximum_provider_requests_per_trial=40,
+    )
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ):
+        for _ in range(request_count):
+            reservation = budget.reserve_before_request()
+            budget.settle_after_usage(reservation, {
+                "prompt_tokens": 10, "completion_tokens": 1,
+            })
+    ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
+    assert len(ledger.request_charges) == request_count
+    assert len(ledger.settlements) == request_count
+    assert ledger.active_reservation is None
+    assert not ledger.provider_request_ceiling_blocks
+
+
+def test_provider_request_ceiling_rejects_41st_before_reservation_or_usage(tmp_path: Path) -> None:
+    gate = _gate(tmp_path, total="1000")
+    budget = ProviderRequestBudget(
+        gate, trial_id="swe/goal4/boundary", maximum_input_tokens_per_request=1000,
+        maximum_output_tokens_per_request=500, maximum_provider_requests_per_trial=40,
+    )
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ):
+        for _ in range(40):
+            reservation = budget.reserve_before_request()
+            budget.settle_after_usage(reservation, {
+                "prompt_tokens": 10, "completion_tokens": 1,
+            })
+        with pytest.raises(ProviderRequestCeilingExceeded, match="attempted_request_index=41"):
+            budget.reserve_before_request()
+    ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
+    assert len(ledger.request_charges) == len(ledger.settlements) == 40
+    assert ledger.active_reservation is None
+    assert len(ledger.provider_request_ceiling_blocks) == 1
+    block = ledger.provider_request_ceiling_blocks[0]
+    assert block.trial_id == "swe/goal4/boundary"
+    assert block.attempted_request_index == 41
 
 
 def test_gate_enforces_stage_limit_before_total_authorization(tmp_path: Path) -> None:
@@ -502,6 +552,8 @@ def test_unknown_usage_is_conservatively_settled_without_fabricating_tokens(tmp_
         "budget_blocked": False,
         "budget_block_reasons": [],
         "provider_usage_contract_violation": None,
+        "provider_request_ceiling_blocked": False,
+        "provider_request_ceiling_block": None,
         "active_reservation": None,
         "settlement_count": 1,
         "usage_unknown": True,

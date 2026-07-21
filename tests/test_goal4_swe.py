@@ -31,6 +31,16 @@ def test_active_reservation_is_an_immediate_accounting_hard_stop() -> None:
     assert goal4._accounting_hard_stop_reason(accounting) == "active_reservation"
 
 
+def test_request_ceiling_refusal_is_an_immediate_accounting_hard_stop() -> None:
+    accounting = {
+        "provider_usage_contract_violation": None,
+        "budget_blocked": False,
+        "provider_request_ceiling_blocked": True,
+        "active_reservation": None,
+    }
+    assert goal4._accounting_hard_stop_reason(accounting) == "provider_request_ceiling"
+
+
 def _patch(count: int) -> str:
     return "\n".join(
         f"--- a/f{index}.py\n+++ b/f{index}.py\n@@ -1 +1 @@\n-old\n+new"
@@ -223,6 +233,13 @@ def test_evidence_accepts_one_explicit_conservative_settlement(
     assert summary["conservative_settlements"] == 1
     assert summary["paid_trial_attempts"] == 20
     assert summary["infrastructure_retry_count"] == 1
+    assert {bucket: values["registered"] for bucket, values in summary["by_bucket"].items()} == {
+        "one_file": 8, "two_to_four_files": 8, "five_plus_files": 4,
+    }
+    assert summary["selected_terminal_trial_cost_cny"] == "0.100000"
+    assert summary["historical_failed_attempt_cost_cny"] == "0.000000"
+    assert summary["uncertain_maximum_exposure_cny"] == "0.200000"
+    assert summary["combined_conservative_budget_consumption_cny"] == "0.300000"
 
 
 def test_task_environment_uses_fresh_virtualenv(tmp_path: Path) -> None:
@@ -356,6 +373,29 @@ def test_batch_b_recovery_workflow_is_explicitly_paid_gated() -> None:
     assert "execute-batch --confirm-paid-run" not in preflight
     freeze_workflow = Path(".github/workflows/goal4-swe-freeze.yml").read_text(encoding="utf-8")
     assert ".github/workflows/goal4-swe-batch-b-recovery.yml" in freeze_workflow
+
+
+def test_request_ceiling_recovery_workflow_has_only_authorized_dynaconf_scope() -> None:
+    workflow = Path(".github/workflows/goal4-swe-request-ceiling-recovery.yml").read_text(encoding="utf-8")
+    assert "default: false" in workflow
+    assert "if: ${{ inputs.execute_paid && inputs.authorize_dynaconf_retry }}" in workflow
+    assert "dynaconf__dynaconf-1225" in workflow
+    assert "dynaconf__dynaconf-1249,instructlab__instructlab-2540" in workflow
+    assert "bridgecrewio__checkov-6895" not in workflow
+    assert "goal4-authorized-29801985031-02-batch-b-remaining" in workflow
+    assert "if: ${{ inputs.execute_paid && inputs.authorize_dynaconf_retry }}" in workflow
+    assert workflow.count('test -n "$BAILIAN_API_KEY"') == 2
+    assert "source-finalization-29803967008" in workflow
+
+
+def test_request_ceiling_zero_provider_workflow_cannot_execute_paid_requests() -> None:
+    workflow = Path(".github/workflows/goal4-swe-zero-provider-recovery.yml").read_text(encoding="utf-8")
+    assert "workflow_dispatch:" in workflow
+    assert "execute-batch" not in workflow
+    assert "BAILIAN_API_KEY" not in workflow
+    assert "secrets." not in workflow
+    assert "zero-provider" in workflow
+    assert "provider_requests': 0" in workflow
 
 
 def test_unknown_provider_settlement_workflow_cannot_execute_paid_requests() -> None:

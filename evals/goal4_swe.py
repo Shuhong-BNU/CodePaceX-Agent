@@ -668,6 +668,8 @@ def _accounting_hard_stop_reason(accounting: Mapping[str, Any]) -> str | None:
         return "provider_usage_contract_violation"
     if accounting.get("budget_blocked"):
         return "budget_blocked"
+    if accounting.get("provider_request_ceiling_blocked"):
+        return "provider_request_ceiling"
     if accounting.get("active_reservation") is not None:
         return "active_reservation"
     return None
@@ -739,6 +741,7 @@ def execute_batch(
                         maximum_input_tokens_per_request=MAXIMUM_INPUT_TOKENS_PER_REQUEST,
                         maximum_output_tokens_per_request=MAXIMUM_OUTPUT_TOKENS_PER_REQUEST,
                         maximum_reasoning_tokens_per_request=MAXIMUM_REASONING_TOKENS_PER_REQUEST,
+                        maximum_provider_requests_per_trial=MAXIMUM_REQUESTS_PER_INSTANCE,
                     ))
                     process = subprocess.run(
                         [sys.executable, "-m", "codepacex", "-p", _goal3_inference_prompt(instance),
@@ -1298,17 +1301,26 @@ def evidence_summary(*, root: Path, freeze_path: Path, evidence_root: Path) -> d
     durations = [float(event.get("duration_seconds", 0)) for event in terminals]
     by_bucket: dict[str, dict[str, Any]] = {}
     by_repo: dict[str, dict[str, Any]] = {}
+    for task in frozen["tasks"]:
+        bucket = task["size_bucket"]
+        by_bucket.setdefault(bucket, {
+            "registered": 0, "resolved": 0, "unresolved": 0,
+            "cost_cny": Decimal("0"), "requests": 0,
+        })["registered"] += 1
     for event in terminals:
         task = expected[event["task_id"]]
         for group, key in ((by_bucket, task["size_bucket"]), (by_repo, task["repo"])):
             current = group.setdefault(key, {"registered": 0, "resolved": 0, "unresolved": 0, "cost_cny": Decimal("0"), "requests": 0})
-            current["registered"] += 1
+            if group is by_repo:
+                current["registered"] += 1
             current[event["status"]] = current.get(event["status"], 0) + 1
             current["cost_cny"] += Decimal(str(event.get("actual_cny", "0")))
             current["requests"] += int(event.get("provider_request_count", 0))
     def _decimal_average(total: Decimal, denominator: int) -> str | None:
         return str(_money(total / denominator)) if denominator else None
     total_cost = Decimal(parent["spent_cny"])
+    selected_terminal_trial_cost = sum(costs, Decimal("0"))
+    historical_failed_attempt_cost = verified_provider_cost - selected_terminal_trial_cost
     return {
         "schema_version": 1, "matrix_sha256": frozen["matrix_sha256"], "registered": 20,
         "attempted": len(terminals), "completed": len(terminals),
@@ -1322,6 +1334,8 @@ def evidence_summary(*, root: Path, freeze_path: Path, evidence_root: Path) -> d
         "verified_actual_provider_cost_cny": str(_money(verified_provider_cost)),
         "uncertain_maximum_exposure_cny": str(_money(uncertain_exposure)),
         "combined_conservative_budget_consumption_cny": parent["spent_cny"],
+        "selected_terminal_trial_cost_cny": str(_money(selected_terminal_trial_cost)),
+        "historical_failed_attempt_cost_cny": str(_money(historical_failed_attempt_cost)),
         "average_requests_per_attempted": _decimal_average(Decimal(request_charges), len(terminals)),
         "average_cost_per_attempted": _decimal_average(total_cost, len(terminals)),
         "average_cost_per_scorable": _decimal_average(total_cost, statuses["resolved"] + statuses["unresolved"]),
@@ -1364,6 +1378,8 @@ def finalize_evidence(*, root: Path, freeze_path: Path, evidence_root: Path) -> 
         f"- Verified actual Provider cost: CNY {summary['verified_actual_provider_cost_cny']}",
         f"- Uncertain maximum exposure: CNY {summary['uncertain_maximum_exposure_cny']}",
         f"- Combined conservative budget consumption: CNY {summary['combined_conservative_budget_consumption_cny']}",
+        f"- Selected terminal Trial cost: CNY {summary['selected_terminal_trial_cost_cny']}",
+        f"- Historical failed-attempt verified Provider cost: CNY {summary['historical_failed_attempt_cost_cny']}",
         f"- Paid Trial attempts / infrastructure retries: {summary['paid_trial_attempts']} / {summary['infrastructure_retry_count']}",
         f"- Active reservation: {summary['active_reservation']}",
         f"- Average requests per attempted: {summary['average_requests_per_attempted']}",
@@ -1375,7 +1391,8 @@ def finalize_evidence(*, root: Path, freeze_path: Path, evidence_root: Path) -> 
     for event in summary["per_task"]:
         lines.append(f"| {event['task_id']} | {event['status']} | {event.get('provider_request_count', 0)} | {event.get('actual_cny', 0)} |")
     lines.extend(["", "## Stratified Results", "", "| Bucket | Registered | Resolved | Unresolved | Requests | Cost |", "| --- | ---: | ---: | ---: | ---: | ---: |"])
-    for bucket, values in summary["by_bucket"].items():
+    for bucket in FORMAL_SIZE_TARGETS:
+        values = summary["by_bucket"][bucket]
         lines.append(f"| {bucket} | {values['registered']} | {values['resolved']} | {values['unresolved']} | {values['requests']} | {values['cost_cny']} |")
     lines.extend(["", "## Claim Boundary", "", "Only the frozen matrix, model identity, official evaluator, actual costs, and observed resolved count are claimed. No model comparison, statistical significance, generalization, or production success rate is implied.", ""])
     report_path.write_text("\n".join(lines), encoding="utf-8")
