@@ -1,0 +1,177 @@
+name: Goal 4 request-ceiling recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      freeze_run_id:
+        description: New recovery Freeze run ID
+        required: true
+        type: string
+      freeze_artifact_name:
+        description: Exact new recovery Freeze Artifact name
+        required: true
+        type: string
+      freeze_commit:
+        description: Commit recorded by the new recovery Freeze
+        required: true
+        type: string
+      run_prefix:
+        description: New unused recovery run prefix
+        required: true
+        default: goal4-request-ceiling-recovery
+        type: string
+      execute_paid:
+        description: Explicitly permit Provider requests
+        required: true
+        default: false
+        type: boolean
+      authorize_dynaconf_retry:
+        description: Explicitly authorize the single Dynaconf retry
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.freeze_commit }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.freeze_artifact_name }}
+          run-id: ${{ inputs.freeze_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/goal4-freeze
+      - name: Download immutable blocked evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          artifact_id="$(gh api repos/$GITHUB_REPOSITORY/actions/artifacts/8486382695 --jq .id)"
+          test "$artifact_id" = 8486382695
+          gh api repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip > "$RUNNER_TEMP/goal4-blocked.zip"
+          printf '%s  %s\n' '2085b856b55b5df46118ef1935b846ecdc2ff01ff9f08fc4fabf7595144f1d30' "$RUNNER_TEMP/goal4-blocked.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/goal4-blocked.zip" -d "$RUNNER_TEMP/goal4-recovery"
+      - name: Verify zero-provider recovery preflight
+        run: |
+          set -euo pipefail
+          python -m pip install -e . pytest pytest-asyncio
+          root="$RUNNER_TEMP/goal4-recovery"
+          freeze="$RUNNER_TEMP/goal4-freeze"
+          python - "$root" "$freeze" '${{ inputs.freeze_commit }}' <<'PY'
+          import json, sys
+          from pathlib import Path
+          root, freeze, commit = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+          new = json.loads((freeze / 'formal-freeze.json').read_text())
+          if new['codepacex_commit'] != commit:
+              raise SystemExit('recovery Freeze commit mismatch')
+          if new['matrix_sha256'] != '9ff16e850b92a6eb0bd1338cb85253a605fdfb0e0aa77180488382eca353972a':
+              raise SystemExit('formal matrix changed')
+          events = [json.loads(line) for path in root.glob('*/events.jsonl') for line in path.read_text().splitlines() if line]
+          final = {}
+          for event in sorted((item for item in events if item.get('type') == 'trial_completed'), key=lambda item: item.get('timestamp', 0)):
+              final[event['task_id']] = event
+          if final['dynaconf__dynaconf-1225'].get('reason') != 'request_ceiling_contract_violation':
+              raise SystemExit('blocked Dynaconf evidence mismatch')
+          expected = {'dynaconf__dynaconf-1249', 'instructlab__instructlab-2540'}
+          if {task['instance_id'] for task in new['tasks'] if task['instance_id'] not in final} != expected:
+              raise SystemExit('recovery scope is not exactly the two unrun instances')
+          PY
+          cp "$root/formal-freeze.json" "$root/formal-freeze.before-recovery.json"
+          cp "$freeze/formal-freeze.json" "$freeze/formal-dataset.jsonl" "$freeze/formal-matrix.json" "$freeze/pricing-provenance.json" "$freeze/pricing-snapshot.json" "$root/"
+          python -m evals.goal4_swe prepare-recovery-artifacts --old-freeze "$root/formal-freeze.before-recovery.json" --freeze "$root/formal-freeze.json" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
+          python -m evals.goal4_swe paid-preflight --freeze "$root/formal-freeze.json" --dataset-jsonl "$root/formal-dataset.jsonl" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
+          python -m evals.secret_scan --artifact-root "$root" --untrusted-json-field problem_statement
+      - uses: actions/upload-artifact@v4
+        with:
+          name: goal4-request-ceiling-recovery-preflight-${{ github.run_id }}
+          path: ${{ runner.temp }}/goal4-recovery
+          if-no-files-found: error
+
+  paid-recovery:
+    needs: preflight
+    if: ${{ inputs.execute_paid && inputs.authorize_dynaconf_retry }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    env:
+      EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.freeze_commit }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: goal4-request-ceiling-recovery-preflight-${{ github.run_id }}
+          path: ${{ runner.temp }}/goal4-recovery
+      - name: Install isolated controller and official evaluator
+        run: |
+          set -euo pipefail
+          python -m pip install -e . pytest pytest-asyncio
+          git clone --filter=blob:none https://github.com/microsoft/SWE-bench-Live.git "$RUNNER_TEMP/swe-bench-live"
+          git -C "$RUNNER_TEMP/swe-bench-live" checkout --detach "$EVALUATOR_COMMIT"
+          python -m pip install -e "$RUNNER_TEMP/swe-bench-live"
+      - name: Preserve immutable blocked finalization
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/goal4-recovery"
+          destination="$root/recovery/source-finalization-29803967008"
+          mkdir -p "$destination"
+          for name in GOAL4_FINAL_REPORT.md claims.goal4.json; do
+            test -f "$root/reports/$name"
+            shasum -a 256 "$root/reports/$name" > "$destination/$name.sha256"
+            mv "$root/reports/$name" "$destination/$name"
+          done
+      - name: Retry only the blocked Dynaconf Trial
+        env:
+          BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$BAILIAN_API_KEY"
+          root="$RUNNER_TEMP/goal4-recovery"
+          python -m evals.goal4_swe execute-batch --confirm-paid-run --batch B --run-id '${{ inputs.run_prefix }}-dynaconf-retry' --retry-of 'goal4-authorized-29801985031-02-batch-b-remaining' --instance-ids dynaconf__dynaconf-1225 --freeze "$root/formal-freeze.json" --dataset-jsonl "$root/formal-dataset.jsonl" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
+          python - "$root" '${{ inputs.run_prefix }}-dynaconf-retry' <<'PY'
+          import json, sys
+          from pathlib import Path
+          root, run_id = Path(sys.argv[1]), sys.argv[2]
+          events = [json.loads(line) for line in (root / run_id / 'events.jsonl').read_text().splitlines()]
+          terminal = [item for item in events if item.get('type') == 'trial_completed']
+          ledger = json.loads((root / 'accounts/batch-b-ledger.json').read_text())
+          if len(terminal) != 1 or terminal[0].get('status') not in {'resolved', 'unresolved'}:
+              raise SystemExit('Dynaconf retry is not scorable')
+          if not terminal[0].get('official_evaluator_completed') or ledger['active_reservation'] is not None:
+              raise SystemExit('Dynaconf retry evidence or accounting is incomplete')
+          PY
+      - name: Run only the two registered never-run tasks strictly serially
+        env:
+          BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$BAILIAN_API_KEY"
+          root="$RUNNER_TEMP/goal4-recovery"
+          python -m evals.goal4_swe execute-batch --confirm-paid-run --batch B --run-id '${{ inputs.run_prefix }}-remaining' --instance-ids dynaconf__dynaconf-1249,instructlab__instructlab-2540 --freeze "$root/formal-freeze.json" --dataset-jsonl "$root/formal-dataset.jsonl" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
+      - name: Finalize and scan recovery evidence
+        if: always()
+        run: |
+          root="$RUNNER_TEMP/goal4-recovery"
+          python -m evals.goal4_swe finalize --freeze "$root/formal-freeze.json" --evidence-root "$root"
+          python -m evals.goal4_swe validate-claims --freeze "$root/formal-freeze.json" --evidence-root "$root" --claims "$root/reports/claims.goal4.json"
+          python -m evals.secret_scan --artifact-root "$root" --untrusted-json-field problem_statement
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: goal4-request-ceiling-recovery-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/goal4-recovery
+          if-no-files-found: warn
