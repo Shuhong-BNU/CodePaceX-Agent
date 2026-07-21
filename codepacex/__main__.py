@@ -222,6 +222,7 @@ async def _run_prompt_impl(
         ToolUseEvent,
         TurnComplete,
         UsageEvent,
+        ValidationTelemetryEvent,
     )
     from codepacex.client import create_client, resolve_context_window
     from codepacex.conversation import ConversationManager
@@ -507,6 +508,10 @@ async def _run_prompt_impl(
                     "attachment_count": event.attachment_count,
                     "error_category": event.error_category,
                 })
+
+        elif isinstance(event, ValidationTelemetryEvent):
+            if is_json:
+                emit_json({"type": "validation", **event.payload})
 
         elif isinstance(event, TurnComplete):
             if is_json:

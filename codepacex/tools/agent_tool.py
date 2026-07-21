@@ -364,6 +364,7 @@ class AgentTool(Tool):
             instructions_content=definition.system_prompt,
             hook_engine=self._parent_agent.hook_engine,
             experiment_profile=self._parent_agent.experiment_profile,
+            validation_controller=self._parent_agent.validation_controller,
         )
         sub_agent.parent_id = self._parent_agent.agent_id
         sub_agent.trace_id = self._parent_agent.trace_id or self._parent_agent.agent_id
@@ -583,6 +584,7 @@ class AgentTool(Tool):
             instructions_content=instructions,
             hook_engine=self._parent_agent.hook_engine,
             experiment_profile=self._parent_agent.experiment_profile,
+            validation_controller=self._parent_agent.validation_controller,
         )
         sub_agent.parent_id = self._parent_agent.agent_id
         sub_agent.trace_id = self._parent_agent.trace_id or self._parent_agent.agent_id
@@ -661,6 +663,10 @@ class AgentTool(Tool):
                     agent_type=p.subagent_type or "",
                     model=p.model or "",
                     mailbox_dir=mailbox_dir,
+                    validation_state_dir=(str(self._parent_agent.validation_controller.state_dir)
+                                          if self._parent_agent.validation_controller.enabled
+                                          and self._parent_agent.validation_controller.state_dir else ""),
+                    validation_session_id=self._parent_agent.validation_controller.session_id,
                 )
                 self._team_manager.register_pane_id(agent_id, pane_info.pane_id)
             elif backend == BackendType.ITERM2:
@@ -673,6 +679,10 @@ class AgentTool(Tool):
                     agent_type=p.subagent_type or "",
                     model=p.model or "",
                     mailbox_dir=mailbox_dir,
+                    validation_state_dir=(str(self._parent_agent.validation_controller.state_dir)
+                                          if self._parent_agent.validation_controller.enabled
+                                          and self._parent_agent.validation_controller.state_dir else ""),
+                    validation_session_id=self._parent_agent.validation_controller.session_id,
                 )
         except Exception as e:
             log.warning("Pane spawn failed, falling back to in-process: %s", e)
@@ -782,6 +792,7 @@ class AgentTool(Tool):
             instructions_content=definition.system_prompt,
             hook_engine=self._parent_agent.hook_engine,
             experiment_profile=self._parent_agent.experiment_profile,
+            validation_controller=self._parent_agent.validation_controller,
         )
         sub_agent.parent_id = self._parent_agent.agent_id
         sub_agent.trace_id = self._parent_agent.trace_id or self._parent_agent.agent_id

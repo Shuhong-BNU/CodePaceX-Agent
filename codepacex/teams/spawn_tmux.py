@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import shlex
 import subprocess
 from dataclasses import dataclass
 
@@ -43,6 +44,8 @@ def build_cli_command(
     agent_type: str = "",
     model: str = "",
     mailbox_dir: str = "",
+    validation_state_dir: str = "",
+    validation_session_id: str = "",
 ) -> str:
     parts = ["codepacex", "-p"]
     parts.extend(["--work-dir", worktree_path])
@@ -55,7 +58,13 @@ def build_cli_command(
         f"CODEPACEX_TEAMMATE_NAME={teammate_name}",
     ]
     if mailbox_dir:
-        env_parts.append(f"CODEPACEX_MAILBOX_DIR={mailbox_dir}")
+        env_parts.append(f"CODEPACEX_MAILBOX_DIR={shlex.quote(mailbox_dir)}")
+    if validation_state_dir:
+        env_parts.extend([
+            "CODEPACEX_VALIDATION_MODE=stage_b",
+            f"CODEPACEX_VALIDATION_STATE_DIR={shlex.quote(validation_state_dir)}",
+            f"CODEPACEX_VALIDATION_SESSION_ID={shlex.quote(validation_session_id)}",
+        ])
     env_prefix = " ".join(env_parts)
     cmd = " ".join(parts)
     full_prompt = prompt.replace("'", "'\\''")
@@ -70,6 +79,8 @@ def spawn_tmux_teammate(
     agent_type: str = "",
     model: str = "",
     mailbox_dir: str = "",
+    validation_state_dir: str = "",
+    validation_session_id: str = "",
 ) -> TmuxPaneInfo:
     window_name = f"{team_name}-{teammate_name}"
 
@@ -81,6 +92,8 @@ def spawn_tmux_teammate(
         agent_type=agent_type,
         model=model,
         mailbox_dir=mailbox_dir,
+        validation_state_dir=validation_state_dir,
+        validation_session_id=validation_session_id,
     )
 
     # Create a new tmux window (not split) for the teammate, matching Go
