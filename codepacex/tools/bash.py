@@ -114,7 +114,10 @@ class Bash(Tool):
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
-            return ToolResult(output=f"Error: command timed out after {timeout}s", is_error=True)
+            return ToolResult(
+                output=f"Error: command timed out after {timeout}s", is_error=True,
+                timed_out=True,
+            )
         except Exception as e:
             return ToolResult(output=f"Error executing command: {e}", is_error=True)
 
@@ -130,4 +133,5 @@ class Bash(Tool):
         return ToolResult(
             output=output,
             is_error=_interpret_exit_code(params.command, proc.returncode or 0),
+            exit_code=proc.returncode,
         )

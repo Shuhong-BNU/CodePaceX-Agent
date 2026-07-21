@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict
+from codepacex.validation import ValidationMode
 
 
 class ToolLoading(str, Enum):
@@ -49,6 +50,9 @@ class ExperimentProfile(BaseModel):
     compression_profile: CompressionProfile
     permission_strategy: PermissionStrategy
     agent_mode: AgentMode
+    # Opt-in only.  This value is part of the canonical profile and therefore
+    # the runtime and resume identities; historical profiles remain disabled.
+    validation_mode: ValidationMode = ValidationMode.DISABLED
 
     def canonical_payload(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
@@ -78,6 +82,8 @@ class ExperimentProfile(BaseModel):
             ),
             "agent_mode": self.agent_mode.value,
             "multi_agent_tools_enabled": self.agent_mode is AgentMode.MULTI,
+            "validation_mode": self.validation_mode.value,
+            "stage_b_validation_enabled": self.validation_mode is ValidationMode.STAGE_B,
         }
 
     def runtime_contract_hash(self) -> str:
