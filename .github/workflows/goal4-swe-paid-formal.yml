@@ -11,6 +11,10 @@ on:
         description: Exact immutable Goal 4 freeze artifact name
         required: true
         type: string
+      freeze_commit:
+        description: Exact CodePaceX commit recorded in the Freeze bundle
+        required: true
+        type: string
       run_prefix:
         description: New, unused Goal 4 paid run prefix
         required: true
@@ -60,8 +64,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Updated to the commit bound into the recovery Freeze before dispatch.
-          ref: 7130464715c53189f3854eedcc52238c2b7c2d85
+          ref: ${{ inputs.freeze_commit }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -162,8 +165,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Paid execution must use the commit bound into Freeze 29789993330.
-          ref: 7130464715c53189f3854eedcc52238c2b7c2d85
+          ref: ${{ inputs.freeze_commit }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
