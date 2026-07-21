@@ -61,7 +61,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           # Updated to the commit bound into the recovery Freeze before dispatch.
-          ref: 2af020e1e37f65191351401d2b7d7fcdd05b8819
+          ref: 7130464715c53189f3854eedcc52238c2b7c2d85
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -163,7 +163,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           # Paid execution must use the commit bound into Freeze 29789993330.
-          ref: 2af020e1e37f65191351401d2b7d7fcdd05b8819
+          ref: 7130464715c53189f3854eedcc52238c2b7c2d85
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
