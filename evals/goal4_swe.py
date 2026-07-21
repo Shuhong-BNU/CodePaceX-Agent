@@ -1028,6 +1028,7 @@ def prepare_recovery_artifacts(
     pricing = load_pricing(pricing_path)
     if pricing_snapshot_hash(pricing) != new_frozen["pricing_snapshot_hash"]:
         raise ValueError("recovery pricing snapshot mismatch")
+    rebound_children: dict[str, dict[str, str]] = {}
     for batch in ("A", "B"):
         paths = _batch_paths(evidence_root, batch)
         old_auth = BudgetAuthorization.model_validate_json(paths["authorization"].read_text(encoding="utf-8"))
@@ -1071,9 +1072,16 @@ def prepare_recovery_artifacts(
             category_limits_cny={"swe": remaining, "mcp": Decimal("0"), "retention": Decimal("0"), "permission": Decimal("0"), "multi_agent": Decimal("0"), "long_session": Decimal("0")},
         )
         paths["allocation"].write_text(json.dumps(allocation.model_dump(mode="json"), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        rebound_children[batch] = {
+            "authorization_sha256": new_hash,
+            "allocation_sha256": allocation_hash(allocation),
+        }
     parent_path = _parent_paths(evidence_root)["authorization"]
     parent = json.loads(parent_path.read_text(encoding="utf-8"))
     parent["experiment_commit"] = new_frozen["codepacex_commit"]
+    parent["pricing_snapshot_hash"] = new_frozen["pricing_snapshot_hash"]
+    for batch, hashes in rebound_children.items():
+        parent["children"][batch].update(hashes)
     parent["status"] = "recovery_rebound"
     parent_path.write_text(json.dumps(parent, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return update_parent_ledger(evidence_root)

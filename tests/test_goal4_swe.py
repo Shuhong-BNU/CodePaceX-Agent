@@ -97,6 +97,47 @@ def test_parent_and_child_budget_artifacts_are_isolated(tmp_path: Path, monkeypa
     assert parent["request_charge_count"] == 0
 
 
+def test_recovery_rebind_updates_parent_and_child_freeze_hashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source.jsonl"
+    old_output, new_output = tmp_path / "goal4-old", tmp_path / "goal4-new"
+    new_pricing = tmp_path / "pricing-new.json"
+    _write_jsonl(source, _rows())
+    pricing = json.loads(PRICING.read_text(encoding="utf-8"))
+    pricing["retrieved_at"] = "2026-07-21T00:00:00Z"
+    new_pricing.write_text(json.dumps(pricing), encoding="utf-8")
+    monkeypatch.setattr(goal4, "_tree_hash", lambda _root: "d" * 40)
+    monkeypatch.setattr(goal4, "current_git_commit", lambda _root: "c" * 40)
+    goal4.freeze_formal_bundle(
+        root=tmp_path, dataset_jsonl=source, pricing_snapshot=PRICING,
+        output_dir=old_output, dataset_revision="a" * 40,
+    )
+    goal4.prepare_paid_artifacts(
+        root=tmp_path, freeze_path=old_output / "formal-freeze.json",
+        pricing_path=old_output / "pricing-snapshot.json", evidence_root=old_output,
+    )
+    monkeypatch.setattr(goal4, "current_git_commit", lambda _root: "e" * 40)
+    new_frozen = goal4.freeze_formal_bundle(
+        root=tmp_path, dataset_jsonl=source, pricing_snapshot=new_pricing,
+        output_dir=new_output, dataset_revision="a" * 40,
+    )
+    goal4.prepare_recovery_artifacts(
+        root=tmp_path, old_freeze_path=old_output / "formal-freeze.json",
+        new_freeze_path=new_output / "formal-freeze.json",
+        pricing_path=new_output / "pricing-snapshot.json", evidence_root=old_output,
+    )
+    parent = json.loads((old_output / "accounts" / "parent-authorization.json").read_text())
+    assert parent["experiment_commit"] == "e" * 40
+    assert parent["pricing_snapshot_hash"] == new_frozen["pricing_snapshot_hash"]
+    for batch in ("A", "B"):
+        paths = goal4._batch_paths(old_output, batch)
+        authorization = goal4.BudgetAuthorization.model_validate_json(paths["authorization"].read_text())
+        allocation = goal4.StageCBudgetAllocation.model_validate_json(paths["allocation"].read_text())
+        assert parent["children"][batch]["authorization_sha256"] == goal4.authorization_hash(authorization)
+        assert parent["children"][batch]["allocation_sha256"] == goal4.allocation_hash(allocation)
+
+
 def test_budget_contract_is_exact() -> None:
     assert goal4.BATCH_AUTHORIZATION["A"] == goal4.Decimal("421.109760")
     assert goal4.BATCH_AUTHORIZATION["B"] == goal4.Decimal("1263.329280")
@@ -122,6 +163,20 @@ def test_retry_selection_is_bounded_to_registered_instance() -> None:
     batch_a = [str(item["instance_id"]) for item, batch in assignments if batch == "A"]
     assert len(batch_a) == 5
     assert batch_a[0] in {str(item["instance_id"]) for item in selected}
+
+
+def test_paid_workflow_can_resume_batch_b_without_rerunning_batch_a() -> None:
+    workflow = Path(".github/workflows/goal4-swe-paid-formal.yml").read_text(encoding="utf-8")
+    carry_start = workflow.index("- name: Carry verified Batch A into the new Freeze")
+    carry_end = workflow.index("- name: Secret scan Batch A evidence", carry_start)
+    carry_step = workflow[carry_start:carry_end]
+    assert "resume_batch_b:" in workflow
+    assert workflow.count("if: ${{ !inputs.recovery_mode && !inputs.resume_batch_b }}") == 2
+    assert "python -m evals.goal4_swe zero-provider" in carry_step
+    assert "python -m evals.goal4_swe prepare-recovery-artifacts" in carry_step
+    assert 'len(batch_a["request_charges"]) != 138' in carry_step
+    assert 'methods.count("conservative_reserved_amount") != 1' in carry_step
+    assert "execute-batch --confirm-paid-run --batch A" not in carry_step
 
 
 def test_empty_control_accepts_official_empty_patch_summary(

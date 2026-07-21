@@ -30,6 +30,11 @@ on:
         required: true
         default: false
         type: boolean
+      resume_batch_b:
+        description: Carry verified Batch A evidence forward and execute only Batch B
+        required: true
+        default: false
+        type: boolean
       recovery_source_run_id:
         description: Prior paid run containing the blocked Trial Artifact
         required: false
@@ -56,7 +61,7 @@ permissions:
 
 jobs:
   batch-a:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.freeze_run_id != '' && inputs.execute_paid }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.freeze_run_id != '' && inputs.execute_paid && !(inputs.recovery_mode && inputs.resume_batch_b) }}
     runs-on: ubuntu-22.04
     timeout-minutes: 360
     env:
@@ -91,14 +96,14 @@ jobs:
           test -z "$(git status --porcelain)"
           python -m evals.goal4_swe preflight
       - name: Prepare independent parent and child accounting
-        if: ${{ !inputs.recovery_mode }}
+        if: ${{ !inputs.recovery_mode && !inputs.resume_batch_b }}
         run: |
           root="$RUNNER_TEMP/goal4-swe-paid/$GITHUB_RUN_ID"
           python -m evals.goal4_swe prepare-paid-artifacts --freeze "$root/formal-freeze.json" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
           python -m evals.goal4_swe zero-provider --freeze "$root/formal-freeze.json" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
           python -m evals.goal4_swe paid-preflight --freeze "$root/formal-freeze.json" --dataset-jsonl "$root/formal-dataset.jsonl" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
       - name: Execute Batch A serially
-        if: ${{ !inputs.recovery_mode }}
+        if: ${{ !inputs.recovery_mode && !inputs.resume_batch_b }}
         env:
           BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
         run: |
@@ -107,7 +112,7 @@ jobs:
           root="$RUNNER_TEMP/goal4-swe-paid/$GITHUB_RUN_ID"
           python -m evals.goal4_swe execute-batch --confirm-paid-run --batch A --run-id "${{ inputs.run_prefix }}-batch-a" --freeze "$root/formal-freeze.json" --dataset-jsonl "$root/formal-dataset.jsonl" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
       - name: Download prior Batch A evidence for one-time recovery
-        if: ${{ inputs.recovery_mode }}
+        if: ${{ inputs.recovery_mode || inputs.resume_batch_b }}
         uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.recovery_source_artifact_name }}
@@ -144,6 +149,73 @@ jobs:
           PY
           )"
           if test -n "$remaining"; then python -m evals.goal4_swe execute-batch --confirm-paid-run --batch A --run-id "${{ inputs.run_prefix }}-batch-a-remaining" --instance-ids "$remaining" --freeze "$old/formal-freeze.json" --dataset-jsonl "$old/formal-dataset.jsonl" --pricing-snapshot "$old/pricing-snapshot.json" --evidence-root "$old"; fi
+          rm -rf "$root"
+          cp -R "$old" "$root"
+      - name: Carry verified Batch A into the new Freeze
+        if: ${{ inputs.resume_batch_b }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/goal4-swe-paid/$GITHUB_RUN_ID"
+          old="$RUNNER_TEMP/goal4-recovery-old"
+          zero="$RUNNER_TEMP/goal4-zero-provider/$GITHUB_RUN_ID"
+          mkdir -p "$zero"
+          cp "$root/formal-freeze.json" "$root/formal-dataset.jsonl" "$root/formal-matrix.json" "$root/pricing-provenance.json" "$root/pricing-snapshot.json" "$zero/"
+          python -m evals.goal4_swe prepare-paid-artifacts --freeze "$zero/formal-freeze.json" --pricing-snapshot "$zero/pricing-snapshot.json" --evidence-root "$zero"
+          python -m evals.goal4_swe zero-provider --freeze "$zero/formal-freeze.json" --pricing-snapshot "$zero/pricing-snapshot.json" --evidence-root "$zero" > "$zero/zero-provider.json"
+          python - "$zero/zero-provider.json" <<'PY'
+          import json, sys
+          result = json.load(open(sys.argv[1]))
+          expected = {
+              "provider_requests": 0, "usage": 0, "cost_cny": "0.000000",
+              "trials": 0, "evaluator_executions": 0, "active_reservation": None,
+          }
+          if not result.get("valid") or any(result.get(key) != value for key, value in expected.items()):
+              raise SystemExit("zero-provider contract failed")
+          PY
+          cp "$old/formal-freeze.json" "$old/formal-freeze-before-$GITHUB_RUN_ID.json"
+          cp "$root/formal-freeze.json" "$root/formal-dataset.jsonl" "$root/formal-matrix.json" "$root/pricing-provenance.json" "$root/pricing-snapshot.json" "$old/"
+          python -m evals.goal4_swe prepare-recovery-artifacts --old-freeze "$old/formal-freeze-before-$GITHUB_RUN_ID.json" --freeze "$old/formal-freeze.json" --pricing-snapshot "$old/pricing-snapshot.json" --evidence-root "$old"
+          python -m evals.goal4_swe paid-preflight --freeze "$old/formal-freeze.json" --dataset-jsonl "$old/formal-dataset.jsonl" --pricing-snapshot "$old/pricing-snapshot.json" --evidence-root "$old"
+          python - "$old" "${{ inputs.freeze_commit }}" <<'PY'
+          import json, sys
+          from pathlib import Path
+          root, freeze_commit = Path(sys.argv[1]), sys.argv[2]
+          frozen = json.loads((root / "formal-freeze.json").read_text())
+          if frozen["codepacex_commit"] != freeze_commit:
+              raise SystemExit("carried evidence does not match the new Freeze identity")
+          events = []
+          for path in sorted(root.glob("*/events.jsonl")):
+              events.extend(json.loads(line) for line in path.read_text().splitlines())
+          by_task = {}
+          for event in (item for item in events if item.get("type") == "trial_completed"):
+              by_task.setdefault(event.get("task_id"), []).append(event)
+          final = []
+          for values in by_task.values():
+              ordered = sorted(values, key=lambda item: float(item.get("timestamp", 0)), reverse=True)
+              terminal = next((item for item in ordered if item.get("status") in {"resolved", "unresolved"}), None)
+              if terminal is not None:
+                  final.append(terminal)
+          statuses = [item["status"] for item in final]
+          if len(final) != 5 or statuses.count("resolved") != 1 or statuses.count("unresolved") != 4:
+              raise SystemExit("Batch A final terminal evidence changed")
+          batch_a = json.loads((root / "accounts" / "batch-a-ledger.json").read_text())
+          methods = [item["settlement_method"] for item in batch_a["settlements"]]
+          if len(batch_a["request_charges"]) != 138 or len(methods) != 139:
+              raise SystemExit("Batch A charges or settlements changed")
+          if methods.count("provider_usage") != 138 or methods.count("conservative_reserved_amount") != 1:
+              raise SystemExit("Batch A settlement methods changed")
+          if batch_a["active_reservation"] is not None or batch_a["usage_contract_violations"] or batch_a["budget_blocks"]:
+              raise SystemExit("Batch A accounting has a hard blocker")
+          batch_b = json.loads((root / "accounts" / "batch-b-ledger.json").read_text())
+          if batch_b["request_charges"] or batch_b["settlements"] or batch_b["active_reservation"] is not None:
+              raise SystemExit("Batch B already has paid evidence")
+          parent = json.loads((root / "accounts" / "parent-ledger.json").read_text())
+          if parent["active_reservation"] is not None:
+              raise SystemExit("parent ledger has an active reservation")
+          PY
+          mkdir -p "$old/recovery"
+          cp "$zero/zero-provider.json" "$old/recovery/zero-provider-$GITHUB_RUN_ID.json"
+          python -m evals.secret_scan --artifact-root "$old" --untrusted-json-field problem_statement
           rm -rf "$root"
           cp -R "$old" "$root"
       - name: Secret scan Batch A evidence
