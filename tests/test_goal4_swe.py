@@ -398,6 +398,13 @@ def test_request_ceiling_zero_provider_workflow_cannot_execute_paid_requests() -
     assert "provider_requests': 0" in workflow
 
 
+def test_goal4_freeze_workflow_produces_a_zero_provider_artifact() -> None:
+    workflow = Path(".github/workflows/goal4-swe-freeze.yml").read_text(encoding="utf-8")
+    assert "Verify zero-provider paid gate" in workflow
+    assert "goal4-swe-zero-provider-${{ github.run_id }}" in workflow
+    assert "execute-batch" not in workflow[workflow.index("Verify zero-provider paid gate"):]
+
+
 def test_unknown_provider_settlement_workflow_cannot_execute_paid_requests() -> None:
     workflow_path = Path(".github/workflows/goal4-swe-settlement-recovery.yml")
     workflow = workflow_path.read_text(encoding="utf-8")

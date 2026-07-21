@@ -125,6 +125,26 @@ jobs:
         run: |
           python -m evals.secret_scan --artifact-root "$RUNNER_TEMP/goal4-swe" --untrusted-json-field problem_statement
           python -m evals.secret_scan --artifact-root "$RUNNER_TEMP/goal4-swe-control" --untrusted-json-field problem_statement
+      - name: Verify zero-provider paid gate
+        run: |
+          set -euo pipefail
+          freeze_root="$RUNNER_TEMP/goal4-swe"
+          zero_root="$RUNNER_TEMP/goal4-zero-provider"
+          mkdir -p "$zero_root"
+          cp "$freeze_root/formal-freeze.json" "$freeze_root/formal-dataset.jsonl" "$freeze_root/formal-matrix.json" "$freeze_root/pricing-provenance.json" "$freeze_root/pricing-snapshot.json" "$zero_root/"
+          python -m evals.goal4_swe prepare-paid-artifacts --freeze "$zero_root/formal-freeze.json" --pricing-snapshot "$zero_root/pricing-snapshot.json" --evidence-root "$zero_root"
+          python -m evals.goal4_swe zero-provider --freeze "$zero_root/formal-freeze.json" --pricing-snapshot "$zero_root/pricing-snapshot.json" --evidence-root "$zero_root" > "$zero_root/zero-provider.json"
+          python - "$zero_root/zero-provider.json" <<'PY'
+          import json, sys
+          result = json.load(open(sys.argv[1]))
+          expected = {
+              'provider_requests': 0, 'usage': 0, 'cost_cny': '0.000000',
+              'trials': 0, 'evaluator_executions': 0, 'active_reservation': None,
+          }
+          if not result.get('valid') or any(result.get(key) != value for key, value in expected.items()):
+              raise SystemExit('zero-provider contract failed')
+          PY
+          python -m evals.secret_scan --artifact-root "$zero_root" --untrusted-json-field problem_statement
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -136,4 +156,10 @@ jobs:
         with:
           name: goal4-swe-controls-${{ github.run_id }}
           path: ${{ runner.temp }}/goal4-swe-control
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: goal4-swe-zero-provider-${{ github.run_id }}
+          path: ${{ runner.temp }}/goal4-zero-provider
           if-no-files-found: error
