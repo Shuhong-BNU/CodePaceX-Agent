@@ -21,6 +21,26 @@ on:
         required: true
         default: false
         type: boolean
+      recovery_mode:
+        description: Run the one-time authorized infrastructure retry path
+        required: true
+        default: false
+        type: boolean
+      recovery_source_run_id:
+        description: Prior paid run containing the blocked Trial Artifact
+        required: false
+        default: ''
+        type: string
+      recovery_source_artifact_name:
+        description: Prior Batch A Artifact name for the retry path
+        required: false
+        default: ''
+        type: string
+      retry_instance_id:
+        description: The one registered task authorized for infrastructure retry
+        required: false
+        default: aws-cloudformation__cfn-lint-3749
+        type: string
   push:
     branches: [codex/goal4-swe-live-formal-eval]
     paths:
@@ -40,8 +60,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Paid execution must use the commit bound into Freeze 29767622411.
-          ref: 463ddb02df3238e9b54f2770cca6137735066491
+          # Updated to the commit bound into the recovery Freeze before dispatch.
+          ref: 2af020e1e37f65191351401d2b7d7fcdd05b8819
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -68,12 +88,14 @@ jobs:
           test -z "$(git status --porcelain)"
           python -m evals.goal4_swe preflight
       - name: Prepare independent parent and child accounting
+        if: ${{ !inputs.recovery_mode }}
         run: |
           root="$RUNNER_TEMP/goal4-swe-paid/$GITHUB_RUN_ID"
           python -m evals.goal4_swe prepare-paid-artifacts --freeze "$root/formal-freeze.json" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
           python -m evals.goal4_swe zero-provider --freeze "$root/formal-freeze.json" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
           python -m evals.goal4_swe paid-preflight --freeze "$root/formal-freeze.json" --dataset-jsonl "$root/formal-dataset.jsonl" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
       - name: Execute Batch A serially
+        if: ${{ !inputs.recovery_mode }}
         env:
           BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
         run: |
@@ -81,6 +103,46 @@ jobs:
           test -n "$BAILIAN_API_KEY"
           root="$RUNNER_TEMP/goal4-swe-paid/$GITHUB_RUN_ID"
           python -m evals.goal4_swe execute-batch --confirm-paid-run --batch A --run-id "${{ inputs.run_prefix }}-batch-a" --freeze "$root/formal-freeze.json" --dataset-jsonl "$root/formal-dataset.jsonl" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
+      - name: Download prior Batch A evidence for one-time recovery
+        if: ${{ inputs.recovery_mode }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.recovery_source_artifact_name }}
+          run-id: ${{ inputs.recovery_source_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/goal4-recovery-old
+      - name: Prepare and execute one-time infrastructure retry
+        if: ${{ inputs.recovery_mode }}
+        env:
+          BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$BAILIAN_API_KEY"
+          root="$RUNNER_TEMP/goal4-swe-paid/$GITHUB_RUN_ID"
+          old="$RUNNER_TEMP/goal4-recovery-old"
+          old_run="goal4-formal-29767622411-batch-a"
+          cp "$old/formal-freeze.json" "$old/formal-freeze-old.json"
+          trial="swe/goal4/${old_run}/batch-a/1/${{ inputs.retry_instance_id }}"
+          reservation="b114e2f44f6344bea34efb8a3ec6a118"
+          python -m evals.goal4_swe close-unknown-provider-outcome --freeze "$old/formal-freeze-old.json" --pricing-snapshot "$old/pricing-snapshot.json" --evidence-root "$old" --batch A --run-id "$old_run" --instance-id "${{ inputs.retry_instance_id }}" --trial-id "$trial" --reservation-id "$reservation" --request-ordinal 22
+          cp "$root/formal-freeze.json" "$root/formal-dataset.jsonl" "$root/formal-matrix.json" "$root/pricing-provenance.json" "$root/pricing-snapshot.json" "$old/"
+          python -m evals.goal4_swe prepare-recovery-artifacts --old-freeze "$old/formal-freeze-old.json" --freeze "$old/formal-freeze.json" --pricing-snapshot "$old/pricing-snapshot.json" --evidence-root "$old"
+          python -m evals.goal4_swe execute-batch --confirm-paid-run --batch A --run-id "${{ inputs.run_prefix }}-infra-retry" --retry-of "$old_run" --instance-ids "${{ inputs.retry_instance_id }}" --freeze "$old/formal-freeze.json" --dataset-jsonl "$old/formal-dataset.jsonl" --pricing-snapshot "$old/pricing-snapshot.json" --evidence-root "$old"
+          remaining="$(python - "$old" "$old_run" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          root=Path(sys.argv[1]); old_run=sys.argv[2]
+          events=[json.loads(line) for line in (root/"${{ inputs.run_prefix }}-infra-retry"/"events.jsonl").read_text().splitlines()]
+          terminal=[e for e in events if e.get("type")=="trial_completed"]
+          if len(terminal)!=1 or terminal[0].get("status") not in {"resolved","unresolved"}:
+              raise SystemExit("infrastructure retry did not form a scorable terminal")
+          print(",".join(task for task in ("aws-cloudformation__cfn-lint-3764","beetbox__beets-5457","beetbox__beets-5495","deepset-ai__haystack-8489")))
+          PY
+          )"
+          if test -n "$remaining"; then python -m evals.goal4_swe execute-batch --confirm-paid-run --batch A --run-id "${{ inputs.run_prefix }}-batch-a-remaining" --instance-ids "$remaining" --freeze "$old/formal-freeze.json" --dataset-jsonl "$old/formal-dataset.jsonl" --pricing-snapshot "$old/pricing-snapshot.json" --evidence-root "$old"; fi
+          rm -rf "$root"
+          cp -R "$old" "$root"
       - name: Secret scan Batch A evidence
         if: always()
         run: python -m evals.secret_scan --artifact-root "$RUNNER_TEMP/goal4-swe-paid/$GITHUB_RUN_ID" --untrusted-json-field problem_statement
@@ -100,8 +162,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Paid execution must use the commit bound into Freeze 29767622411.
-          ref: 463ddb02df3238e9b54f2770cca6137735066491
+          # Paid execution must use the commit bound into Freeze 29789993330.
+          ref: 2af020e1e37f65191351401d2b7d7fcdd05b8819
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -126,9 +188,15 @@ jobs:
           import json, sys
           from pathlib import Path
           root = Path(sys.argv[1])
-          events = [json.loads(line) for line in (root / "${{ inputs.run_prefix }}-batch-a" / "events.jsonl").read_text().splitlines()]
+          events = []
+          for path in sorted(root.glob("*/events.jsonl")):
+              events.extend(json.loads(line) for line in path.read_text().splitlines())
           terminal = [event for event in events if event.get("type") == "trial_completed"]
-          if len(terminal) != 5 or any(event.get("status") not in {"resolved", "unresolved"} for event in terminal):
+          by_task = {}
+          for event in terminal:
+              by_task.setdefault(event.get("task_id"), []).append(event)
+          final = [next((event for event in reversed(sorted(values, key=lambda item: float(item.get("timestamp", 0)))) if event.get("status") in {"resolved", "unresolved"}), values[-1]) for values in by_task.values()]
+          if len(final) != 5 or any(event.get("status") not in {"resolved", "unresolved"} for event in final):
               raise SystemExit("Batch A has an unresolved hard blocker")
           ledger = json.loads((root / "accounts" / "parent-ledger.json").read_text())
           if ledger["active_reservation"] is not None:
