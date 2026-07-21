@@ -1,0 +1,14 @@
+{
+  "denominator": 20,
+  "evidence_report_sha256": "a404d82ec17c93471b842a4139e6d3f6350c672e8edf5744b57e16820e1c1a38",
+  "goal": "Goal 4 — Formal SWE-bench-Live Evaluation and Evidence Publication",
+  "limitations": [
+    "Pre-registered 20-task Python-only Lite subset, not full SWE-bench-Live Lite.",
+    "Not pass@k, a model comparison, or a claim of statistical significance."
+  ],
+  "matrix_sha256": "9ff16e850b92a6eb0bd1338cb85253a605fdfb0e0aa77180488382eca353972a",
+  "resolved": 4,
+  "schema_version": 1,
+  "status": "verified",
+  "total_cost_cny": "170.537160"
+}
