@@ -663,6 +663,16 @@ def paid_preflight(*, root: Path, freeze_path: Path, dataset_jsonl: Path, pricin
     }
 
 
+def _accounting_hard_stop_reason(accounting: Mapping[str, Any]) -> str | None:
+    if accounting.get("provider_usage_contract_violation") is not None:
+        return "provider_usage_contract_violation"
+    if accounting.get("budget_blocked"):
+        return "budget_blocked"
+    if accounting.get("active_reservation") is not None:
+        return "active_reservation"
+    return None
+
+
 def execute_batch(
     *, root: Path, freeze_path: Path, dataset_jsonl: Path, pricing_path: Path,
     evidence_root: Path, batch: Literal["A", "B"], run_id: str, confirmed: bool,
@@ -758,10 +768,8 @@ def execute_batch(
                 accounting = gate.trial_accounting(trial_id)
                 requests, _input_tokens, _output_tokens = trace_usage(process.stdout or "")
                 violation = accounting.get("provider_usage_contract_violation")
-                if violation is not None or accounting["budget_blocked"] or accounting["active_reservation"] is not None:
-                    reason = "provider_usage_contract_violation" if violation else (
-                        "budget_blocked" if accounting["budget_blocked"] else "active_reservation"
-                    )
+                reason = _accounting_hard_stop_reason(accounting)
+                if reason is not None:
                     _terminal(recorder, instance_id=instance_id, trial_id=trial_id, status="infrastructure_error", started=started,
                               accounting=accounting, reason=reason, provider_usage_contract_violation=violation,
                               budget_block_reasons=accounting.get("budget_block_reasons", []), official_evaluator_completed=False)

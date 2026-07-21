@@ -3,9 +3,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import httpx
+import openai
 import pytest
 
-from codepacex.client import OpenAICompatClient
+from codepacex.client import NetworkError, OpenAICompatClient
 from codepacex.config import ProviderConfig
 from codepacex.conversation import ConversationManager
 from codepacex.tools.base import StreamEnd
@@ -46,6 +48,12 @@ class _FakeBudget:
         assert reservation is self.reservation
         assert usage == {"prompt_tokens": 12, "completion_tokens": 3}
         self.calls.append("settle")
+
+    def record_request_failure(self, reservation: object, *, failure_type: str) -> None:
+        assert reservation is self.reservation
+        assert "openai.APITimeoutError" in failure_type
+        assert "httpx.ConnectTimeout" in failure_type
+        self.calls.append("failure")
 
 
 def _client() -> OpenAICompatClient:
@@ -124,3 +132,33 @@ async def test_compat_client_keeps_reservation_when_provider_returns_no_usage(mo
         async for _event in client.stream(conversation):
             pass
     assert budget.calls == ["reserve"]
+
+
+@pytest.mark.asyncio
+async def test_compat_client_does_not_retry_or_settle_after_connect_timeout(monkeypatch) -> None:
+    budget = _FakeBudget()
+    client = _client()
+    calls = 0
+
+    async def create(**kwargs):
+        nonlocal calls
+        calls += 1
+        request = httpx.Request("POST", "https://example.invalid/chat/completions")
+        try:
+            raise httpx.ConnectTimeout("connect timed out", request=request)
+        except httpx.ConnectTimeout as timeout:
+            raise openai.APITimeoutError(request=request) from timeout
+
+    client._client = SimpleNamespace(chat=SimpleNamespace(
+        completions=SimpleNamespace(create=create),
+    ))
+    conversation = ConversationManager()
+    conversation.add_user_message("hello")
+    monkeypatch.setenv("CODEPACEX_EXPERIMENT_REQUEST_BUDGET", "1")
+    with patch("evals.paid_gate.ProviderRequestBudget.from_environment", return_value=budget), pytest.raises(
+        NetworkError, match="Network error",
+    ):
+        async for _event in client.stream(conversation):
+            pass
+    assert calls == 1
+    assert budget.calls == ["reserve", "failure"]

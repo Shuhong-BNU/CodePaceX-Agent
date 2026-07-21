@@ -7,9 +7,15 @@ on:
     paths:
       - .github/workflows/goal4-swe-freeze.yml
       - .github/workflows/goal4-swe-batch-b-recovery.yml
+      - .github/workflows/goal4-swe-settlement-recovery.yml
+      - codepacex/client.py
       - evals/goal4_swe.py
+      - evals/paid_gate.py
       - evals/goal4/**
       - tests/test_goal4_swe.py
+      - tests/test_paid_gate.py
+      - tests/test_request_budget_bridge.py
+      - tests/test_runtime_telemetry.py
 
 permissions:
   contents: read

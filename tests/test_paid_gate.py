@@ -439,6 +439,30 @@ def test_request_with_missing_usage_keeps_active_reservation(tmp_path: Path) -> 
     assert not ledger.request_charges
 
 
+def test_request_failure_persists_trial_ordinal_and_keeps_reservation(tmp_path: Path) -> None:
+    gate = _gate(tmp_path)
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ):
+        reservation = gate.reserve(
+            "swe/run/trial-timeout", maximum_requests=1,
+            maximum_input_tokens_per_request=128_000,
+            maximum_output_tokens_per_request=8192,
+        )
+    recorded = gate.record_request_failure(
+        reservation,
+        failure_type="openai.APITimeoutError/httpx.ConnectTimeout",
+    )
+    ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
+    assert recorded.trial_id == "swe/run/trial-timeout"
+    assert recorded.request_index == 1
+    assert recorded.failure_type == "openai.APITimeoutError/httpx.ConnectTimeout"
+    assert recorded.failure_recorded_at is not None
+    assert ledger.active_reservation == recorded
+    assert not ledger.request_charges
+    assert not ledger.settlements
+
+
 def test_unknown_usage_is_conservatively_settled_without_fabricating_tokens(tmp_path: Path) -> None:
     authorization_path = tmp_path / "authorization.json"
     _authorization(authorization_path)
@@ -463,7 +487,10 @@ def test_unknown_usage_is_conservatively_settled_without_fabricating_tokens(tmp_
     assert settlement.status == "conservative_settled"
     assert settlement.settlement_method == "conservative_reserved_amount"
     assert settlement.usage_status == "unknown"
-    assert settlement.requests is settlement.input_tokens is settlement.output_tokens is None
+    assert (
+        settlement.requests is settlement.input_tokens is settlement.output_tokens
+        is settlement.reasoning_tokens is None
+    )
     assert ledger.spent_cny == reservation.reserved_cny
     assert ledger.active_reservation is None
     assert not ledger.request_charges

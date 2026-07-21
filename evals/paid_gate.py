@@ -75,6 +75,9 @@ class Reservation(BaseModel):
     maximum_output_tokens_per_request: int = Field(gt=0)
     reserved_cny: Decimal = Field(gt=0)
     created_at: str
+    request_index: int | None = Field(default=None, gt=0)
+    failure_type: str | None = None
+    failure_recorded_at: str | None = None
 
 
 class Settlement(BaseModel):
@@ -106,6 +109,7 @@ class Settlement(BaseModel):
                 raise ValueError("conservative settlement must preserve unknown Usage")
             if any(value is not None for value in (
                 self.requests, self.input_tokens, self.output_tokens,
+                self.reasoning_tokens,
             )):
                 raise ValueError("conservative settlement cannot fabricate request Usage")
             if not self.evidence_gap:
@@ -678,6 +682,9 @@ class PaidRunGate:
             maximum_input_tokens_per_request=maximum_input_tokens_per_request,
             maximum_output_tokens_per_request=maximum_output_tokens_per_request,
             reserved_cny=amount, created_at=_utc_now(),
+            request_index=1 + sum(
+                item.trial_id == trial_id for item in ledger.request_charges
+            ),
         )
         ledger.active_reservation = reservation
         self._write_ledger(ledger)
@@ -738,7 +745,7 @@ class PaidRunGate:
         input_tokens, output_tokens = request_usage
         if input_tokens < 0 or output_tokens < 0 or reasoning_tokens is not None and reasoning_tokens < 0:
             raise ValueError("provider request token usage cannot be negative")
-        request_index = 1 + sum(
+        request_index = active.request_index or 1 + sum(
             item.trial_id == active.trial_id for item in ledger.request_charges
         )
         if any(
@@ -770,6 +777,27 @@ class PaidRunGate:
         ledger.active_reservation = None
         self._write_ledger(ledger)
         return settlement
+
+    def record_request_failure(
+        self, reservation: Reservation, *, failure_type: str,
+    ) -> Reservation:
+        """Persist a failed request's identity without settling its Usage."""
+        if not failure_type:
+            raise ValueError("Provider request failure type is required")
+        with self.locked():
+            ledger = self._load_ledger()
+            active = ledger.active_reservation
+            if active is None or active.reservation_id != reservation.reservation_id:
+                raise ValueError("paid trial reservation is not active")
+            if active.failure_type is not None:
+                raise ValueError("Provider request failure is already recorded")
+            active = active.model_copy(update={
+                "failure_type": failure_type,
+                "failure_recorded_at": _utc_now(),
+            })
+            ledger.active_reservation = active
+            self._write_ledger(ledger)
+            return active
 
     def record_provider_usage_contract_violation(
         self, reservation: Reservation, *, input_tokens: int, output_tokens: int,
@@ -1066,6 +1094,13 @@ class ProviderRequestBudget:
             self.trial_id, maximum_requests=1,
             maximum_input_tokens_per_request=self.maximum_input_tokens_per_request,
             maximum_output_tokens_per_request=self.maximum_output_tokens_per_request,
+        )
+
+    def record_request_failure(
+        self, reservation: Reservation, *, failure_type: str,
+    ) -> Reservation:
+        return self.gate.record_request_failure(
+            reservation, failure_type=failure_type,
         )
 
     def settle_after_usage(

@@ -18,6 +18,19 @@ from evals.secret_scan import scan_artifact_roots
 PRICING = Path("evals/goal2/pricing_bailian_qwen37_max_2026-07-13.json")
 
 
+def test_active_reservation_is_an_immediate_accounting_hard_stop() -> None:
+    accounting = {
+        "provider_usage_contract_violation": None,
+        "budget_blocked": False,
+        "active_reservation": {
+            "trial_id": "swe/run/trial-timeout",
+            "request_index": 10,
+            "failure_type": "openai.APITimeoutError/httpx.ConnectTimeout",
+        },
+    }
+    assert goal4._accounting_hard_stop_reason(accounting) == "active_reservation"
+
+
 def _patch(count: int) -> str:
     return "\n".join(
         f"--- a/f{index}.py\n+++ b/f{index}.py\n@@ -1 +1 @@\n-old\n+new"
@@ -343,6 +356,24 @@ def test_batch_b_recovery_workflow_is_explicitly_paid_gated() -> None:
     assert "execute-batch --confirm-paid-run" not in preflight
     freeze_workflow = Path(".github/workflows/goal4-swe-freeze.yml").read_text(encoding="utf-8")
     assert ".github/workflows/goal4-swe-batch-b-recovery.yml" in freeze_workflow
+
+
+def test_unknown_provider_settlement_workflow_cannot_execute_paid_requests() -> None:
+    workflow_path = Path(".github/workflows/goal4-swe-settlement-recovery.yml")
+    workflow = workflow_path.read_text(encoding="utf-8")
+    assert "close-unknown-provider-outcome" in workflow
+    assert "dbc13fb389344b8fb34cf8d3f548f336" in workflow
+    assert "29800120889" in workflow
+    assert "5136e6bac5bf4b9c534b02a02165eb1c742ea817423fc9407eba62541d63ca66" in workflow
+    assert "verified != Decimal('44.173392')" in workflow
+    assert "Decimal('3.661824')" in workflow
+    assert "parent['spent_cny'] != '47.835216'" in workflow
+    assert "zero-provider" in workflow
+    assert "execute-batch" not in workflow
+    assert "BAILIAN_API_KEY" not in workflow
+    assert "secrets." not in workflow
+    freeze_workflow = Path(".github/workflows/goal4-swe-freeze.yml").read_text(encoding="utf-8")
+    assert str(workflow_path) in freeze_workflow
 
 
 def test_empty_control_accepts_official_empty_patch_summary(

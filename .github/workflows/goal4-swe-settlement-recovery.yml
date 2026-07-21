@@ -1,0 +1,159 @@
+name: Goal 4 unknown Provider settlement recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      freeze_run_id:
+        description: Run ID containing the new immutable Goal 4 Freeze
+        required: true
+        type: string
+      freeze_artifact_name:
+        description: Exact new Goal 4 Freeze Artifact name
+        required: true
+        type: string
+      freeze_commit:
+        description: Exact commit recorded by the new Freeze
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  settle-and-zero-provider:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.freeze_commit }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Download new Freeze
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.freeze_artifact_name }}
+          run-id: ${{ inputs.freeze_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/goal4-new-freeze
+      - name: Download and verify immutable blocked recovery archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          source_run_id='29800120889'
+          source_name='goal4-swe-formal-recovery-evidence-29800120889'
+          source_sha='5136e6bac5bf4b9c534b02a02165eb1c742ea817423fc9407eba62541d63ca66'
+          artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$source_run_id/artifacts" --jq ".artifacts[] | select(.name == \"$source_name\") | .id")"
+          test -n "$artifact_id"
+          test "$(printf '%s\n' "$artifact_id" | wc -l | tr -d ' ')" = 1
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$RUNNER_TEMP/goal4-source.zip"
+          printf '%s  %s\n' "$source_sha" "$RUNNER_TEMP/goal4-source.zip" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/goal4-settlement"
+          unzip -q "$RUNNER_TEMP/goal4-source.zip" -d "$RUNNER_TEMP/goal4-settlement"
+      - name: Install controller and conservatively close only the authorized reservation
+        run: |
+          set -euo pipefail
+          python -m pip install -e . pytest pytest-asyncio
+          git diff --check
+          test -z "$(git status --porcelain)"
+          root="$RUNNER_TEMP/goal4-settlement"
+          python -m evals.goal4_swe close-unknown-provider-outcome \
+            --freeze "$root/formal-freeze.json" \
+            --pricing-snapshot "$root/pricing-snapshot.json" \
+            --evidence-root "$root" \
+            --batch B \
+            --run-id goal4-authorized-29799550907-01-infra-retry \
+            --instance-id bridgecrewio__checkov-6895 \
+            --trial-id swe/goal4/goal4-authorized-29799550907-01-infra-retry/batch-b/1/bridgecrewio__checkov-6895 \
+            --reservation-id dbc13fb389344b8fb34cf8d3f548f336 \
+            --request-ordinal 10
+      - name: Audit conservative accounting and immutable Trial evidence
+        run: |
+          python - "$RUNNER_TEMP/goal4-settlement" <<'PY'
+          import hashlib, json, sys
+          from decimal import Decimal
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          run = root / 'goal4-authorized-29799550907-01-infra-retry'
+          expected_hashes = {
+              'events.jsonl': '6da3debf09a397447ec21acae78347f8d0a06b2ff3213d2d88fc55bf579bf6e3',
+              'result.json': '2e39b8d7ebf0e3fd372f9d611273261a148861da05fa19e86a50cd46ff3daefc',
+              'manifest.json': '07cd5f5381d9438e102be5aafd34717cd9b0da4ccc280ecf42e3060d53c67d91',
+          }
+          for name, expected in expected_hashes.items():
+              if hashlib.sha256((run / name).read_bytes()).hexdigest() != expected:
+                  raise SystemExit(f'immutable Trial evidence changed: {name}')
+          ledgers = [
+              json.loads((root / f'accounts/batch-{batch}-ledger.json').read_text())
+              for batch in ('a', 'b')
+          ]
+          batch_a, batch_b = ledgers
+          parent = json.loads((root / 'accounts/parent-ledger.json').read_text())
+          if len(batch_a['request_charges']) != 138 or len(batch_a['settlements']) != 139:
+              raise SystemExit('Batch A accounting changed')
+          if len(batch_b['request_charges']) != 81 or len(batch_b['settlements']) != 82:
+              raise SystemExit('Batch B settlement accounting mismatch')
+          conservative = [
+              item for ledger in ledgers for item in ledger['settlements']
+              if item['status'] == 'conservative_settled'
+          ]
+          if len(conservative) != 2 or sum(Decimal(item['actual_cny']) for item in conservative) != Decimal('3.661824'):
+              raise SystemExit('uncertain maximum exposure mismatch')
+          usage_fields = ('requests', 'input_tokens', 'output_tokens', 'reasoning_tokens')
+          if any(any(item[field] is not None for field in usage_fields) for item in conservative):
+              raise SystemExit('conservative settlement fabricated Provider Usage')
+          verified = sum(
+              Decimal(item['actual_cny'])
+              for ledger in ledgers for item in ledger['request_charges']
+          )
+          if verified != Decimal('44.173392'):
+              raise SystemExit('verified Provider cost mismatch')
+          if parent['request_charge_count'] != 219 or parent['settlement_count'] != 221:
+              raise SystemExit('parent accounting counts mismatch')
+          if parent['spent_cny'] != '47.835216' or parent['active_reservation'] is not None:
+              raise SystemExit('conservative budget consumption or reservation mismatch')
+          if any(ledger['active_reservation'] is not None for ledger in ledgers):
+              raise SystemExit('child active reservation remains')
+          PY
+      - name: Rebind copied evidence and prove zero-provider state
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/goal4-settlement"
+          freeze="$RUNNER_TEMP/goal4-new-freeze"
+          zero="$RUNNER_TEMP/goal4-zero-provider"
+          mkdir -p "$zero"
+          cp "$freeze/formal-freeze.json" "$freeze/formal-dataset.jsonl" "$freeze/formal-matrix.json" "$freeze/pricing-provenance.json" "$freeze/pricing-snapshot.json" "$zero/"
+          python -m evals.goal4_swe prepare-paid-artifacts --freeze "$zero/formal-freeze.json" --pricing-snapshot "$zero/pricing-snapshot.json" --evidence-root "$zero"
+          python -m evals.goal4_swe zero-provider --freeze "$zero/formal-freeze.json" --pricing-snapshot "$zero/pricing-snapshot.json" --evidence-root "$zero" > "$zero/zero-provider.json"
+          cp "$root/formal-freeze.json" "$root/formal-freeze-before-$GITHUB_RUN_ID.json"
+          cp "$freeze/formal-freeze.json" "$freeze/formal-dataset.jsonl" "$freeze/formal-matrix.json" "$freeze/pricing-provenance.json" "$freeze/pricing-snapshot.json" "$root/"
+          python -m evals.goal4_swe prepare-recovery-artifacts --old-freeze "$root/formal-freeze-before-$GITHUB_RUN_ID.json" --freeze "$root/formal-freeze.json" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
+          python -m evals.goal4_swe paid-preflight --freeze "$root/formal-freeze.json" --dataset-jsonl "$root/formal-dataset.jsonl" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
+          cp "$zero/zero-provider.json" "$root/recovery/zero-provider-$GITHUB_RUN_ID.json"
+      - name: Verify zero-provider contract and secret scan
+        run: |
+          python - "$RUNNER_TEMP/goal4-zero-provider/zero-provider.json" '${{ inputs.freeze_commit }}' "$RUNNER_TEMP/goal4-settlement/formal-freeze.json" <<'PY'
+          import json, sys
+          result = json.load(open(sys.argv[1]))
+          expected = {
+              'provider_requests': 0, 'usage': 0, 'cost_cny': '0.000000',
+              'trials': 0, 'evaluator_executions': 0, 'active_reservation': None,
+          }
+          if not result.get('valid') or any(result.get(key) != value for key, value in expected.items()):
+              raise SystemExit('zero-provider contract failed')
+          frozen = json.load(open(sys.argv[3]))
+          if frozen['codepacex_commit'] != sys.argv[2]:
+              raise SystemExit('new Freeze commit identity mismatch')
+          PY
+          python -m evals.secret_scan --artifact-root "$RUNNER_TEMP/goal4-zero-provider" --untrusted-json-field problem_statement
+          python -m evals.secret_scan --artifact-root "$RUNNER_TEMP/goal4-settlement" --untrusted-json-field problem_statement
+      - uses: actions/upload-artifact@v4
+        with:
+          name: goal4-swe-settlement-recovery-${{ github.run_id }}
+          path: ${{ runner.temp }}/goal4-settlement
+          if-no-files-found: error
