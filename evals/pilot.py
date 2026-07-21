@@ -415,6 +415,13 @@ def _ingest_trace(
                 "task_id": task_id, "repetition_id": repetition_id,
                 "attempt_id": attempt_id,
             })
+        elif event.get("type") == "validation":
+            validation_event = {key: value for key, value in event.items() if key != "type"}
+            validation_event.update({
+                "type": "validation", "task_id": task_id,
+                "repetition_id": repetition_id, "attempt_id": attempt_id,
+            })
+            recorder.capture_event(validation_event)
     return requests, input_tokens, output_tokens
 
 

@@ -29,9 +29,10 @@ RESULT_STATUSES = {
 SCORABLE_STATUSES = {"success", "task_failure"}
 SCORABLE_TRIAL_STATUSES = SCORABLE_STATUSES | {"resolved", "unresolved"}
 RESUMABLE_STATUSES = RESULT_STATUSES - {"success", "dry_run", "budget_blocked"}
-OPTIONAL_JSON = {"usage.json"}
+OPTIONAL_JSON = {"usage.json", "validation-summary.json"}
 OPTIONAL_STREAMS = {
     "permission-events.jsonl", "compression-events.jsonl", "runtime-events.jsonl",
+    "validation-events.jsonl",
 }
 ALLOWED_ARTIFACTS = {"patch.diff", "test-output.txt", "stdout.txt", "stderr.txt"}
 TASK_ARTIFACT_KINDS = {"stdout", "stderr", "evaluator", "evaluator_report"}
@@ -435,6 +436,20 @@ class RunRecorder:
                     for item in runtime
                 ):
                     raise ValueError("usage event has no matching runtime manifest")
+        elif event_type == "validation":
+            session_id = payload.get("validation_session_id")
+            sequence = payload.get("event_sequence")
+            if not isinstance(session_id, str) or not session_id:
+                raise ValueError("validation event requires validation_session_id")
+            if not isinstance(sequence, int) or sequence < 1:
+                raise ValueError("validation event requires a positive event_sequence")
+            previous = self._jsonl_records("validation-events.jsonl")
+            if any(
+                item.get("validation_session_id") == session_id
+                and item.get("event_sequence") == sequence
+                for item in previous
+            ):
+                raise ValueError("duplicate validation event sequence")
         self.event(event_type, payload)
         if event_type == "usage":
             existing = self._json_object("usage.json")
@@ -449,6 +464,23 @@ class RunRecorder:
             self.optional_event("compression-events.jsonl", payload)
         elif event_type == "runtime_manifest":
             self.optional_event("runtime-events.jsonl", payload)
+        elif event_type == "validation":
+            self.optional_event("validation-events.jsonl", payload)
+            events = self._jsonl_records("validation-events.jsonl")
+            latest = events[-1] if events else payload
+            summary = {
+                "schema_version": payload.get("schema_version", 1),
+                "validation_enabled": True,
+                "validation_session_id": payload.get("validation_session_id"),
+                "event_count": len(events),
+                "event_sequence": latest.get("event_sequence"),
+                "last_event_type": latest.get("event_type"),
+                "completion_decision": (
+                    latest.get("payload", {}).get("status")
+                    if isinstance(latest.get("payload"), dict) else None
+                ),
+            }
+            self.write_optional_json("validation-summary.json", summary)
 
     def write_artifact(self, name: str, content: str | bytes) -> Path:
         if name not in ALLOWED_ARTIFACTS or Path(name).name != name:
@@ -620,6 +652,11 @@ class RunRecorder:
         lines = ["# Benchmark Run", "", f"- Run ID: `{self.run_id}`", f"- Status: `{status}`"]
         for key, value in sorted(redacted.items()):
             if key not in {"schema_version", "status"}:
+                lines.append(f"- {key}: {value}")
+        validation_summary = self._json_object("validation-summary.json")
+        if validation_summary:
+            lines.extend(["", "## Validation", ""])
+            for key, value in sorted(validation_summary.items()):
                 lines.append(f"- {key}: {value}")
         self._atomic_write(self.path / "report.md", ("\n".join(lines) + "\n").encode())
         if self._sanitize_run_files():
