@@ -331,6 +331,7 @@ def test_paid_workflow_can_resume_batch_b_without_rerunning_batch_a() -> None:
 def test_batch_b_recovery_workflow_is_explicitly_paid_gated() -> None:
     workflow = Path(".github/workflows/goal4-swe-batch-b-recovery.yml").read_text(encoding="utf-8")
     assert "default: false" in workflow
+    assert "if: ${{ github.event_name == 'workflow_dispatch' }}" in workflow
     assert "if: ${{ inputs.execute_paid && inputs.authorize_blocked_retry }}" in workflow
     assert "compact-evaluator-transients" in workflow
     assert "source_archive_sha256" in workflow
@@ -340,6 +341,8 @@ def test_batch_b_recovery_workflow_is_explicitly_paid_gated() -> None:
     assert "Execute the ten never-run Batch B tasks strictly serially" in workflow
     preflight = workflow[:workflow.index("  paid-recovery:")]
     assert "execute-batch --confirm-paid-run" not in preflight
+    freeze_workflow = Path(".github/workflows/goal4-swe-freeze.yml").read_text(encoding="utf-8")
+    assert ".github/workflows/goal4-swe-batch-b-recovery.yml" in freeze_workflow
 
 
 def test_empty_control_accepts_official_empty_patch_summary(

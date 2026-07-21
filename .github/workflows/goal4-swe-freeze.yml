@@ -6,6 +6,7 @@ on:
     branches: [codex/goal4-swe-live-formal-eval]
     paths:
       - .github/workflows/goal4-swe-freeze.yml
+      - .github/workflows/goal4-swe-batch-b-recovery.yml
       - evals/goal4_swe.py
       - evals/goal4/**
       - tests/test_goal4_swe.py

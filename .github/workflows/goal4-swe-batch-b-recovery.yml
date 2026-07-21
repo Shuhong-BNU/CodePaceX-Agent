@@ -45,6 +45,10 @@ on:
         required: true
         default: false
         type: boolean
+  push:
+    branches: [codex/goal4-swe-live-formal-eval]
+    paths:
+      - .github/workflows/goal4-swe-batch-b-recovery.yml
 
 permissions:
   actions: read
@@ -52,6 +56,7 @@ permissions:
 
 jobs:
   preflight:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
