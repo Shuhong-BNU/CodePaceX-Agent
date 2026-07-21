@@ -403,6 +403,8 @@ def test_goal4_freeze_workflow_produces_a_zero_provider_artifact() -> None:
     assert "Verify zero-provider paid gate" in workflow
     assert "goal4-swe-zero-provider-${{ github.run_id }}" in workflow
     assert "execute-batch" not in workflow[workflow.index("Verify zero-provider paid gate"):]
+    assert "blocked-claims-validation.json" in workflow
+    assert "validate-claims" in workflow
 
 
 def test_unknown_provider_settlement_workflow_cannot_execute_paid_requests() -> None:

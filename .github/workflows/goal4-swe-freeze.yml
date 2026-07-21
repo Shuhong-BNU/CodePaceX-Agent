@@ -18,6 +18,7 @@ on:
       - tests/test_runtime_telemetry.py
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -126,6 +127,8 @@ jobs:
           python -m evals.secret_scan --artifact-root "$RUNNER_TEMP/goal4-swe" --untrusted-json-field problem_statement
           python -m evals.secret_scan --artifact-root "$RUNNER_TEMP/goal4-swe-control" --untrusted-json-field problem_statement
       - name: Verify zero-provider paid gate
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           freeze_root="$RUNNER_TEMP/goal4-swe"
@@ -144,6 +147,14 @@ jobs:
           if not result.get('valid') or any(result.get(key) != value for key, value in expected.items()):
               raise SystemExit('zero-provider contract failed')
           PY
+          gh api repos/$GITHUB_REPOSITORY/actions/artifacts/8486382695/zip > "$RUNNER_TEMP/goal4-blocked-evidence.zip"
+          printf '%s  %s\n' '2085b856b55b5df46118ef1935b846ecdc2ff01ff9f08fc4fabf7595144f1d30' "$RUNNER_TEMP/goal4-blocked-evidence.zip" | sha256sum --check
+          source_root="$RUNNER_TEMP/goal4-blocked-evidence"
+          unzip -q "$RUNNER_TEMP/goal4-blocked-evidence.zip" -d "$source_root"
+          cp "$source_root/formal-freeze.json" "$source_root/formal-freeze.before-recovery.json"
+          cp "$freeze_root/formal-freeze.json" "$freeze_root/formal-dataset.jsonl" "$freeze_root/formal-matrix.json" "$freeze_root/pricing-provenance.json" "$freeze_root/pricing-snapshot.json" "$source_root/"
+          python -m evals.goal4_swe prepare-recovery-artifacts --old-freeze "$source_root/formal-freeze.before-recovery.json" --freeze "$source_root/formal-freeze.json" --pricing-snapshot "$source_root/pricing-snapshot.json" --evidence-root "$source_root"
+          python -m evals.goal4_swe validate-claims --freeze "$source_root/formal-freeze.json" --evidence-root "$source_root" --claims "$source_root/reports/claims.goal4.json" > "$zero_root/blocked-claims-validation.json"
           python -m evals.secret_scan --artifact-root "$zero_root" --untrusted-json-field problem_statement
       - uses: actions/upload-artifact@v4
         if: always()
