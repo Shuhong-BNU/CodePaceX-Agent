@@ -11,6 +11,7 @@ from evals.benchmark import RunManifest, RunRecorder
 from evals.swe_bench_live import (
     build_evaluator_command,
     main,
+    official_evaluator_report_path,
     run_official_evaluator,
     select_instances,
     write_frozen_manifest,
@@ -111,6 +112,21 @@ def test_evaluator_return_code_is_propagated(tmp_path: Path) -> None:
         )
     assert result.returncode == 7
     assert run_mock.call_args.kwargs["cwd"] is None
+
+
+def test_official_report_path_requires_one_exact_evaluator_contract_file(tmp_path: Path) -> None:
+    report_dir = tmp_path / "logs" / "run_evaluation" / "run-1" / "model" / "case"
+    report_dir.mkdir(parents=True)
+    report = report_dir / "report.json"
+    report.write_text("{}", encoding="utf-8")
+    assert official_evaluator_report_path(
+        cwd=tmp_path, run_id="run-1", model_id="model", instance_id="case",
+    ) == report
+    (report_dir / "report-copy.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="multiple report candidates"):
+        official_evaluator_report_path(
+            cwd=tmp_path, run_id="run-1", model_id="model", instance_id="case",
+        )
 
 
 def test_cli_dry_run_needs_no_evaluator(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

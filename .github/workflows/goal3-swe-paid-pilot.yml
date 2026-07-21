@@ -1,0 +1,157 @@
+name: Goal 3 SWE paid pilot
+
+on:
+  workflow_dispatch:
+    inputs:
+      freeze_run_id:
+        description: GitHub Actions run ID that uploaded the immutable Goal 3 freeze bundle
+        required: true
+        type: string
+      freeze_artifact_name:
+        description: Exact freeze Artifact name containing the three paid Pilot contract files
+        required: true
+        type: string
+      authorized_total_cny:
+        description: Explicit user-authorized CNY ceiling bound to this freeze
+        required: true
+        type: string
+      run_id:
+        description: New, unused Goal 3 Run ID
+        required: true
+        default: goal3-paid-pilot
+        type: string
+      execute_paid:
+        description: Must be true to permit any Provider request
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  paid-pilot:
+    if: ${{ inputs.freeze_run_id != '' && inputs.authorized_total_cny != '' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+    env:
+      EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Prepare isolated Goal 3 paid evidence root
+        run: |
+          set -euo pipefail
+          FREEZE_ROOT="$RUNNER_TEMP/goal3-swe-paid/$GITHUB_RUN_ID"
+          test ! -e "$FREEZE_ROOT"
+          mkdir -p "$FREEZE_ROOT"
+          printf 'FREEZE_ROOT=%s\n' "$FREEZE_ROOT" >> "$GITHUB_ENV"
+
+      - name: Download immutable Goal 3 freeze bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.freeze_artifact_name }}
+          run-id: ${{ inputs.freeze_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/goal3-swe-paid/${{ github.run_id }}
+
+      - name: Validate freeze bundle shape
+        run: |
+          set -euo pipefail
+          test -f "$FREEZE_ROOT/pilot-freeze.json"
+          test -f "$FREEZE_ROOT/pricing-snapshot.json"
+          test -f "$FREEZE_ROOT/pilot-dataset.jsonl"
+          test ! -e "$FREEZE_ROOT/budget-authorization.json"
+          test ! -e "$FREEZE_ROOT/budget-ledger.json"
+          test ! -e "$FREEZE_ROOT/budget-allocation.json"
+
+      - name: Record native host and Docker evidence
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Linux
+          case "$(uname -m)" in x86_64|amd64) ;; *) exit 1 ;; esac
+          docker version
+          case "$(docker version --format '{{.Server.Arch}}')" in x86_64|amd64) ;; *) exit 1 ;; esac
+
+      - name: Install project and frozen official evaluator
+        run: |
+          set -euo pipefail
+          python -m pip install -e . pytest pytest-asyncio
+          evaluator_root="$RUNNER_TEMP/swe-bench-live"
+          git clone --filter=blob:none https://github.com/microsoft/SWE-bench-Live.git "$evaluator_root"
+          git -C "$evaluator_root" checkout --detach "$EVALUATOR_COMMIT"
+          test "$(git -C "$evaluator_root" rev-parse HEAD)" = "$EVALUATOR_COMMIT"
+          python -m pip install -e "$evaluator_root"
+
+      - name: Validate the frozen paid contract without a Provider call
+        run: |
+          set -euo pipefail
+          python -m evals.goal3_swe paid-preflight \
+            --dataset-jsonl "$FREEZE_ROOT/pilot-dataset.jsonl" \
+            --runs-dir "$FREEZE_ROOT" \
+            --pilot-freeze "$FREEZE_ROOT/pilot-freeze.json" \
+            --pricing-snapshot "$FREEZE_ROOT/pricing-snapshot.json" \
+            --budget-authorization "$FREEZE_ROOT/budget-authorization.json" \
+            --budget-ledger "$FREEZE_ROOT/budget-ledger.json" \
+            --budget-allocation "$FREEZE_ROOT/budget-allocation.json"
+
+      - name: Create the Goal 3-only authorization and ledger
+        run: |
+          set -euo pipefail
+          python -m evals.goal3_swe prepare-paid-artifacts \
+            --authorized-total-cny "${{ inputs.authorized_total_cny }}" \
+            --pilot-freeze "$FREEZE_ROOT/pilot-freeze.json" \
+            --pricing-snapshot "$FREEZE_ROOT/pricing-snapshot.json" \
+            --budget-authorization "$FREEZE_ROOT/budget-authorization.json" \
+            --budget-ledger "$FREEZE_ROOT/budget-ledger.json" \
+            --budget-allocation "$FREEZE_ROOT/budget-allocation.json"
+
+      - name: Recheck native preflight and paid contract
+        run: |
+          set -euo pipefail
+          git diff --check
+          test -z "$(git status --porcelain)"
+          python -m evals.goal3_swe preflight
+          python -m evals.goal3_swe paid-preflight \
+            --dataset-jsonl "$FREEZE_ROOT/pilot-dataset.jsonl" \
+            --pilot-freeze "$FREEZE_ROOT/pilot-freeze.json" \
+            --pricing-snapshot "$FREEZE_ROOT/pricing-snapshot.json" \
+            --budget-authorization "$FREEZE_ROOT/budget-authorization.json" \
+            --budget-ledger "$FREEZE_ROOT/budget-ledger.json" \
+            --budget-allocation "$FREEZE_ROOT/budget-allocation.json"
+
+      - name: Execute serial Goal 3 Pilots
+        if: ${{ inputs.execute_paid }}
+        env:
+          BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$BAILIAN_API_KEY"
+          python -m evals.goal3_swe execute-pilot \
+            --confirm-paid-run \
+            --run-id "${{ inputs.run_id }}" \
+            --runs-dir "$FREEZE_ROOT" \
+            --dataset-jsonl "$FREEZE_ROOT/pilot-dataset.jsonl" \
+            --pilot-freeze "$FREEZE_ROOT/pilot-freeze.json" \
+            --pricing-snapshot "$FREEZE_ROOT/pricing-snapshot.json" \
+            --budget-authorization "$FREEZE_ROOT/budget-authorization.json" \
+            --budget-ledger "$FREEZE_ROOT/budget-ledger.json" \
+            --budget-allocation "$FREEZE_ROOT/budget-allocation.json"
+
+      - name: Secret scan Goal 3 paid evidence
+        if: always()
+        run: python -m evals.secret_scan --artifact-root "$FREEZE_ROOT"
+
+      - name: Upload Goal 3 paid evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: goal3-swe-paid-${{ github.run_id }}
+          path: ${{ runner.temp }}/goal3-swe-paid/${{ github.run_id }}
+          if-no-files-found: warn

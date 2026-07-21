@@ -7,6 +7,8 @@ import pytest
 from codepacex.agent import Agent
 from codepacex.client import (
     AnthropicClient,
+    OPENAI_COMPAT_CONNECT_TIMEOUT_SECONDS,
+    OPENAI_COMPAT_TIMEOUT,
     OpenAIClient,
     OpenAICompatClient,
     _canonical_sha256,
@@ -215,3 +217,8 @@ def test_benchmark_client_can_disable_sdk_retries(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr("codepacex.client.AsyncOpenAI", fake_openai)
     create_client(_config("openai-compat"), max_retries=0)
     assert captured["max_retries"] == 0
+    assert captured["timeout"] is OPENAI_COMPAT_TIMEOUT
+    assert OPENAI_COMPAT_TIMEOUT.connect == OPENAI_COMPAT_CONNECT_TIMEOUT_SECONDS == 60.0
+    assert OPENAI_COMPAT_TIMEOUT.read == 600.0
+    assert OPENAI_COMPAT_TIMEOUT.write == 600.0
+    assert OPENAI_COMPAT_TIMEOUT.pool == 600.0

@@ -1,0 +1,76 @@
+name: Goal 4 recovery zero-provider validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      freeze_run_id:
+        description: New recovery Freeze run ID
+        required: true
+        type: string
+      freeze_artifact_name:
+        description: Exact new recovery Freeze Artifact name
+        required: true
+        type: string
+      freeze_commit:
+        description: Commit recorded by the new recovery Freeze
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  zero-provider:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.freeze_commit }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.freeze_artifact_name }}
+          run-id: ${{ inputs.freeze_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/goal4-freeze
+      - name: Validate frozen zero-provider contract
+        run: |
+          set -euo pipefail
+          python -m pip install -e . pytest pytest-asyncio
+          freeze="$RUNNER_TEMP/goal4-freeze"
+          zero="$RUNNER_TEMP/goal4-zero-provider"
+          test "$(python - "$freeze/formal-freeze.json" '${{ inputs.freeze_commit }}' <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1]))
+          if data['codepacex_commit'] != sys.argv[2]:
+              raise SystemExit('Freeze commit mismatch')
+          if data['matrix_sha256'] != '9ff16e850b92a6eb0bd1338cb85253a605fdfb0e0aa77180488382eca353972a':
+              raise SystemExit('matrix hash changed')
+          print('ok')
+          PY
+          )" = ok
+          mkdir -p "$zero"
+          cp "$freeze/formal-freeze.json" "$freeze/formal-dataset.jsonl" "$freeze/formal-matrix.json" "$freeze/pricing-provenance.json" "$freeze/pricing-snapshot.json" "$zero/"
+          python -m evals.goal4_swe validate
+          python -m evals.goal4_swe prepare-paid-artifacts --freeze "$zero/formal-freeze.json" --pricing-snapshot "$zero/pricing-snapshot.json" --evidence-root "$zero"
+          python -m evals.goal4_swe zero-provider --freeze "$zero/formal-freeze.json" --pricing-snapshot "$zero/pricing-snapshot.json" --evidence-root "$zero" > "$zero/zero-provider.json"
+          python - "$zero/zero-provider.json" <<'PY'
+          import json, sys
+          result = json.load(open(sys.argv[1]))
+          expected = {
+              'provider_requests': 0, 'usage': 0, 'cost_cny': '0.000000',
+              'trials': 0, 'evaluator_executions': 0, 'active_reservation': None,
+          }
+          if not result.get('valid') or any(result.get(key) != value for key, value in expected.items()):
+              raise SystemExit('zero-provider contract failed')
+          PY
+          python -m evals.secret_scan --artifact-root "$zero" --untrusted-json-field problem_statement
+      - uses: actions/upload-artifact@v4
+        with:
+          name: goal4-request-ceiling-zero-provider-${{ github.run_id }}
+          path: ${{ runner.temp }}/goal4-zero-provider
+          if-no-files-found: error

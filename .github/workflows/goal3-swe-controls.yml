@@ -1,0 +1,133 @@
+name: Goal 3 SWE controls
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/goal3-swe-live-formal-eval
+
+permissions:
+  contents: read
+
+jobs:
+  controls:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be
+      CONTROL_INSTANCE: amoffat__sh-744
+      CONTROL_RUNS: evals/.runs/goal3-control
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Record native host and Docker evidence
+        run: |
+          set -euo pipefail
+          uname -s
+          uname -m
+          python --version
+          docker version
+          docker info
+          server_arch="$(docker version --format '{{.Server.Arch}}')"
+          case "$server_arch" in x86_64|amd64) ;; *) echo "unsupported Docker server architecture: $server_arch" >&2; exit 1 ;; esac
+          df -h
+
+      - name: Install project and test dependencies
+        run: python -m pip install -e . pytest pytest-asyncio
+
+      - name: Install frozen official evaluator
+        run: |
+          set -euo pipefail
+          evaluator_root="$RUNNER_TEMP/swe-bench-live"
+          git clone --filter=blob:none https://github.com/microsoft/SWE-bench-Live.git "$evaluator_root"
+          git -C "$evaluator_root" checkout --detach "$EVALUATOR_COMMIT"
+          test "$(git -C "$evaluator_root" rev-parse HEAD)" = "$EVALUATOR_COMMIT"
+          python -m pip install -e "$evaluator_root"
+          python - <<'PY'
+          import swebench.harness.run_evaluation as evaluator
+          print(evaluator.__file__)
+          PY
+
+      - name: Run Goal 3 tests and static validation
+        run: |
+          set -euo pipefail
+          python -m pytest -q tests/test_goal3_swe.py
+          python -m evals.secret_scan
+          python -m evals.goal3_swe validate
+          python -m evals.goal3_swe preflight
+
+      - name: Materialize one fixed official control instance
+        run: |
+          set -euo pipefail
+          python - "$RUNNER_TEMP/goal3-control-instance.jsonl" <<'PY'
+          import sys
+          from pathlib import Path
+          from evals.goal3_swe import write_control_instance
+          from swebench.harness.utils import load_swebench_dataset
+
+          instance_id = "amoffat__sh-744"
+          instances = load_swebench_dataset(
+              "SWE-bench-Live/SWE-bench-Live", "lite", [instance_id],
+          )
+          if len(instances) != 1 or instances[0]["instance_id"] != instance_id:
+              raise SystemExit("fixed control instance was not found in the official Lite dataset")
+          write_control_instance(
+              output=Path(sys.argv[1]), instance=instances[0], instance_id=instance_id,
+          )
+          print(instance_id)
+          PY
+
+      - name: Run empty control
+        run: |
+          python -m evals.goal3_swe control-empty \
+            --dataset-jsonl "$RUNNER_TEMP/goal3-control-instance.jsonl" \
+            --instance-id "$CONTROL_INSTANCE" \
+            --run-id goal3-empty-amoffat-sh-744
+
+      - name: Run gold control
+        run: |
+          python -m evals.goal3_swe control-gold \
+            --dataset-jsonl "$RUNNER_TEMP/goal3-control-instance.jsonl" \
+            --instance-id "$CONTROL_INSTANCE" \
+            --run-id goal3-gold-amoffat-sh-744
+
+      - name: Verify control evidence
+        run: |
+          python - "$CONTROL_RUNS" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          expected = {"goal3-empty-amoffat-sh-744": False, "goal3-gold-amoffat-sh-744": True}
+          for run_id, resolved in expected.items():
+              run = root / run_id
+              result = json.loads((run / "result.json").read_text())
+              if result["status"] != "success" or result["resolved"] is not resolved:
+                  raise SystemExit(f"unexpected control result for {run_id}: {result}")
+              events = [json.loads(line) for line in (run / "events.jsonl").read_text().splitlines()]
+              completed = [event for event in events if event["type"] == "control_completed"]
+              if len(completed) != 1:
+                  raise SystemExit(f"missing control completion evidence for {run_id}")
+              event = completed[0]
+              if event["model_called"] or event["network_called"] or event["provider_network_called"]:
+                  raise SystemExit(f"unexpected Provider or model call in {run_id}")
+              if event["resolved"] is not resolved or not event["evaluator_completed"]:
+                  raise SystemExit(f"invalid evaluator evidence in {run_id}")
+          PY
+          python -m evals.secret_scan --artifact-root "$CONTROL_RUNS"
+
+      - name: Upload control artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: goal3-swe-controls-${{ github.run_id }}
+          path: |
+            evals/.runs/goal3-control
+            ${{ runner.temp }}/goal3-control-instance.jsonl
+          if-no-files-found: warn

@@ -1,0 +1,176 @@
+name: Goal 4 SWE formal freeze
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/goal4-swe-live-formal-eval]
+    paths:
+      - .github/workflows/goal4-swe-freeze.yml
+      - .github/workflows/goal4-swe-batch-b-recovery.yml
+      - .github/workflows/goal4-swe-settlement-recovery.yml
+      - codepacex/client.py
+      - evals/goal4_swe.py
+      - evals/paid_gate.py
+      - evals/goal4/**
+      - tests/test_goal4_swe.py
+      - tests/test_paid_gate.py
+      - tests/test_request_budget_bridge.py
+      - tests/test_runtime_telemetry.py
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  freeze:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      DATASET_REVISION: a637bd46829f3132e12938c8a0ca93173a977b8e
+      EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be
+      PRICING_URL: https://help.aliyun.com/en/model-studio/model-pricing
+      RATE_LIMIT_URL: https://help.aliyun.com/en/model-studio/rate-limit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install project and frozen official evaluator
+        run: |
+          set -euo pipefail
+          python -m pip install -e . pytest pytest-asyncio datasets
+          evaluator_root="$RUNNER_TEMP/swe-bench-live"
+          git clone --filter=blob:none https://github.com/microsoft/SWE-bench-Live.git "$evaluator_root"
+          git -C "$evaluator_root" checkout --detach "$EVALUATOR_COMMIT"
+          test "$(git -C "$evaluator_root" rev-parse HEAD)" = "$EVALUATOR_COMMIT"
+          python -m pip install -e "$evaluator_root"
+      - name: Verify native host and formal source identities
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Linux
+          case "$(uname -m)" in x86_64|amd64) ;; *) exit 1 ;; esac
+          docker version
+          case "$(docker version --format '{{.Server.Arch}}')" in x86_64|amd64) ;; *) exit 1 ;; esac
+          curl --fail --silent --show-error --location "$PRICING_URL" -o "$RUNNER_TEMP/pricing-source.html"
+          curl --fail --silent --show-error --location "$RATE_LIMIT_URL" -o "$RUNNER_TEMP/rate-limit-source.html"
+          python -m evals.goal4_swe validate
+          python -m evals.goal4_swe preflight
+      - name: Materialize exact Lite revision and pricing snapshot
+        run: |
+          set -euo pipefail
+          python - "$RUNNER_TEMP/goal4-source.jsonl" "$RUNNER_TEMP/pricing-snapshot.json" "$RUNNER_TEMP/pricing-provenance.json" "$RUNNER_TEMP/pricing-source.html" "$RUNNER_TEMP/rate-limit-source.html" <<'PY'
+          import hashlib, json, os, re, sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from datasets import load_dataset
+
+          source = Path(sys.argv[4]).read_text(encoding="utf-8")
+          rate = Path(sys.argv[5]).read_text(encoding="utf-8")
+          if not re.search(r"qwen3\.7-max-2026-06-08.{0,3000}?CNY 12.{0,3000}?CNY 36", source, re.S):
+              raise SystemExit("official pricing no longer confirms CNY 12 / CNY 36")
+          if not re.search(r"qwen3\.7-max-2026-06-08.{0,3000}?600.{0,3000}?1,000,000", rate, re.S):
+              raise SystemExit("official rate limits no longer match the frozen model")
+          rows = [dict(row) for row in load_dataset("SWE-bench-Live/SWE-bench-Live", split="lite", revision=os.environ["DATASET_REVISION"])]
+          if not rows:
+              raise SystemExit("frozen Lite revision is unavailable")
+          Path(sys.argv[1]).write_text("".join(json.dumps(row, default=str, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
+          snapshot = {
+              "schema_version": 1, "retrieved_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+              "source_url": "https://help.aliyun.com/en/model-studio/model-pricing",
+              "rate_limit_source_url": "https://help.aliyun.com/en/model-studio/rate-limit",
+              "provider": "bailian-qwen37-max", "model_id": "qwen3.7-max-2026-06-08",
+              "deployment_scope": "Chinese mainland", "region": "China (Beijing)", "currency": "CNY",
+              "token_range": "0<Token<=1M", "unit_tokens": 1000000, "input_price": 12.0, "output_price": 36.0,
+              "requests_per_minute": 600, "tokens_per_minute": 1000000,
+              "assumptions": ["Official standard real-time list prices.", "No discount or cache credit.", "Provider Usage is authoritative for settlement."],
+          }
+          Path(sys.argv[2]).write_text(json.dumps(snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          Path(sys.argv[3]).write_text(json.dumps({"pricing_source_sha256": hashlib.sha256(source.encode()).hexdigest(), "rate_limit_source_sha256": hashlib.sha256(rate.encode()).hexdigest()}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+      - name: Freeze deterministic formal matrix
+        run: |
+          set -euo pipefail
+          freeze_root="$RUNNER_TEMP/goal4-swe"
+          python -m evals.goal4_swe freeze-formal --dataset-jsonl "$RUNNER_TEMP/goal4-source.jsonl" --dataset-revision "$DATASET_REVISION" --pricing-snapshot "$RUNNER_TEMP/pricing-snapshot.json" --freeze-output-dir "$freeze_root"
+          mv "$RUNNER_TEMP/pricing-provenance.json" "$freeze_root/pricing-provenance.json"
+          python - "$freeze_root/formal-freeze.json" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1]))
+          assert len(data["tasks"]) == 20
+          assert sum(task["batch"] == "A" for task in data["tasks"]) == 5
+          assert sum(task["batch"] == "B" for task in data["tasks"]) == 15
+          PY
+          ! rg -n '"(?:patch|test_patch|hints_text|all_hints_text)"' "$freeze_root"
+      - name: Run one empty and gold evaluator control
+        run: |
+          set -euo pipefail
+          control_id="$(python - "$RUNNER_TEMP/goal4-swe/formal-freeze.json" <<'PY'
+          import json, sys
+          print(json.load(open(sys.argv[1]))["tasks"][0]["instance_id"])
+          PY
+          )"
+          python -m evals.goal4_swe control-empty --source-dataset-jsonl "$RUNNER_TEMP/goal4-source.jsonl" --instance-id "$control_id" --control-runs-dir "$RUNNER_TEMP/goal4-swe-control" --run-id goal4-empty-control
+          python -m evals.goal4_swe control-gold --source-dataset-jsonl "$RUNNER_TEMP/goal4-source.jsonl" --instance-id "$control_id" --control-runs-dir "$RUNNER_TEMP/goal4-swe-control" --run-id goal4-gold-control
+          python - "$RUNNER_TEMP/goal4-swe-control" <<'PY'
+          import json, sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          expected = {"goal4-empty-control": False, "goal4-gold-control": True}
+          for run, resolved in expected.items():
+              result = json.loads((root / run / "result.json").read_text())
+              if result["status"] != "success" or result["resolved"] is not resolved:
+                  raise SystemExit(f"control failed: {run}")
+          PY
+      - name: Secret scan immutable artifacts
+        run: |
+          python -m evals.secret_scan --artifact-root "$RUNNER_TEMP/goal4-swe" --untrusted-json-field problem_statement
+          python -m evals.secret_scan --artifact-root "$RUNNER_TEMP/goal4-swe-control" --untrusted-json-field problem_statement
+      - name: Verify zero-provider paid gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          freeze_root="$RUNNER_TEMP/goal4-swe"
+          zero_root="$RUNNER_TEMP/goal4-zero-provider"
+          mkdir -p "$zero_root"
+          cp "$freeze_root/formal-freeze.json" "$freeze_root/formal-dataset.jsonl" "$freeze_root/formal-matrix.json" "$freeze_root/pricing-provenance.json" "$freeze_root/pricing-snapshot.json" "$zero_root/"
+          python -m evals.goal4_swe prepare-paid-artifacts --freeze "$zero_root/formal-freeze.json" --pricing-snapshot "$zero_root/pricing-snapshot.json" --evidence-root "$zero_root"
+          python -m evals.goal4_swe zero-provider --freeze "$zero_root/formal-freeze.json" --pricing-snapshot "$zero_root/pricing-snapshot.json" --evidence-root "$zero_root" > "$zero_root/zero-provider.json"
+          python - "$zero_root/zero-provider.json" <<'PY'
+          import json, sys
+          result = json.load(open(sys.argv[1]))
+          expected = {
+              'provider_requests': 0, 'usage': 0, 'cost_cny': '0.000000',
+              'trials': 0, 'evaluator_executions': 0, 'active_reservation': None,
+          }
+          if not result.get('valid') or any(result.get(key) != value for key, value in expected.items()):
+              raise SystemExit('zero-provider contract failed')
+          PY
+          gh api repos/$GITHUB_REPOSITORY/actions/artifacts/8486382695/zip > "$RUNNER_TEMP/goal4-blocked-evidence.zip"
+          printf '%s  %s\n' '2085b856b55b5df46118ef1935b846ecdc2ff01ff9f08fc4fabf7595144f1d30' "$RUNNER_TEMP/goal4-blocked-evidence.zip" | sha256sum --check
+          source_root="$RUNNER_TEMP/goal4-blocked-evidence"
+          unzip -q "$RUNNER_TEMP/goal4-blocked-evidence.zip" -d "$source_root"
+          cp "$source_root/formal-freeze.json" "$source_root/formal-freeze.before-recovery.json"
+          cp "$freeze_root/formal-freeze.json" "$freeze_root/formal-dataset.jsonl" "$freeze_root/formal-matrix.json" "$freeze_root/pricing-provenance.json" "$freeze_root/pricing-snapshot.json" "$source_root/"
+          python -m evals.goal4_swe prepare-recovery-artifacts --old-freeze "$source_root/formal-freeze.before-recovery.json" --freeze "$source_root/formal-freeze.json" --pricing-snapshot "$source_root/pricing-snapshot.json" --evidence-root "$source_root"
+          python -m evals.goal4_swe validate-claims --freeze "$source_root/formal-freeze.json" --evidence-root "$source_root" --claims "$source_root/reports/claims.goal4.json" > "$zero_root/blocked-claims-validation.json"
+          python -m evals.secret_scan --artifact-root "$zero_root" --untrusted-json-field problem_statement
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: goal4-swe-formal-freeze-${{ github.run_id }}
+          path: ${{ runner.temp }}/goal4-swe
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: goal4-swe-controls-${{ github.run_id }}
+          path: ${{ runner.temp }}/goal4-swe-control
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: goal4-swe-zero-provider-${{ github.run_id }}
+          path: ${{ runner.temp }}/goal4-zero-provider
+          if-no-files-found: error

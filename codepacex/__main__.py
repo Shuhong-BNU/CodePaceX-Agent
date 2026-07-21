@@ -74,6 +74,12 @@ def main() -> None:
         help="Validated benchmark runtime profile (only valid with -p)",
     )
     parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=None,
+        help="Maximum Agent turns for non-interactive execution",
+    )
+    parser.add_argument(
         "--remote",
         action="store_true",
         default=False,
@@ -110,10 +116,12 @@ def main() -> None:
             sys.exit(1)
 
     if args.p is not None:
+        if args.max_iterations is not None and args.max_iterations <= 0:
+            parser.error("--max-iterations must be positive")
         output_format = getattr(args, "output_format", "text")
         asyncio.run(_run_prompt(
             config, permission_mode, hook_engine, args.p, output_format,
-            experiment_profile=experiment_profile,
+            experiment_profile=experiment_profile, max_iterations=args.max_iterations,
         ))
         return
 
@@ -158,6 +166,7 @@ async def _run_prompt(
     output_format: str = "text",
     *,
     experiment_profile: ExperimentProfile | None = None,
+    max_iterations: int | None = None,
 ) -> None:
     mcp_manager = None
 
@@ -173,6 +182,7 @@ async def _run_prompt(
             prompt,
             output_format,
             experiment_profile=experiment_profile,
+            max_iterations=max_iterations,
             _set_mcp_manager=set_mcp_manager,
         )
     finally:
@@ -193,6 +203,7 @@ async def _run_prompt_impl(
     output_format: str = "text",
     *,
     experiment_profile: ExperimentProfile | None = None,
+    max_iterations: int | None = None,
     _set_mcp_manager,
 ) -> None:
     from codepacex.agent import (
@@ -319,6 +330,7 @@ async def _run_prompt_impl(
         registry=registry,
         protocol=provider.protocol,
         work_dir=work_dir,
+        max_iterations=max_iterations if max_iterations is not None else 50,
         permission_checker=checker,
         context_window=provider.get_context_window(),
         instructions_content=instructions,

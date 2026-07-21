@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -1064,6 +1065,11 @@ class Agent:
             ]
 
             if response.stop_reason == "max_tokens":
+                if os.environ.get("CODEPACEX_EXPERIMENT_REQUEST_BUDGET") == "1":
+                    yield ErrorEvent(
+                        "Frozen paid output-token contract reached; refusing automatic limit escalation."
+                    )
+                    return
                 if not max_tokens_escalated:
                     cancelled_outcomes = await streaming_executor.cancel_and_reap()
                     active_executor[0] = None

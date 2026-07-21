@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from codepacex.__main__ import _deny_noninteractive_permission
 from codepacex.agent import (
-    Agent, PermissionDecisionEvent, PermissionRequest, StreamingExecutor, StreamText,
+    Agent, ErrorEvent, PermissionDecisionEvent, PermissionRequest, RetryEvent, StreamingExecutor, StreamText,
 )
 from codepacex.client import LLMClient
 from codepacex.config import load_config
@@ -445,6 +445,22 @@ async def test_max_tokens_reaps_streaming_tool_before_retry(tmp_path: Path) -> N
     assert len(decisions) == 1
     assert decisions[0].tool_use_id == "t1"
     assert decisions[0].executed is True
+
+
+@pytest.mark.asyncio
+async def test_paid_scope_refuses_max_token_escalation(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    tool = PendingReadTool()
+    registry = create_default_registry()
+    registry.register(tool)
+    client = PendingReadClient("max_tokens")
+    agent = Agent(client, registry, "anthropic", work_dir=str(tmp_path), permission_checker=_checker(tmp_path))
+    conversation = ConversationManager()
+    conversation.add_user_message("read")
+    monkeypatch.setenv("CODEPACEX_EXPERIMENT_REQUEST_BUDGET", "1")
+    events = [event async for event in agent.run(conversation)]
+    assert client.calls == 1
+    assert any(isinstance(event, ErrorEvent) for event in events)
+    assert not any(isinstance(event, RetryEvent) for event in events)
 
 
 class ClosableAgent:

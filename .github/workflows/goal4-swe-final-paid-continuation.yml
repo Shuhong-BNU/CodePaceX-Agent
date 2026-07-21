@@ -1,0 +1,259 @@
+name: Goal 4 final paid continuation
+
+on:
+  workflow_dispatch:
+    inputs:
+      execute_paid:
+        description: Explicitly permit the final authorized Provider retry
+        required: true
+        default: false
+        type: boolean
+      authorize_final_retry:
+        description: Confirm the one final Checkov infrastructure retry
+        required: true
+        default: false
+        type: boolean
+  push:
+    branches: [codex/goal4-final-paid-orchestration]
+    paths:
+      - .github/workflows/goal4-swe-final-paid-continuation.yml
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  final-paid-continuation:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.execute_paid && inputs.authorize_final_retry }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 720
+    env:
+      FREEZE_RUN_ID: '29801985031'
+      FREEZE_ARTIFACT: goal4-swe-formal-freeze-29801985031
+      FREEZE_COMMIT: cf916136517d4ac954839338c22c08052bbefc42
+      FREEZE_SHA256: 47874e4c1bd4208b3c69125804e2b8e003d101a14967cc3375c8655ac0a886a0
+      MATRIX_SHA256: 9ff16e850b92a6eb0bd1338cb85253a605fdfb0e0aa77180488382eca353972a
+      PRICING_SHA256: b47559a81899536cdb30172aafd632b67f2a1dc69b104ff9eb6691d4be3d83c6
+      TOOL_SCHEMA_SHA256: 72ae1262c5acd1a8b21c3f0964cdcb210508f1b780590b79b0ec2cc2eba07aea
+      PROMPT_SHA256: 13fcaffc1c71d5d157423c0d8716c2b5e0bb9c920e86f8ed52261c0aecfc61b5
+      SOURCE_RUN_ID: '29802235261'
+      SOURCE_ARTIFACT: goal4-swe-settlement-recovery-29802235261
+      SOURCE_ZIP_SHA256: 5ddd9f6be3e5de1140a481410a47442f330c4a044e79d0a9f474e23625bfb55d
+      RETRY_RUN_ID: goal4-authorized-29801985031-02-final-infra-retry
+      REMAINING_RUN_ID: goal4-authorized-29801985031-02-batch-b-remaining
+      RETRY_INSTANCE_ID: bridgecrewio__checkov-6895
+      RETRY_OF_RUN_ID: goal4-authorized-29799550907-01-infra-retry
+      EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FREEZE_COMMIT }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Download and verify immutable Freeze
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.FREEZE_ARTIFACT }}
+          run-id: ${{ env.FREEZE_RUN_ID }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/goal4-final-freeze
+      - name: Verify Freeze identity and source settlement archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          freeze="$RUNNER_TEMP/goal4-final-freeze"
+          printf '%s  %s\n' "$FREEZE_SHA256" "$freeze/formal-freeze.json" | sha256sum --check
+          python - "$freeze/formal-freeze.json" <<'PY'
+          import json, os, sys
+          frozen = json.load(open(sys.argv[1]))
+          expected = {
+              'codepacex_commit': os.environ['FREEZE_COMMIT'],
+              'matrix_sha256': os.environ['MATRIX_SHA256'],
+              'pricing_snapshot_hash': os.environ['PRICING_SHA256'],
+              'tool_schema_sha256': os.environ['TOOL_SCHEMA_SHA256'],
+              'prompt_sha256': os.environ['PROMPT_SHA256'],
+              'provider': 'bailian-qwen37-max', 'model_id': 'qwen3.7-max-2026-06-08',
+              'protocol': 'openai-compat', 'fallback_enabled': False, 'retry_budget': 0,
+              'serial': True, 'max_provider_requests_per_instance': 40,
+              'maximum_input_tokens_per_request': 128000,
+              'maximum_output_tokens_per_request': 8192,
+              'maximum_reasoning_tokens_per_request': 6144,
+          }
+          if any(frozen.get(key) != value for key, value in expected.items()):
+              raise SystemExit('final Freeze contract identity mismatch')
+          PY
+          artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/artifacts" --jq ".artifacts[] | select(.name == \"$SOURCE_ARTIFACT\") | .id")"
+          test -n "$artifact_id"
+          test "$(printf '%s\n' "$artifact_id" | wc -l | tr -d ' ')" = 1
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$RUNNER_TEMP/goal4-settlement-source.zip"
+          printf '%s  %s\n' "$SOURCE_ZIP_SHA256" "$RUNNER_TEMP/goal4-settlement-source.zip" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/goal4-final-evidence"
+          unzip -q "$RUNNER_TEMP/goal4-settlement-source.zip" -d "$RUNNER_TEMP/goal4-final-evidence"
+      - name: Install frozen controller and official evaluator
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$FREEZE_COMMIT"
+          test "$(uname -s)" = Linux
+          case "$(uname -m)" in x86_64|amd64) ;; *) exit 1 ;; esac
+          docker version
+          python -m pip install -e . pytest pytest-asyncio
+          evaluator_root="$RUNNER_TEMP/swe-bench-live"
+          git clone --filter=blob:none https://github.com/microsoft/SWE-bench-Live.git "$evaluator_root"
+          git -C "$evaluator_root" checkout --detach "$EVALUATOR_COMMIT"
+          test "$(git -C "$evaluator_root" rev-parse HEAD)" = "$EVALUATOR_COMMIT"
+          python -m pip install -e "$evaluator_root"
+          git diff --check
+          test -z "$(git status --porcelain)"
+          python -m evals.goal4_swe preflight
+      - name: Verify settled source chain and preserve prior finalization
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/goal4-final-evidence"
+          python - "$root" <<'PY'
+          import hashlib, json, os, shutil, sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          frozen = json.loads((root / 'formal-freeze.json').read_text())
+          if frozen['codepacex_commit'] != os.environ['FREEZE_COMMIT']:
+              raise SystemExit('settled evidence is not rebound to final Freeze')
+          if frozen['matrix_sha256'] != os.environ['MATRIX_SHA256']:
+              raise SystemExit('settled evidence matrix changed')
+          parent = json.loads((root / 'accounts/parent-ledger.json').read_text())
+          batch_a = json.loads((root / 'accounts/batch-a-ledger.json').read_text())
+          batch_b = json.loads((root / 'accounts/batch-b-ledger.json').read_text())
+          if (len(batch_a['request_charges']), len(batch_a['settlements'])) != (138, 139):
+              raise SystemExit('Batch A accounting changed')
+          if (len(batch_b['request_charges']), len(batch_b['settlements'])) != (81, 82):
+              raise SystemExit('settled Batch B accounting changed')
+          if (parent['request_charge_count'], parent['settlement_count'], parent['spent_cny']) != (219, 221, '47.835216'):
+              raise SystemExit('settled parent accounting changed')
+          if parent['active_reservation'] is not None or any(
+              ledger['active_reservation'] is not None or ledger['usage_contract_violations'] or ledger['budget_blocks']
+              for ledger in (batch_a, batch_b)
+          ):
+              raise SystemExit('settled source has an accounting hard blocker')
+          conservative = [
+              item for ledger in (batch_a, batch_b) for item in ledger['settlements']
+              if item['status'] == 'conservative_settled'
+          ]
+          if len(conservative) != 2 or any(
+              any(item[key] is not None for key in ('requests', 'input_tokens', 'output_tokens', 'reasoning_tokens'))
+              for item in conservative
+          ):
+              raise SystemExit('conservative settlement evidence is invalid')
+          events = []
+          for path in sorted(root.glob('*/events.jsonl')):
+              events.extend(json.loads(line) for line in path.read_text().splitlines() if line.strip())
+          starts = [event for event in events if event.get('type') == 'trial_started']
+          if len(starts) != 12 or len({event['trial_id'] for event in starts}) != 12:
+              raise SystemExit('source paid Trial history changed')
+          retry_terminal = [
+              event for event in events
+              if event.get('type') == 'trial_completed' and event.get('trial_id', '').endswith('/bridgecrewio__checkov-6895')
+          ]
+          if not retry_terminal or retry_terminal[-1].get('status') != 'infrastructure_error':
+              raise SystemExit('final retry target is not the preserved blocked Trial')
+          prior = root / 'recovery' / 'source-finalization-29802235261'
+          prior.mkdir(exist_ok=False)
+          preserved = []
+          for name in ('GOAL4_FINAL_REPORT.md', 'claims.goal4.json'):
+              source = root / 'reports' / name
+              target = prior / name
+              if source.exists():
+                  digest = hashlib.sha256(source.read_bytes()).hexdigest()
+                  shutil.move(source, target)
+                  preserved.append({'path': str(target.relative_to(root)), 'sha256': digest})
+          authorization = {
+              'schema_version': 1, 'github_run_id': os.environ['GITHUB_RUN_ID'],
+              'github_actor': os.environ['GITHUB_ACTOR'], 'freeze_run_id': os.environ['FREEZE_RUN_ID'],
+              'freeze_commit': os.environ['FREEZE_COMMIT'], 'matrix_sha256': os.environ['MATRIX_SHA256'],
+              'source_run_id': os.environ['SOURCE_RUN_ID'],
+              'retry_instance_id': os.environ['RETRY_INSTANCE_ID'],
+              'retry_of_run_id': os.environ['RETRY_OF_RUN_ID'], 'connect_timeout_seconds': 60,
+              'sdk_retries': 0, 'fallback_enabled': False, 'strict_serial': True,
+              'maximum_requests_per_task': 40, 'execute_paid': True,
+              'authorize_final_retry': True, 'preserved_source_finalization': preserved,
+          }
+          (root / 'recovery' / 'final-paid-retry-authorization.json').write_text(
+              json.dumps(authorization, indent=2, sort_keys=True) + '\n'
+          )
+          PY
+          python -m evals.secret_scan --artifact-root "$root" --untrusted-json-field problem_statement
+      - name: Execute final authorized infrastructure retry
+        env:
+          BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$BAILIAN_API_KEY"
+          root="$RUNNER_TEMP/goal4-final-evidence"
+          python -m evals.goal4_swe execute-batch --confirm-paid-run --batch B --run-id "$RETRY_RUN_ID" --retry-of "$RETRY_OF_RUN_ID" --instance-ids "$RETRY_INSTANCE_ID" --freeze "$root/formal-freeze.json" --dataset-jsonl "$root/formal-dataset.jsonl" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
+      - name: Verify retry is scorable before continuation
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/goal4-final-evidence"
+          python - "$root" <<'PY'
+          import json, os, sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]); run_id = os.environ['RETRY_RUN_ID']
+          run = root / run_id
+          events = [json.loads(line) for line in (run / 'events.jsonl').read_text().splitlines() if line.strip()]
+          terminal = [event for event in events if event.get('type') == 'trial_completed']
+          if len(terminal) != 1 or terminal[0].get('status') not in {'resolved', 'unresolved'}:
+              raise SystemExit('final authorized retry did not form a scorable terminal')
+          event = terminal[0]
+          if event.get('official_evaluator_completed') is not True or not event.get('prediction_file'):
+              raise SystemExit('retry is missing official evaluator or prediction evidence')
+          prediction = run / event['prediction_file']
+          if not prediction.exists() or not json.loads(prediction.read_text()):
+              raise SystemExit('retry prediction or persisted patch is missing')
+          batch_b = json.loads((root / 'accounts/batch-b-ledger.json').read_text())
+          parent = json.loads((root / 'accounts/parent-ledger.json').read_text())
+          if batch_b['active_reservation'] is not None or parent['active_reservation'] is not None:
+              raise SystemExit('retry left an active reservation')
+          if batch_b['usage_contract_violations'] or batch_b['budget_blocks']:
+              raise SystemExit('retry violated the frozen Provider contract')
+          if len(batch_b['request_charges']) != len([item for item in batch_b['settlements'] if item['status'] == 'settled']):
+              raise SystemExit('retry has missing Provider Usage, charge, or settlement')
+          starts = []
+          for path in sorted(root.glob('*/events.jsonl')):
+              starts.extend(json.loads(line) for line in path.read_text().splitlines() if line.strip())
+          trial_starts = [event for event in starts if event.get('type') == 'trial_started']
+          if len(trial_starts) != 13 or len({event['trial_id'] for event in trial_starts}) != 13:
+              raise SystemExit('duplicate paid execution or unexpected retry count')
+          PY
+          python -m evals.secret_scan --artifact-root "$root" --untrusted-json-field problem_statement
+      - name: Execute ten never-run Batch B tasks strictly serially
+        env:
+          BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$BAILIAN_API_KEY"
+          root="$RUNNER_TEMP/goal4-final-evidence"
+          remaining="$(python - "$root/recovery/batch-b-recovery-state.json" <<'PY'
+          import json, sys
+          state = json.load(open(sys.argv[1]))
+          tasks = state['remaining_unrun_instance_ids']
+          if len(tasks) != 10 or 'bridgecrewio__checkov-6895' in tasks:
+              raise SystemExit('remaining Batch B state is not the registered ten-task continuation')
+          print(','.join(tasks))
+          PY
+          )"
+          python -m evals.goal4_swe execute-batch --confirm-paid-run --batch B --run-id "$REMAINING_RUN_ID" --instance-ids "$remaining" --freeze "$root/formal-freeze.json" --dataset-jsonl "$root/formal-dataset.jsonl" --pricing-snapshot "$root/pricing-snapshot.json" --evidence-root "$root"
+      - name: Finalize evidence and validate Claims
+        if: always()
+        run: |
+          root="$RUNNER_TEMP/goal4-final-evidence"
+          python -m evals.goal4_swe finalize --freeze "$root/formal-freeze.json" --evidence-root "$root"
+          python -m evals.goal4_swe validate-claims --freeze "$root/formal-freeze.json" --evidence-root "$root" --claims "$root/reports/claims.goal4.json"
+          python -m evals.secret_scan --artifact-root "$root" --untrusted-json-field problem_statement
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: goal4-swe-final-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/goal4-final-evidence
+          if-no-files-found: warn

@@ -11,6 +11,9 @@ from evals.paid_gate import (
     BudgetAuthorization,
     BudgetLedger,
     PaidRunGate,
+    ProviderRequestBudget,
+    ProviderRequestCeilingExceeded,
+    ProviderUsageContractViolationError,
     StageCBudgetAllocation,
     actual_cost,
     authorization_hash,
@@ -94,12 +97,62 @@ def test_gate_reserves_and_settles_each_provider_request_in_one_trial(tmp_path: 
         "actual_cny": "0.030000",
         "input_tokens": 1000,
         "output_tokens": 500,
+        "reasoning_tokens": None,
         "recorded_at": ledger["request_charges"][0]["recorded_at"],
         "request_index": 1,
         "reservation_id": reservation.reservation_id,
         "trial_id": "mcp/task/1",
     }
     assert ledger["request_charges"][1]["request_index"] == 2
+
+
+@pytest.mark.parametrize("request_count", [39, 40])
+def test_provider_request_ceiling_allows_through_the_frozen_boundary(
+    tmp_path: Path, request_count: int,
+) -> None:
+    gate = _gate(tmp_path, total="1000")
+    budget = ProviderRequestBudget(
+        gate, trial_id="swe/goal4/boundary", maximum_input_tokens_per_request=1000,
+        maximum_output_tokens_per_request=500, maximum_provider_requests_per_trial=40,
+    )
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ):
+        for _ in range(request_count):
+            reservation = budget.reserve_before_request()
+            budget.settle_after_usage(reservation, {
+                "prompt_tokens": 10, "completion_tokens": 1,
+            })
+    ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
+    assert len(ledger.request_charges) == request_count
+    assert len(ledger.settlements) == request_count
+    assert ledger.active_reservation is None
+    assert not ledger.provider_request_ceiling_blocks
+
+
+def test_provider_request_ceiling_rejects_41st_before_reservation_or_usage(tmp_path: Path) -> None:
+    gate = _gate(tmp_path, total="1000")
+    budget = ProviderRequestBudget(
+        gate, trial_id="swe/goal4/boundary", maximum_input_tokens_per_request=1000,
+        maximum_output_tokens_per_request=500, maximum_provider_requests_per_trial=40,
+    )
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ):
+        for _ in range(40):
+            reservation = budget.reserve_before_request()
+            budget.settle_after_usage(reservation, {
+                "prompt_tokens": 10, "completion_tokens": 1,
+            })
+        with pytest.raises(ProviderRequestCeilingExceeded, match="attempted_request_index=41"):
+            budget.reserve_before_request()
+    ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
+    assert len(ledger.request_charges) == len(ledger.settlements) == 40
+    assert ledger.active_reservation is None
+    assert len(ledger.provider_request_ceiling_blocks) == 1
+    block = ledger.provider_request_ceiling_blocks[0]
+    assert block.trial_id == "swe/goal4/boundary"
+    assert block.attempted_request_index == 41
 
 
 def test_gate_enforces_stage_limit_before_total_authorization(tmp_path: Path) -> None:
@@ -139,7 +192,7 @@ def test_gate_settles_provider_overage_when_total_cost_remains_reserved(tmp_path
     assert settlement.actual_cny == Decimal("0.012048")
 
 
-def test_gate_rejects_provider_usage_when_actual_cost_exceeds_reservation(tmp_path: Path) -> None:
+def test_gate_settles_provider_usage_when_actual_cost_exceeds_reservation(tmp_path: Path) -> None:
     gate = _gate(tmp_path)
     with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
         "evals.paid_gate._git_is_clean", return_value=True,
@@ -149,8 +202,65 @@ def test_gate_rejects_provider_usage_when_actual_cost_exceeds_reservation(tmp_pa
             maximum_input_tokens_per_request=1000,
             maximum_output_tokens_per_request=500,
         )
-        with pytest.raises(ValueError, match="observed token cost exceeded"):
-            gate.settle(reservation, request_usages=[(1000, 501)])
+        settlement = gate.settle(reservation, request_usages=[(1000, 501)])
+    assert settlement.actual_cny == Decimal("0.030036")
+    ledger = BudgetLedger.model_validate_json((tmp_path / "ledger.json").read_text(encoding="utf-8"))
+    assert ledger.active_reservation is None
+    assert ledger.request_charges[0].output_tokens == 501
+    assert ledger.settlements[0].actual_cny == Decimal("0.030036")
+
+
+@pytest.mark.parametrize(
+    ("prompt_tokens", "completion_tokens", "reasoning_tokens", "violates"),
+    [
+        (128_000, 8192, 6144, False),
+        (128_000, 8193, 6144, True),
+        (128_000, 8192, 6145, True),
+        (128_001, 8192, 6144, True),
+    ],
+)
+def test_provider_usage_contract_settles_truthfully_before_failing_closed(
+    tmp_path: Path, prompt_tokens: int, completion_tokens: int,
+    reasoning_tokens: int, violates: bool,
+) -> None:
+    gate = _gate(tmp_path, total="1000")
+    budget = ProviderRequestBudget(
+        gate, trial_id="swe/contract/one", maximum_input_tokens_per_request=128_000,
+        maximum_output_tokens_per_request=8192,
+        maximum_reasoning_tokens_per_request=6144,
+    )
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ):
+        reservation = budget.reserve_before_request()
+        usage = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "completion_tokens_details": {"reasoning_tokens": reasoning_tokens},
+        }
+        if violates:
+            with pytest.raises(ProviderUsageContractViolationError) as exc_info:
+                budget.settle_after_usage(reservation, usage)
+            assert exc_info.value.violation.reason == "provider_usage_contract_violation"
+        else:
+            settlement = budget.settle_after_usage(reservation, usage)
+            assert settlement.output_tokens == 8192
+            assert settlement.reasoning_tokens == 6144
+    ledger = BudgetLedger.model_validate_json((tmp_path / "ledger.json").read_text(encoding="utf-8"))
+    assert ledger.active_reservation is None
+    assert len(ledger.request_charges) == len(ledger.settlements) == 1
+    assert ledger.request_charges[0].input_tokens == prompt_tokens
+    assert ledger.request_charges[0].output_tokens == completion_tokens
+    assert ledger.request_charges[0].reasoning_tokens == reasoning_tokens
+    assert ledger.settlements[0].actual_cny == actual_cost(
+        gate.pricing, input_tokens=prompt_tokens, output_tokens=completion_tokens,
+    )
+    assert bool(ledger.usage_contract_violations) is violates
+    if violates:
+        violation = ledger.usage_contract_violations[0]
+        assert violation.trial_id == reservation.trial_id
+        assert violation.reservation_id == reservation.reservation_id
+        assert violation.provider_usage == usage
 
 
 def test_gate_fails_closed_when_worst_next_trial_exceeds_remaining_budget(tmp_path: Path) -> None:
@@ -379,6 +489,30 @@ def test_request_with_missing_usage_keeps_active_reservation(tmp_path: Path) -> 
     assert not ledger.request_charges
 
 
+def test_request_failure_persists_trial_ordinal_and_keeps_reservation(tmp_path: Path) -> None:
+    gate = _gate(tmp_path)
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ):
+        reservation = gate.reserve(
+            "swe/run/trial-timeout", maximum_requests=1,
+            maximum_input_tokens_per_request=128_000,
+            maximum_output_tokens_per_request=8192,
+        )
+    recorded = gate.record_request_failure(
+        reservation,
+        failure_type="openai.APITimeoutError/httpx.ConnectTimeout",
+    )
+    ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
+    assert recorded.trial_id == "swe/run/trial-timeout"
+    assert recorded.request_index == 1
+    assert recorded.failure_type == "openai.APITimeoutError/httpx.ConnectTimeout"
+    assert recorded.failure_recorded_at is not None
+    assert ledger.active_reservation == recorded
+    assert not ledger.request_charges
+    assert not ledger.settlements
+
+
 def test_unknown_usage_is_conservatively_settled_without_fabricating_tokens(tmp_path: Path) -> None:
     authorization_path = tmp_path / "authorization.json"
     _authorization(authorization_path)
@@ -403,16 +537,23 @@ def test_unknown_usage_is_conservatively_settled_without_fabricating_tokens(tmp_
     assert settlement.status == "conservative_settled"
     assert settlement.settlement_method == "conservative_reserved_amount"
     assert settlement.usage_status == "unknown"
-    assert settlement.requests is settlement.input_tokens is settlement.output_tokens is None
+    assert (
+        settlement.requests is settlement.input_tokens is settlement.output_tokens
+        is settlement.reasoning_tokens is None
+    )
     assert ledger.spent_cny == reservation.reserved_cny
     assert ledger.active_reservation is None
     assert not ledger.request_charges
     assert gate.trial_accounting("mcp/task/unknown-usage") == {
+        "trial_id": "mcp/task/unknown-usage",
         "request_count": 0,
         "actual_cny": str(reservation.reserved_cny),
         "reservation_ids": [],
         "budget_blocked": False,
         "budget_block_reasons": [],
+        "provider_usage_contract_violation": None,
+        "provider_request_ceiling_blocked": False,
+        "provider_request_ceiling_block": None,
         "active_reservation": None,
         "settlement_count": 1,
         "usage_unknown": True,

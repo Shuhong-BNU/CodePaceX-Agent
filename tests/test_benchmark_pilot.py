@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -47,6 +48,40 @@ def test_run_id_and_artifact_paths_are_restricted(tmp_path: Path) -> None:
         recorder.write_artifact("../patch.diff", "bad")
     with pytest.raises(ValueError):
         recorder.write_artifact("unknown.txt", "bad")
+
+
+def test_task_artifacts_map_dynamic_ids_to_safe_auditable_names(tmp_path: Path) -> None:
+    recorder = RunRecorder(tmp_path, _manifest(), run_id="task-artifacts", secrets=["secret-value"])
+    task_id = "aiogram__aiogram-1594"
+    artifact = recorder.write_task_artifact(task_id, "stdout", "token=secret-value")
+
+    expected_name = hashlib.sha256(task_id.encode("utf-8")).hexdigest() + "-stdout.txt"
+    assert artifact.name == expected_name
+    assert artifact.parent == recorder.path / "artifacts"
+    assert "secret-value" not in artifact.read_text(encoding="utf-8")
+    mapping = json.loads((recorder.path / "task-artifacts.json").read_text(encoding="utf-8"))
+    assert mapping["schema_version"] == 2
+    assert mapping["artifacts"] == [{"task_id": task_id, "kind": "stdout", "name": expected_name}]
+    assert recorder.write_task_artifact(task_id, "stdout", "next") == artifact
+    assert json.loads((recorder.path / "task-artifacts.json").read_text(encoding="utf-8"))["artifacts"] == [
+        {"task_id": task_id, "kind": "stdout", "name": expected_name},
+    ]
+    report = recorder.write_task_artifact(task_id, "evaluator_report", '{"resolved": false}')
+    expected_report_name = hashlib.sha256(task_id.encode("utf-8")).hexdigest() + "-evaluator_report.txt"
+    assert report.name == expected_report_name
+    assert json.loads((recorder.path / "task-artifacts.json").read_text(encoding="utf-8"))["artifacts"][-1] == {
+        "task_id": task_id, "kind": "evaluator_report", "name": expected_report_name,
+    }
+
+
+def test_task_artifacts_keep_the_regular_artifact_allowlist_strict(tmp_path: Path) -> None:
+    recorder = RunRecorder(tmp_path, _manifest(), run_id="task-artifact-rejection")
+    with pytest.raises(ValueError, match="non-empty task ID"):
+        recorder.write_task_artifact("", "stdout", "bad")
+    with pytest.raises(ValueError, match="unsupported task artifact kind"):
+        recorder.write_task_artifact("task", "patch", "bad")
+    with pytest.raises(ValueError, match="unsupported artifact name"):
+        recorder.write_artifact("task.stdout.txt", "bad")
 
 
 def test_existing_run_is_never_overwritten(tmp_path: Path) -> None:

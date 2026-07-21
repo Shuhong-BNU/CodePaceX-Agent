@@ -135,9 +135,35 @@ def validate_providers(raw_providers: list) -> list[dict]:
             raise ConfigError(f"Provider #{i + 1}: thinking must be a boolean")
 
         max_output_tokens = entry.get("max_output_tokens", 0)
-        if not isinstance(max_output_tokens, int) or max_output_tokens < 0:
+        if (not isinstance(max_output_tokens, int) or isinstance(max_output_tokens, bool)
+                or max_output_tokens < 0):
             raise ConfigError(
                 f"Provider #{i + 1}: max_output_tokens must be a non-negative integer"
+            )
+
+        max_completion_tokens = entry.get("max_completion_tokens", 0)
+        if (not isinstance(max_completion_tokens, int)
+                or isinstance(max_completion_tokens, bool) or max_completion_tokens < 0):
+            raise ConfigError(
+                f"Provider #{i + 1}: max_completion_tokens must be a non-negative integer"
+            )
+        if max_output_tokens and max_completion_tokens:
+            raise ConfigError(
+                f"Provider #{i + 1}: max_output_tokens and max_completion_tokens are mutually exclusive"
+            )
+
+        enable_thinking = entry.get("enable_thinking")
+        if enable_thinking is not None and not isinstance(enable_thinking, bool):
+            raise ConfigError(f"Provider #{i + 1}: enable_thinking must be a boolean")
+        thinking_budget = entry.get("thinking_budget", 0)
+        if (not isinstance(thinking_budget, int) or isinstance(thinking_budget, bool)
+                or thinking_budget < 0):
+            raise ConfigError(
+                f"Provider #{i + 1}: thinking_budget must be a non-negative integer"
+            )
+        if thinking_budget and enable_thinking is not True:
+            raise ConfigError(
+                f"Provider #{i + 1}: thinking_budget requires enable_thinking=true"
             )
 
         api_key_env = entry.get("api_key_env", "")
@@ -157,6 +183,9 @@ def validate_providers(raw_providers: list) -> list[dict]:
                 "thinking": thinking,
                 "context_window": context_window,
                 "max_output_tokens": max_output_tokens,
+                "max_completion_tokens": max_completion_tokens,
+                "enable_thinking": enable_thinking,
+                "thinking_budget": thinking_budget,
             }
         )
 

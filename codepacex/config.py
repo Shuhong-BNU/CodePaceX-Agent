@@ -48,6 +48,9 @@ class ProviderConfig:
     api_key_env: str = ""
     default_model: str = ""
     models: list[str] = field(default_factory=list)
+    max_completion_tokens: int = 0
+    enable_thinking: bool | None = None
+    thinking_budget: int = 0
     # 运行时 cache，存放从 provider 的 /v1/models 端点自动拉取的 context window
     # （get_context_window 的第 2 层）。通过 set_fetched_context_window() 写入一次；
     # 0 表示"尚未拉取"。不会持久化。
@@ -112,6 +115,8 @@ class ProviderConfig:
         return 128_000
 
     def get_max_output_tokens(self) -> int:
+        if self.max_completion_tokens > 0:
+            return self.max_completion_tokens
         if self.max_output_tokens > 0:
             return self.max_output_tokens
         if self.thinking:
@@ -198,6 +203,9 @@ def _load_single_file(path: Path) -> AppConfig:
             thinking=p["thinking"],
             context_window=p["context_window"],
             max_output_tokens=p["max_output_tokens"],
+            max_completion_tokens=p["max_completion_tokens"],
+            enable_thinking=p["enable_thinking"],
+            thinking_budget=p["thinking_budget"],
         )
         for p in validated["providers"]
     ]

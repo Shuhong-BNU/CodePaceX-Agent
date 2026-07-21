@@ -27,12 +27,14 @@ RESULT_STATUSES = {
     "budget_blocked",
 }
 SCORABLE_STATUSES = {"success", "task_failure"}
+SCORABLE_TRIAL_STATUSES = SCORABLE_STATUSES | {"resolved", "unresolved"}
 RESUMABLE_STATUSES = RESULT_STATUSES - {"success", "dry_run", "budget_blocked"}
 OPTIONAL_JSON = {"usage.json"}
 OPTIONAL_STREAMS = {
     "permission-events.jsonl", "compression-events.jsonl", "runtime-events.jsonl",
 }
 ALLOWED_ARTIFACTS = {"patch.diff", "test-output.txt", "stdout.txt", "stderr.txt"}
+TASK_ARTIFACT_KINDS = {"stdout", "stderr", "evaluator", "evaluator_report"}
 SECRET_KEYS = {
     "api_key", "apikey", "x_api_key", "authorization", "bearer", "password",
     "secret", "access_token", "bailian_api_key", "agentrouter_api_key",
@@ -458,6 +460,30 @@ class RunRecorder:
         self._atomic_write(target, self.redactor.redact(safe).encode())
         return target
 
+    def write_task_artifact(self, task_id: str, kind: str, content: str | bytes) -> Path:
+        """Store an auditable per-task log without accepting caller-built paths."""
+        if not isinstance(task_id, str) or not task_id:
+            raise ValueError("task artifact requires a non-empty task ID")
+        if kind not in TASK_ARTIFACT_KINDS:
+            raise ValueError("unsupported task artifact kind")
+        task_hash = hashlib.sha256(task_id.encode("utf-8")).hexdigest()
+        name = f"{task_hash}-{kind}.txt"
+        artifact_dir = self.path / "artifacts"
+        artifact_dir.mkdir(exist_ok=True)
+        target = artifact_dir / name
+        safe = content if isinstance(content, str) else content.decode(errors="replace")
+        self._atomic_write(target, self.redactor.redact(safe).encode())
+
+        mapping = self._json_object("task-artifacts.json")
+        entries = mapping.get("artifacts", [])
+        if not isinstance(entries, list):
+            raise ValueError("task artifact mapping is invalid")
+        entry = {"task_id": task_id, "kind": kind, "name": name}
+        if entry not in entries:
+            entries.append(entry)
+            self.write_json("task-artifacts.json", {"artifacts": entries})
+        return target
+
     def _sanitize_run_files(self) -> bool:
         """Redact every final artifact and report an unredactable secret leak.
 
@@ -569,12 +595,12 @@ class RunRecorder:
         errors: dict[str, int] = {}
         for event in completed:
             trial_status = str(event.get("status", "infrastructure_error"))
-            if trial_status != "success":
+            if trial_status not in SCORABLE_TRIAL_STATUSES:
                 errors[trial_status] = errors.get(trial_status, 0) + 1
         if not attempts and status not in {"success", "dry_run"}:
             errors[status] = errors.get(status, 0) + 1
         unscorable = sum(
-            1 for event in completed if event.get("status") not in SCORABLE_STATUSES
+            1 for event in completed if event.get("status") not in SCORABLE_TRIAL_STATUSES
         )
         if self._sanitize_run_files():
             status = "infrastructure_error"

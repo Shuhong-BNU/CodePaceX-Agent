@@ -1,0 +1,18 @@
+{
+  "allowed_architectures": ["x86_64", "amd64"],
+  "branch": "python-only",
+  "commit": "ad79b850f15e33992e96f03f6e97f05ddf9aa0be",
+  "dataset": "SWE-bench-Live/SWE-bench-Live",
+  "docker_required": true,
+  "evaluator_namespace": "starryzhang",
+  "installation": "isolated-editable-checkout",
+  "native_host_required": true,
+  "notes": [
+    "Goal 3 accepts only a clean native Linux x86_64 or amd64 host.",
+    "Run empty and gold evaluator controls before any Pilot authorization.",
+    "Do not reuse Goal 2 artifacts, authorization, allocation, or ledger files."
+  ],
+  "repository": "https://github.com/microsoft/SWE-bench-Live",
+  "schema_version": 1,
+  "split": "lite"
+}

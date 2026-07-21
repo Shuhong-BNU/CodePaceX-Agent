@@ -7,6 +7,7 @@ process environment values are read or printed.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -14,7 +15,15 @@ from pathlib import Path
 
 
 _PATTERNS = (
-    re.compile(r"(?i)\b(?:bailian|agentrouter|dashscope|github|aws(?:_access)?|database)[a-z0-9_]*\s*[:=]\s*['\"]?[^\s'\"]{8,}"),
+    # Match credential field names rather than public source namespaces or
+    # labels such as arn:aws:... and "database: /tmp/library.db".
+    re.compile(
+        r"(?i)\b(?:"
+        r"(?:bailian|agentrouter|dashscope)_api_key|github_token|"
+        r"aws_(?:access_key_id|secret_access_key|session_token)|"
+        r"database_(?:url|password|passwd|secret|token|api_key)"
+        r")\s*(?::(?!:)|=)\s*['\"]?[^\s'\"]{8,}"
+    ),
     re.compile(r"(?i)\bbearer\s+[a-z0-9._~+/%=-]{12,}"),
     re.compile(r"https?://[^\s/@:]+:[^\s/@]+@[^\s/]+"),
     re.compile(r"\bsk-(?:ant-)?[a-z0-9_-]{12,}\b", re.IGNORECASE),
@@ -44,8 +53,14 @@ def scan_tracked_files(root: Path) -> list[str]:
     return findings
 
 
-def scan_artifact_roots(roots: list[Path]) -> list[str]:
-    """Scan explicit local Artifact roots without reading process environment."""
+def scan_artifact_roots(
+    roots: list[Path], *, untrusted_json_fields: frozenset[str] = frozenset(),
+) -> list[str]:
+    """Scan explicit local Artifact roots without reading process environment.
+
+    Selected JSONL fields may be explicitly excluded when they contain a public,
+    untrusted benchmark corpus rather than a produced Artifact value.
+    """
     findings: list[str] = []
     for root in roots:
         candidates = [root] if root.is_file() else sorted(root.rglob("*"))
@@ -57,7 +72,18 @@ def scan_artifact_roots(roots: list[Path]) -> list[str]:
             except (OSError, UnicodeDecodeError):
                 continue
             for number, line in enumerate(lines, 1):
-                if line_has_credential(line):
+                scanned_line = line
+                if untrusted_json_fields and path.suffix == ".jsonl":
+                    try:
+                        payload = json.loads(line)
+                    except json.JSONDecodeError:
+                        payload = None
+                    if isinstance(payload, dict):
+                        scanned_line = json.dumps({
+                            key: value for key, value in payload.items()
+                            if key not in untrusted_json_fields
+                        }, ensure_ascii=False)
+                if line_has_credential(scanned_line):
                     findings.append(f"{path}:{number}")
     return findings
 
@@ -65,10 +91,16 @@ def scan_artifact_roots(roots: list[Path]) -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Scan source and explicit Run Artifacts")
     parser.add_argument("--artifact-root", action="append", type=Path, default=[])
+    parser.add_argument(
+        "--untrusted-json-field", action="append", default=[],
+        help="Exclude this explicit JSONL field from Artifact scanning.",
+    )
     args = parser.parse_args()
     findings = [
         *scan_tracked_files(Path.cwd()),
-        *scan_artifact_roots(args.artifact_root),
+        *scan_artifact_roots(
+            args.artifact_root, untrusted_json_fields=frozenset(args.untrusted_json_field),
+        ),
     ]
     if findings:
         print("credential-shaped tracked content: " + ", ".join(findings), file=sys.stderr)

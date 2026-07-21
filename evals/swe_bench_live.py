@@ -266,6 +266,28 @@ def run_official_evaluator(
     )
 
 
+def official_evaluator_report_path(
+    *, cwd: Path, run_id: str, model_id: str, instance_id: str,
+) -> Path:
+    """Return the frozen evaluator's one deterministic per-instance report path.
+
+    SWE-bench-Live writes this report below its evaluator working directory even
+    when its CLI accepts ``--report_dir``.  The caller must verify the one
+    expected path, not recursively search arbitrary evaluator output.
+    """
+    for label, value in (("run ID", run_id), ("model ID", model_id), ("instance ID", instance_id)):
+        if not value or Path(value).name != value or value in {".", ".."}:
+            raise ValueError(f"official evaluator has an unsafe {label}")
+    report_dir = cwd.resolve() / "logs" / "run_evaluation" / run_id / model_id / instance_id
+    expected = report_dir / "report.json"
+    candidates = sorted(report_dir.glob("report*.json")) if report_dir.is_dir() else []
+    if len(candidates) > 1:
+        raise ValueError(f"official evaluator produced multiple report candidates: {candidates}")
+    if candidates != [expected]:
+        raise ValueError(f"official evaluator report is missing: {expected}")
+    return expected
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build or run the official SWE-bench evaluator command")
     parser.add_argument("--dataset-name", required=True)
