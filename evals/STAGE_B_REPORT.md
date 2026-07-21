@@ -85,8 +85,11 @@ All commands used the project dependency environment in offline mode on macOS.
 | `python -m evals.stage_b_replay ...` | completed with `provider_requests=0` and `formal_experiment=false` |
 | `git diff --check` | passed |
 
-CI results are added after the Draft PR is pushed. No paid workflow, official
-evaluator, Goal 4 Trial, or Stage C Pilot was run during this verification.
+GitHub Actions run `29857496366` completed successfully for the implementation
+head: both `macos` and `ubuntu` passed the main test suite, no-model Pilot
+validation, credential-shaped source scan, and their respective sandbox checks.
+No paid workflow, official evaluator, Goal 4 Trial, or Stage C Pilot was run
+during this verification.
 
 ## Known limitations
 
