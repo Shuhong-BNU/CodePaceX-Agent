@@ -15,6 +15,10 @@ on:
         description: Exact commit recorded by the new Freeze
         required: true
         type: string
+  push:
+    branches: [codex/goal4-swe-live-formal-eval]
+    paths:
+      - .github/workflows/goal4-swe-settlement-recovery.yml
 
 permissions:
   actions: read
@@ -22,6 +26,7 @@ permissions:
 
 jobs:
   settle-and-zero-provider:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:

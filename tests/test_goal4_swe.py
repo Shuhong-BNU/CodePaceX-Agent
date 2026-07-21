@@ -372,6 +372,7 @@ def test_unknown_provider_settlement_workflow_cannot_execute_paid_requests() -> 
     assert "execute-batch" not in workflow
     assert "BAILIAN_API_KEY" not in workflow
     assert "secrets." not in workflow
+    assert "if: ${{ github.event_name == 'workflow_dispatch' }}" in workflow
     freeze_workflow = Path(".github/workflows/goal4-swe-freeze.yml").read_text(encoding="utf-8")
     assert str(workflow_path) in freeze_workflow
 
