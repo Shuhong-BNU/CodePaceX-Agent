@@ -123,7 +123,9 @@ def frozen_identities(root: Path, freeze_path: Path) -> dict[str, str]:
     freeze = stage_d_freeze.validate_freeze(root.resolve(), freeze_path.resolve())
     pricing = load_pricing(root / PRICING_PATH)
     return {
-        "freeze_sha256": canonical_hash(freeze),
+        # Bind the exact committed Freeze bytes published in the Freeze report,
+        # not a second canonicalization of the same JSON payload.
+        "freeze_sha256": _sha256(freeze_path),
         "runtime_contract_hash": str(freeze["runtime_contract_hash"]),
         "pricing_snapshot_hash": pricing_snapshot_hash(pricing),
     }
