@@ -175,3 +175,26 @@ def test_synthetic_phase_one_is_serial_and_partial_claim_never_becomes_twenty_ta
     assert report["claim_kind"] == "phase_1_smoke_pilot"
     assert report["full_claim"] is False
     assert report["scorable_denominator"] == 6
+
+
+def test_partial_phase_uses_a_supported_infrastructure_terminal_status(tmp_path: Path) -> None:
+    _prepare(tmp_path)
+    bundle = tmp_path / "phase-1-tasks.jsonl"
+    bundle.write_text("".join(json.dumps({
+        "instance_id": instance_id, "repo": "owner/repo", "base_commit": "a" * 40,
+        "problem_statement": "Repair the current repository.", "platform": None,
+        "version": None, "environment_setup_commit": None,
+    }) + "\n" for instance_id in stage_c.PHASE_1_IDS))
+
+    def failing_executor(_task: dict[str, str], _environment: dict[str, str], _workspace: Path) -> stage_c_paid.TaskExecution:
+        return stage_c_paid.TaskExecution("", "simulated pre-transport failure", "", 1)
+
+    with patch("evals.paid_gate._git_is_clean", return_value=True):
+        artifact = stage_c_paid.execute_phase(
+            root=ROOT, freeze_dir=FREEZE, evidence_root=tmp_path, phase="phase_1", run_id="synthetic-partial",
+            task_bundle=bundle, confirmed=True, executor=failing_executor,
+        )
+    assert artifact["terminal_statuses"][stage_c.PHASE_1_IDS[0]] == "infrastructure_error"
+    assert all(artifact["terminal_statuses"][item] == "not_run" for item in stage_c.PHASE_1_IDS[1:])
+    result_path = next(tmp_path.rglob("result.json"))
+    assert json.loads(result_path.read_text())["status"] == "infrastructure_error"

@@ -614,7 +614,12 @@ def execute_phase(
         metric_ledgers.insert(0, Path(str(binding["phase_1_artifact_manifest"])).parent / "terminal-ledger.json")
     artifact["process_metrics"] = process_metrics(ledgers=metric_ledgers)
     _write_new(_phase_paths(evidence_root)["manifest"], artifact)
-    recorder.finalize({"status": "success" if all(value in SCORABLE for value in statuses.values()) else "stopped",
+    result_status = (
+        "success" if all(value in SCORABLE for value in statuses.values())
+        else "budget_blocked" if any(value == "budget_blocked" for value in statuses.values())
+        else "infrastructure_error"
+    )
+    recorder.finalize({"status": result_status,
                        "phase": phase, "formal_stage_c_trial": formal_stage_c_trial})
     return artifact
 
