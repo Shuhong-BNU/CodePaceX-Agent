@@ -108,10 +108,23 @@ jobs:
           run-id: ${{ inputs.task_bundle_run_id }}
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/stage-c-task-bundle
+      - name: Install the frozen official evaluator before Provider transport
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Linux
+          case "$(uname -m)" in x86_64|amd64) ;; *) exit 1 ;; esac
+          docker info
+          python -m pip install -e . pytest pytest-asyncio
+          evaluator_root="$RUNNER_TEMP/swe-bench-live"
+          evaluator_commit="$(python -c 'from evals.goal3_swe import load_goal3_environment; print(load_goal3_environment()["commit"])')"
+          git clone --filter=blob:none https://github.com/microsoft/SWE-bench-Live.git "$evaluator_root"
+          git -C "$evaluator_root" checkout --detach "$evaluator_commit"
+          test "$(git -C "$evaluator_root" rev-parse HEAD)" = "$evaluator_commit"
+          python -m pip install -e "$evaluator_root"
+          python -m evals.goal3_swe preflight
       - name: Validate the immutable inputs and execute Phase 1 serially
         run: |
           set -euo pipefail
-          python -m pip install -e . pytest pytest-asyncio
           mapfile -t task_bundles < <(find "$RUNNER_TEMP/stage-c-task-bundle" -type f -name tasks.jsonl -print)
           test "${#task_bundles[@]}" -eq 1
           task_bundle="${task_bundles[0]}"
