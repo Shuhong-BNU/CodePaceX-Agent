@@ -201,6 +201,8 @@ def classify_operation(
     plan_artifact_path: str | None = None,
     tool_module: str = "",
 ) -> OperationClass:
+    if tool_name == "RunTest":
+        return OperationClass.TEST_EXECUTION
     if tool_name == "Bash":
         command = arguments.get("command")
         return classify_bash_command(command) if isinstance(command, str) else OperationClass.UNKNOWN_SIDE_EFFECT
@@ -243,6 +245,7 @@ class ValidationController:
         self._sequence = 0
         self._events: list[ValidationEvent] = []
         self._observations: dict[str, ToolObservation] = {}
+        self._last_observation_id: str | None = None
         self._inventory: dict[str, Any] | None = None
         self._inventory_revision = 0
         self._reproduction: dict[str, Any] | None = None
@@ -330,6 +333,13 @@ class ValidationController:
                 for item in data.get("observations", [])
                 if isinstance(item, dict) and isinstance(item.get("tool_call_id"), str)
             }
+            last_observation_id = data.get("last_observed_tool_call_id")
+            self._last_observation_id = (
+                last_observation_id
+                if isinstance(last_observation_id, str)
+                and last_observation_id in self._observations
+                else None
+            )
             self._regression = {
                 item["fingerprint"]: item for item in data.get("regression_state", [])
                 if isinstance(item, dict) and isinstance(item.get("fingerprint"), str)
@@ -436,6 +446,10 @@ class ValidationController:
         operation = classify_operation(tool_name, tool_category, arguments, plan_mode=plan_mode,
                                        plan_artifact_path=plan_artifact_path, tool_module=tool_module)
         command = arguments.get("command") if isinstance(arguments.get("command"), str) else None
+        if tool_name == "RunTest" and isinstance(arguments.get("argv"), list):
+            argv = arguments["argv"]
+            if all(isinstance(item, str) for item in argv):
+                command = "pytest " + " ".join(argv)
         with self._state_lock():
             observation = ToolObservation(
                 tool_call_id=tool_call_id, operation=operation.value, command=command,
@@ -444,6 +458,7 @@ class ValidationController:
                 exit_code=exit_code, timed_out=timed_out, output=output,
             )
             self._observations[tool_call_id] = observation
+            self._last_observation_id = tool_call_id
             # Opaque commands are gated before execution and must also invalidate
             # test evidence afterwards: a wrapper script or MCP tool may write
             # implementation files even when static classification cannot prove it.
@@ -572,6 +587,56 @@ class ValidationController:
                        action=action, revision=self._inventory_revision)
             return ValidationDecision(True, OperationClass.READ_ONLY)
 
+    def latest_observed_tool_call_id(self) -> str | None:
+        """Return the most recent actual tool result, never a model-supplied id."""
+        with self._state_lock():
+            return self._last_observation_id
+
+    def checkpoint_remediation(self) -> dict[str, Any]:
+        """Machine-readable next action for an enabled Stage B session."""
+        with self._state_lock():
+            missing: list[str] = []
+            if not self._reproduction_satisfied():
+                missing.append("reproduction")
+            if self._inventory is None:
+                missing.append("contract_inventory")
+            if self._pending_checkpoints:
+                missing.append("checkpoint_acknowledgement")
+            can_edit = not missing
+            return {
+                "missing_conditions": missing,
+                "next_allowed_actions": [
+                    "RunTest", "record_reproduction", "record_reproduction_exception",
+                    "declare_contract_inventory", "ack_request_checkpoint",
+                ],
+                "can_edit": can_edit,
+                "can_test": True,
+                "pending_checkpoints": sorted(self._pending_checkpoints),
+                "remaining_requests_to_ceiling": max(0, 40 - self._request_ordinal),
+                "request_36_choices": sorted(REQUEST_36_CHOICES) if self._request_ordinal >= 36 else [],
+                "latest_observed_tool_call_id": self._last_observation_id,
+            }
+
+    def checkpoint_error(self, action: str, reason: str) -> dict[str, Any]:
+        fields = {
+            "record_reproduction": ["observed_tool_call_id", "reproduction_status"],
+            "record_reproduction_exception": ["reproduction_exception_reason", "attempted_commands", "observed_results", "explanation", "remaining_uncertainty"],
+            "declare_contract_inventory": ["contract_inventory"],
+            "amend_contract_inventory": ["contract_inventory"],
+            "declare_target_tests": ["target_tests"],
+            "declare_regression_slice": ["regression_tests"],
+            "ack_request_checkpoint": ["checkpoint_ordinal", "checkpoint_summary", "checkpoint_details"],
+            "select_request_36_outcome": ["checkpoint_decision"],
+        }.get(action, [])
+        return {
+            "error_code": "validation_checkpoint_rejected",
+            "message": reason,
+            "missing_fields": fields if "missing" in reason or "requires" in reason or "reference" in reason else [],
+            "invalid_fields": fields if "invalid" in reason or "not pending" in reason else [],
+            "valid_choices": {"reproduction_exception_reason": sorted(EXCEPTION_REASONS), "checkpoint_decision": sorted(REQUEST_36_CHOICES)},
+            **self.checkpoint_remediation(),
+        }
+
     def _require_observation(self, payload: dict[str, Any], key: str) -> ToolObservation:
         reference = payload.get(key)
         if not isinstance(reference, str) or reference not in self._observations:
@@ -672,6 +737,7 @@ class ValidationController:
             "contract_inventory_revision": self._inventory_revision,
             "target_obligations": [asdict(item) for item in self._obligations.values()],
             "observations": [asdict(item) for item in self._observations.values()],
+            "last_observed_tool_call_id": self._last_observation_id,
             "regression_comparisons": regressions,
             "regression_state": list(self._regression.values()),
             "pending_checkpoints": sorted(self._pending_checkpoints),

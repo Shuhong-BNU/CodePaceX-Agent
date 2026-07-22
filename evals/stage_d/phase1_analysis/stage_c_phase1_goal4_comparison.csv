@@ -1,0 +1,7 @@
+instance_id,goal4_status,goal4_requests,goal4_nonempty_patch,goal4_executed_edits,goal4_executed_bash,stage_c_status,stage_c_requests,stage_c_executed_edits,stage_c_executed_bash,stage_c_validation_blocks,observed_difference
+aws-cloudformation__cfn-lint-3749,unresolved,29,yes,2,20,unresolved,40,0,0,29,Goal4 reproduced and edited; Stage C never passed reproduction gate
+aws-cloudformation__cfn-lint-3764,unresolved,15,yes,1,7,unresolved,40,0,0,31,Goal4 edited early; Stage C edit attempt at request 6 was blocked
+beetbox__beets-5457,unresolved,38,yes,1,15,unresolved,40,0,2,10,Goal4 produced an incomplete patch; replacement produced no patch after blocked declarations
+beetbox__beets-5495,resolved,11,yes,2,5,unresolved,40,0,0,33,Resolved control regressed to the common zero-edit path
+deepset-ai__haystack-8489,unresolved,24,yes,9,7,unresolved,40,0,2,27,Goal4 edited six files but regressed; Stage C could not test or edit
+beancount__beancount-931,resolved,21,yes,4,9,unresolved,40,0,0,29,Resolved control regressed to the common zero-edit path

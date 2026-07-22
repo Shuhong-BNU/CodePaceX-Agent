@@ -927,6 +927,9 @@ class TestChildExperimentPermissions:
         from codepacex.permissions import DangerousCommandDetector, PathSandbox, PermissionChecker, PermissionMode, RuleEngine
         from codepacex.tools.agent_tool import AgentTool, AgentToolParams
         from codepacex.agents.trace import TraceManager
+        from codepacex.tools.edit_file import EditFile
+        from codepacex.tools.run_test import RunTest
+        from codepacex.tools.write_file import WriteFile
 
         profile = _permission_profile("session_allow")
         parent = _permission_parent(tmp_path, profile=profile, checker=PermissionChecker(
@@ -960,6 +963,15 @@ class TestChildExperimentPermissions:
         assert manifest.runtime_contract_hash == profile.runtime_contract_hash()
         assert child.permission_checker.check(
             DummyTool("Bash", "command"), {"command": "echo approved"},
+        ).effect == "allow"
+        assert child.permission_checker.check(
+            EditFile(), {"file_path": str(tmp_path / "child.py"), "old_string": "old", "new_string": "new"},
+        ).effect == "allow"
+        assert child.permission_checker.check(
+            WriteFile(), {"file_path": str(tmp_path / "child.py"), "content": "value = 1\n"},
+        ).effect == "allow"
+        assert child.permission_checker.check(
+            RunTest(), {"cwd": str(tmp_path), "argv": ["test_child.py"]},
         ).effect == "allow"
         external = DummyTool("Bash", "command")
         external.requires_explicit_authorization = True
