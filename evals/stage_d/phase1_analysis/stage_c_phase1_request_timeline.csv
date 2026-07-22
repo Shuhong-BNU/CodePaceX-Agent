@@ -1,0 +1,14 @@
+instance_id,attempt_kind,request_range,observed_activity,gate_or_permission_result,terminal_relevance
+aws-cloudformation__cfn-lint-3749,formal_candidate,1,located source and task context,read-only allowed,related code found immediately
+aws-cloudformation__cfn-lint-3749,formal_candidate,9-40,attempted edits and repeated reproduction/inventory declarations,17 permission denials and 29 validation blocks,no executed edit; ceiling reached
+aws-cloudformation__cfn-lint-3764,formal_candidate,1,located LanguageExtensions source,read-only allowed,related code found immediately
+aws-cloudformation__cfn-lint-3764,formal_candidate,6-40,attempted edit/tests and repeated declarations,14 permission denials and 31 validation blocks,no executed edit; ceiling reached
+beetbox__beets-5457,non_scorable_infrastructure_attempt,1-11,partial original session,11 settled requests CNY 1.361364; request 12 ConnectTimeout,no Candidate or prediction; preserved separately
+beetbox__beets-5457,infrastructure_replacement_attempt,1-18,located lyrics code and fixtures; read-only Bash searches,read-only allowed,root cause explored
+beetbox__beets-5457,infrastructure_replacement_attempt,19-40,attempted reproduction/test/edit/declaration,8 permission denials and 10 validation blocks; declaration missing evidence reference,no edit; ceiling reached
+beetbox__beets-5495,formal_candidate,1-7,located set_fields and attempted edit,edit blocked at request 3,no executable change
+beetbox__beets-5495,formal_candidate,8-40,repeated reproduction exceptions inventories and target-test declarations,13 permission denials and 33 validation blocks,no valid inventory or checkpoint acknowledgement
+deepset-ai__haystack-8489,formal_candidate,1-10,located tracing code,read-only searches allowed,related code found immediately
+deepset-ai__haystack-8489,formal_candidate,11-40,attempted edits/reproducer/tests/inventory,15 permission denials and 27 validation blocks,no executable change
+beancount__beancount-931,formal_candidate,1-7,located leafonly code and read its contract,read-only allowed,related code found immediately
+beancount__beancount-931,formal_candidate,8-40,attempted edits/tests/reproduction/inventory,13 permission denials and 29 validation blocks,no executable change

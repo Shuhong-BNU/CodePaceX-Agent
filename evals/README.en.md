@@ -146,3 +146,11 @@ The Freeze identities and zero-provider verification are in
 The separately authorized paid runner and dispatch-only workflows are documented
 in [`STAGE_C_PAID_EXECUTION.md`](STAGE_C_PAID_EXECUTION.md); this capability is
 not an authorization to run Phase 1 or Phase 2.
+
+## Stage D Unblocker
+
+Stage C Phase 1 completed six scorable tasks with 0 resolved / 6 unresolved and
+has a `PHASE_2_NO_GO` decision. Its preserved zero-provider root-cause analysis
+is indexed in [`stage_d/phase1_analysis/`](stage_d/phase1_analysis/). Stage D is
+a separate protocol-unblocker effort; this index neither changes Goal 4 nor
+overwrites Stage C evidence.

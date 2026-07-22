@@ -75,6 +75,7 @@ from codepacex.validation import (
     ValidationProfile,
 )
 from codepacex.tools.validation_checkpoint import ValidationCheckpoint
+from codepacex.tools.run_test import RunTest
 
 log = logging.getLogger(__name__)
 
@@ -525,6 +526,8 @@ class Agent:
         )
         if self.validation_controller.enabled and self.registry.get("ValidationCheckpoint") is None:
             self.registry.register(ValidationCheckpoint(self.validation_controller, self.agent_id))
+        if self.validation_controller.enabled and self.registry.get("RunTest") is None:
+            self.registry.register(RunTest())
 
         # 非阻塞 memory recall：prefetch task 与主 LLM 调用并行，工具执行后注入
         self.memory_recall_task: Any | None = None
