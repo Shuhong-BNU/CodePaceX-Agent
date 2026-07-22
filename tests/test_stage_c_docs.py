@@ -8,6 +8,7 @@ DOCS = (
     Path("evals/STAGE_C_CHARTER.md"),
     Path("evals/STAGE_C_RUNBOOK.md"),
     Path("evals/STAGE_C_FREEZE_REPORT.md"),
+    Path("evals/STAGE_C_PAID_EXECUTION.md"),
     Path("evals/README.md"),
     Path("evals/README.en.md"),
 )

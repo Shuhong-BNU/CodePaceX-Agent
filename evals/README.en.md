@@ -142,3 +142,7 @@ shortfall stops before transport, retaining unexecuted tasks as `not_run` rather
 than manufacturing a complete twenty-task Claim.
 The Freeze identities and zero-provider verification are in
 [`STAGE_C_FREEZE_REPORT.md`](STAGE_C_FREEZE_REPORT.md).
+
+The separately authorized paid runner and dispatch-only workflows are documented
+in [`STAGE_C_PAID_EXECUTION.md`](STAGE_C_PAID_EXECUTION.md); this capability is
+not an authorization to run Phase 1 or Phase 2.

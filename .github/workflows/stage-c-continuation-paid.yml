@@ -1,0 +1,144 @@
+name: Stage C Phase 2 paid continuation
+
+on:
+  workflow_dispatch:
+    inputs:
+      paid_execution:
+        description: Explicitly authorize the separate Phase 2 Provider path
+        required: true
+        default: false
+        type: boolean
+      approved_commit:
+        required: false
+        default: ''
+        type: string
+      freeze_sha256:
+        required: false
+        default: ''
+        type: string
+      pricing_sha256:
+        required: false
+        default: ''
+        type: string
+      authorization_identity:
+        description: Separate non-secret Phase 2 approval identity
+        required: false
+        default: ''
+        type: string
+      phase_1_run_id:
+        required: false
+        default: ''
+        type: string
+      phase_1_artifact_id:
+        description: Immutable GitHub Artifact ID for Phase 1 evidence
+        required: false
+        default: ''
+        type: string
+      phase_1_archive_sha256:
+        description: SHA-256 digest of the immutable Phase 1 Artifact archive
+        required: false
+        default: ''
+        type: string
+      task_bundle_run_id:
+        required: false
+        default: ''
+        type: string
+      task_bundle_artifact_id:
+        required: false
+        default: ''
+        type: string
+      task_bundle_sha256:
+        required: false
+        default: ''
+        type: string
+      run_id:
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  zero-provider-validation:
+    if: ${{ !inputs.paid_execution }}
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e . pytest pytest-asyncio
+      - run: |
+          set -euo pipefail
+          python -m evals.stage_c validate --output-dir evals/stage_c
+          python -m evals.stage_c_paid identities --root . --freeze-dir evals/stage_c
+          python -m evals.secret_scan
+
+  phase-2-paid:
+    if: ${{ inputs.paid_execution }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    env:
+      BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+    steps:
+      - name: Require all independent Phase 2 authorization inputs before transport
+        run: |
+          set -euo pipefail
+          for value in '${{ inputs.approved_commit }}' '${{ inputs.freeze_sha256 }}' '${{ inputs.pricing_sha256 }}' '${{ inputs.authorization_identity }}' '${{ inputs.phase_1_run_id }}' '${{ inputs.phase_1_artifact_id }}' '${{ inputs.phase_1_archive_sha256 }}' '${{ inputs.task_bundle_run_id }}' '${{ inputs.task_bundle_artifact_id }}' '${{ inputs.task_bundle_sha256 }}' '${{ inputs.run_id }}'; do test -n "$value"; done
+          test -n "$BAILIAN_API_KEY"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.approved_commit }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ inputs.phase_1_artifact_id }}
+          run-id: ${{ inputs.phase_1_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/stage-c-phase-1
+      - name: Verify the immutable Phase 1 Artifact digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          digest="$(gh api "repos/${{ github.repository }}/actions/artifacts/${{ inputs.phase_1_artifact_id }}" --jq .digest)"
+          test "$digest" = "sha256:${{ inputs.phase_1_archive_sha256 }}"
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ inputs.task_bundle_artifact_id }}
+          run-id: ${{ inputs.task_bundle_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/stage-c-task-bundle
+      - name: Bind verified Phase 1 evidence, then execute only Phase 2
+        run: |
+          set -euo pipefail
+          python -m pip install -e . pytest pytest-asyncio
+          phase_one="$RUNNER_TEMP/stage-c-phase-1/phase-artifact-manifest.json"
+          task_bundle="$RUNNER_TEMP/stage-c-task-bundle/tasks.jsonl"
+          python -m evals.stage_c_paid validate-phase-1 --phase-1-artifact "$phase_one"
+          test "$(sha256sum "$task_bundle" | awk '{print $1}')" = '${{ inputs.task_bundle_sha256 }}'
+          consumption="$(python - "$phase_one" <<'PY'
+          import json, sys
+          print(json.load(open(sys.argv[1]))['combined_conservative_consumption_cny'])
+          PY
+          )"
+          artifact_id="$(python - "$phase_one" <<'PY'
+          import json, sys
+          print(json.load(open(sys.argv[1]))['artifact_id'])
+          PY
+          )"
+          python -m evals.stage_c_paid prepare-phase --root . --freeze-dir evals/stage_c --evidence-root "$RUNNER_TEMP/stage-c-phase-2" --phase phase_2 --approved-commit '${{ inputs.approved_commit }}' --authorization-identity '${{ inputs.authorization_identity }}' --freeze-sha256 '${{ inputs.freeze_sha256 }}' --pricing-sha256 '${{ inputs.pricing_sha256 }}' --phase-1-consumption-cny "$consumption" --phase-1-artifact "$phase_one" --phase-1-artifact-id "$artifact_id" --phase-1-archive-sha256 '${{ inputs.phase_1_archive_sha256 }}'
+          python -m evals.stage_c_paid execute-phase --confirm-paid-run --root . --freeze-dir evals/stage_c --evidence-root "$RUNNER_TEMP/stage-c-phase-2" --phase phase_2 --run-id '${{ inputs.run_id }}' --task-bundle "$task_bundle"
+      - name: Scan terminal evidence without printing credentials
+        if: always()
+        run: python -m evals.secret_scan --artifact-root "$RUNNER_TEMP/stage-c-phase-2" --untrusted-json-field problem_statement
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-c-phase-2-${{ github.run_id }}
+          path: ${{ runner.temp }}/stage-c-phase-2
+          if-no-files-found: error
