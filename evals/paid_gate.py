@@ -17,7 +17,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from evals.costing import PricingSnapshot, load_pricing, pricing_snapshot_hash
 
 MONEY_QUANTUM = Decimal("0.000001")
-BudgetStage = Literal["A", "B", "C"]
+BudgetStage = Literal["A", "B", "C", "STAGE_D1_CANARY"]
+STAGE_D1_CANARY_BUDGET_STAGE: BudgetStage = "STAGE_D1_CANARY"
 BudgetCategory = Literal[
     "swe", "mcp", "retention", "permission", "multi_agent", "long_session",
 ]
@@ -44,7 +45,7 @@ class BudgetAuthorization(BaseModel):
     schema_version: Literal[2] = 2
     currency: Literal["CNY"] = "CNY"
     authorized_total_cny: Decimal = Field(gt=0)
-    stage_limits_cny: dict[BudgetStage, Decimal]
+    stage_limits_cny: dict[str, Decimal]
     pricing_snapshot_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     experiment_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
     authorized_at: str
@@ -52,16 +53,21 @@ class BudgetAuthorization(BaseModel):
 
     @model_validator(mode="after")
     def validate_stage_limits(self) -> BudgetAuthorization:
-        if set(self.stage_limits_cny) != {"A", "B", "C"}:
-            raise ValueError("budget authorization requires A, B, and C stage limits")
-        stage_a = self.stage_limits_cny["A"]
-        stage_b = self.stage_limits_cny["B"]
-        stage_c = self.stage_limits_cny["C"]
-        if min(stage_a, stage_b, stage_c) <= 0 or not stage_a <= stage_b <= stage_c:
-            raise ValueError("budget stage limits must be positive and monotonic")
-        if stage_c != self.authorized_total_cny:
-            raise ValueError("stage C limit must equal the total authorization")
-        return self
+        stages = set(self.stage_limits_cny)
+        if stages == {"A", "B", "C"}:
+            stage_a = self.stage_limits_cny["A"]
+            stage_b = self.stage_limits_cny["B"]
+            stage_c = self.stage_limits_cny["C"]
+            if min(stage_a, stage_b, stage_c) <= 0 or not stage_a <= stage_b <= stage_c:
+                raise ValueError("budget stage limits must be positive and monotonic")
+            if stage_c != self.authorized_total_cny:
+                raise ValueError("stage C limit must equal the total authorization")
+            return self
+        if stages == {STAGE_D1_CANARY_BUDGET_STAGE}:
+            if self.stage_limits_cny[STAGE_D1_CANARY_BUDGET_STAGE] != self.authorized_total_cny:
+                raise ValueError("Stage D.1 budget stage limit must equal the total authorization")
+            return self
+        raise ValueError("budget authorization has an unregistered stage-limit set")
 
 
 class Reservation(BaseModel):
@@ -690,6 +696,8 @@ class PaidRunGate:
             maximum_input_tokens_per_request=maximum_input_tokens_per_request,
             maximum_output_tokens_per_request=maximum_output_tokens_per_request,
         )
+        if self.stage not in self.authorization.stage_limits_cny:
+            raise ValueError(f"unregistered budget stage: {self.stage}")
         stage_limit = self.authorization.stage_limits_cny[self.stage]
         remaining = stage_limit - ledger.spent_cny
         if remaining < amount:

@@ -33,6 +33,7 @@ from evals.paid_gate import (
     BudgetAuthorization,
     BudgetLedger,
     PaidRunGate,
+    STAGE_D1_CANARY_BUDGET_STAGE,
     provider_request_budget_environment,
     worst_case_reservation,
 )
@@ -46,6 +47,7 @@ MAX_INPUT_TOKENS = 128_000
 MAX_OUTPUT_TOKENS = 8_192
 MAX_REASONING_TOKENS = 6_144
 AUTHORIZATION_CAP = Decimal("15")
+BUDGET_STAGE_KEY = STAGE_D1_CANARY_BUDGET_STAGE
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
@@ -131,9 +133,64 @@ def frozen_identities(root: Path, freeze_path: Path) -> dict[str, str]:
     }
 
 
+def _authorization(*, pricing_hash: str, approved_commit: str) -> BudgetAuthorization:
+    return BudgetAuthorization(
+        authorized_total_cny=AUTHORIZATION_CAP,
+        stage_limits_cny={BUDGET_STAGE_KEY: AUTHORIZATION_CAP},
+        pricing_snapshot_hash=pricing_hash,
+        experiment_commit=approved_commit,
+        authorized_at=_utc_now(),
+    )
+
+
+def _paid_path_preflight(*, root: Path, pricing: Any, authorization: BudgetAuthorization,
+                         evidence_root: Path | None) -> dict[str, Any]:
+    """Exercise the first reservation boundary without allowing transport."""
+    with tempfile.TemporaryDirectory(prefix="codepacex-stage-d1-paid-path-") as temp_text:
+        working_root = Path(temp_text)
+        authorization_path = working_root / "budget-authorization.json"
+        ledger_path = working_root / "terminal-ledger.json"
+        _write_new(authorization_path, authorization.model_dump(mode="json"))
+        _write_new(ledger_path, BudgetLedger(
+            authorization_hash=stage_c_paid.authorization_hash(authorization), updated_at=_utc_now(),
+        ).model_dump(mode="json"))
+        gate = PaidRunGate(
+            root=root, authorization_path=authorization_path, ledger_path=ledger_path,
+            pricing=pricing, pricing_path=root / PRICING_PATH, stage=BUDGET_STAGE_KEY,
+        )
+        reservation = gate.reserve(
+            "stage-d1-paid-path-preflight", maximum_requests=1,
+            maximum_input_tokens_per_request=MAX_INPUT_TOKENS,
+            maximum_output_tokens_per_request=MAX_OUTPUT_TOKENS,
+        )
+        settlement = gate.cancel(reservation, reason="provider_confirmed_not_submitted")
+        ledger = BudgetLedger.model_validate_json(ledger_path.read_text(encoding="utf-8"))
+        if ledger.active_reservation is not None or ledger.request_charges or ledger.spent_cny != 0:
+            raise ValueError("Stage D.1 paid-path preflight did not close at zero cost")
+        result = {
+            "budget_stage_key": BUDGET_STAGE_KEY,
+            "preflight_reservation_cny": str(reservation.reserved_cny),
+            "preflight_cancellation_status": settlement.status,
+            "preflight_cancellation_settlement_cny": str(settlement.actual_cny),
+            "preflight_active_reservation": None,
+            "preflight_provider_requests": 0,
+            "preflight_usage": 0,
+            "preflight_charge": "0",
+            "preflight_verified_cost_cny": "0",
+            "preflight_ledger_sha256": _sha256(ledger_path),
+        }
+        if evidence_root is not None:
+            evidence_root.mkdir(parents=True, exist_ok=True)
+            _write_new(evidence_root / "paid-path-preflight-authorization.json", authorization.model_dump(mode="json"))
+            _write_new(evidence_root / "paid-path-preflight-ledger.json", ledger.model_dump(mode="json"))
+            _write_new(evidence_root / "paid-path-preflight.json", result)
+        return result
+
+
 def preflight(*, root: Path, freeze_path: Path, approved_commit: str,
               supplied_freeze_sha256: str, supplied_runtime_contract_hash: str,
-              supplied_pricing_hash: str, require_secret: bool) -> dict[str, Any]:
+              supplied_pricing_hash: str, require_secret: bool,
+              evidence_root: Path | None = None) -> dict[str, Any]:
     root = root.resolve()
     if not _COMMIT.fullmatch(approved_commit) or current_git_commit(root) != approved_commit:
         raise ValueError("Stage D.1 paid canary must use the approved immutable checkout")
@@ -151,6 +208,11 @@ def preflight(*, root: Path, freeze_path: Path, approved_commit: str,
         raise ValueError("the next maximum Provider request exceeds the CNY 15 authorization cap")
     if require_secret and "BAILIAN_API_KEY" not in os.environ:
         raise ValueError("Stage D.1 paid canary requires the configured Provider secret")
+    paid_path = _paid_path_preflight(
+        root=root, pricing=pricing,
+        authorization=_authorization(pricing_hash=identities["pricing_snapshot_hash"], approved_commit=approved_commit),
+        evidence_root=evidence_root,
+    )
     # This loads the generated isolated config without reading a credential or sending transport.
     with tempfile.TemporaryDirectory(prefix="codepacex-stage-d1-preflight-") as home_text:
         home = Path(home_text)
@@ -173,7 +235,8 @@ def preflight(*, root: Path, freeze_path: Path, approved_commit: str,
     return {
         "provider_requests": 0, "usage": 0, "charge": "0", "settlement": "0",
         "active_reservation": None, "approved_commit": approved_commit,
-        **identities, "next_request_maximum_cny": str(next_request),
+        "budget_stage_key": BUDGET_STAGE_KEY, **identities, **paid_path,
+        "next_request_maximum_cny": str(next_request),
         "theoretical_full_path_maximum_cny": str(next_request * MAX_REQUESTS * len(stage_d1_freeze.CANARY_INSTANCE_IDS)),
         "authorization_cap_cny": str(AUTHORIZATION_CAP),
     }
@@ -191,12 +254,7 @@ def prepare(*, root: Path, freeze_path: Path, evidence_root: Path, approved_comm
     paths = _paths(evidence_root.resolve())
     if any(path.exists() for path in paths.values()):
         raise ValueError("Stage D.1 evidence root is already initialized")
-    authorization = BudgetAuthorization(
-        authorized_total_cny=AUTHORIZATION_CAP,
-        stage_limits_cny={"A": AUTHORIZATION_CAP, "B": AUTHORIZATION_CAP, "C": AUTHORIZATION_CAP},
-        pricing_snapshot_hash=check["pricing_snapshot_hash"], experiment_commit=approved_commit,
-        authorized_at=_utc_now(),
-    )
+    authorization = _authorization(pricing_hash=check["pricing_snapshot_hash"], approved_commit=approved_commit)
     binding = {
         "schema_version": 1, "stage": "D.1", "experiment_kind": "stage-d1-live-tool-protocol-canary",
         "authorization_identity": authorization_identity, "approved_commit": approved_commit,
@@ -204,6 +262,7 @@ def prepare(*, root: Path, freeze_path: Path, evidence_root: Path, approved_comm
         "maximum_requests_per_instance": MAX_REQUESTS, "fallback_enabled": False,
         "automatic_retry": 0, "one_formal_candidate_per_instance": True,
         "rolling_per_request_reservation": True, "authorization_cap_cny": str(AUTHORIZATION_CAP),
+        "budget_stage_key": BUDGET_STAGE_KEY,
         "budget_authorization_sha256": stage_c_paid.authorization_hash(authorization), **check,
     }
     _write_new(paths["authorization"], authorization.model_dump(mode="json"))
@@ -220,8 +279,10 @@ def _gate(*, root: Path, evidence_root: Path) -> tuple[dict[str, Any], PaidRunGa
     authorization = BudgetAuthorization.model_validate_json(paths["authorization"].read_text(encoding="utf-8"))
     if binding.get("budget_authorization_sha256") != stage_c_paid.authorization_hash(authorization):
         raise ValueError("Stage D.1 authorization binding mismatch")
+    if binding.get("budget_stage_key") != BUDGET_STAGE_KEY or set(authorization.stage_limits_cny) != {BUDGET_STAGE_KEY}:
+        raise ValueError("Stage D.1 authorization does not use the registered budget stage key")
     gate = PaidRunGate(root=root.resolve(), authorization_path=paths["authorization"], ledger_path=paths["ledger"],
-                       pricing=load_pricing(root / PRICING_PATH), pricing_path=root / PRICING_PATH, stage="D.1")
+                       pricing=load_pricing(root / PRICING_PATH), pricing_path=root / PRICING_PATH, stage=BUDGET_STAGE_KEY)
     return binding, gate
 
 
@@ -368,12 +429,12 @@ def execute(*, root: Path, freeze_path: Path, evidence_root: Path, run_id: str, 
         statuses.setdefault(instance_id, "not_run")
     paths = _paths(evidence_root)
     ledger = BudgetLedger.model_validate_json(paths["ledger"].read_text(encoding="utf-8")) if paths["ledger"].exists() else BudgetLedger(authorization_hash="0" * 64, updated_at=_utc_now())
-    report = {"schema_version": 1, "stage": "D.1", "run_id": run_id, "task_ids": list(stage_d1_freeze.CANARY_INSTANCE_IDS),
+    report = {"schema_version": 1, "stage": "D.1", "budget_stage_key": BUDGET_STAGE_KEY, "run_id": run_id, "task_ids": list(stage_d1_freeze.CANARY_INSTANCE_IDS),
               "terminal_statuses": statuses, "task_records": task_records, "active_reservation": ledger.active_reservation.model_dump(mode="json") if ledger.active_reservation else None,
               "provider_requests": len(ledger.request_charges), "verified_cost_cny": str(ledger.spent_cny),
-              "claims": "two_task_protocol_canary_only", "stage_c_evidence_modified": False}
+              "claims": "one_task_protocol_canary_only", "stage_c_evidence_modified": False}
     _write_new(paths["report"], report)
-    artifact = {"schema_version": 1, "artifact_id": f"stage-d1-canary-{run_id}", "run_id": run_id,
+    artifact = {"schema_version": 1, "artifact_id": f"stage-d1-canary-{run_id}", "budget_stage_key": BUDGET_STAGE_KEY, "run_id": run_id,
                 "task_ids": list(stage_d1_freeze.CANARY_INSTANCE_IDS), "terminal_statuses": statuses,
                 "active_reservation": report["active_reservation"], "provider_requests": report["provider_requests"],
                 "ledger_sha256": _sha256(paths["ledger"]), "report_sha256": _sha256(paths["report"]),
@@ -393,6 +454,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         command.add_argument("--root", type=Path, required=True); command.add_argument("--freeze", type=Path, required=True)
         command.add_argument("--approved-commit", required=True); command.add_argument("--freeze-sha256", required=True)
         command.add_argument("--runtime-contract-hash", required=True); command.add_argument("--pricing-sha256", required=True)
+        if name == "preflight":
+            command.add_argument("--preflight-evidence-root", type=Path)
         if name == "prepare":
             command.add_argument("--evidence-root", type=Path, required=True); command.add_argument("--authorization-identity", required=True)
     execute_parser = sub.add_parser("execute")
@@ -401,7 +464,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     execute_parser.add_argument("--task-bundle", type=Path, required=True); execute_parser.add_argument("--confirm-paid-run", action="store_true")
     args = parser.parse_args(argv)
     if args.command == "build-task-bundle": result = build_task_bundle(source_dataset=args.source_dataset, output=args.output)
-    elif args.command == "preflight": result = preflight(root=args.root, freeze_path=args.freeze, approved_commit=args.approved_commit, supplied_freeze_sha256=args.freeze_sha256, supplied_runtime_contract_hash=args.runtime_contract_hash, supplied_pricing_hash=args.pricing_sha256, require_secret=True)
+    elif args.command == "preflight": result = preflight(root=args.root, freeze_path=args.freeze, approved_commit=args.approved_commit, supplied_freeze_sha256=args.freeze_sha256, supplied_runtime_contract_hash=args.runtime_contract_hash, supplied_pricing_hash=args.pricing_sha256, require_secret=True, evidence_root=args.preflight_evidence_root)
     elif args.command == "prepare": result = prepare(root=args.root, freeze_path=args.freeze, evidence_root=args.evidence_root, approved_commit=args.approved_commit, authorization_identity=args.authorization_identity, supplied_freeze_sha256=args.freeze_sha256, supplied_runtime_contract_hash=args.runtime_contract_hash, supplied_pricing_hash=args.pricing_sha256)
     else: result = execute(root=args.root, freeze_path=args.freeze, evidence_root=args.evidence_root, run_id=args.run_id, task_bundle=args.task_bundle, confirmed=args.confirm_paid_run)
     print(json.dumps(result, sort_keys=True)); return 0

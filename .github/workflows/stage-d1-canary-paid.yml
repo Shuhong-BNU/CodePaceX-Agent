@@ -93,13 +93,17 @@ jobs:
           git -C "$evaluator_root" checkout --detach ad79b850f15e33992e96f03f6e97f05ddf9aa0be
           test "$(git -C "$evaluator_root" rev-parse HEAD)" = ad79b850f15e33992e96f03f6e97f05ddf9aa0be
           python -m pip install -e "$evaluator_root"
-          python -m evals.stage_d1_paid preflight --root . --freeze evals/stage_d1/stage_d1_freeze.json --approved-commit '${{ inputs.approved_commit }}' --freeze-sha256 '${{ inputs.freeze_sha256 }}' --runtime-contract-hash '${{ inputs.runtime_contract_hash }}' --pricing-sha256 '${{ inputs.pricing_sha256 }}' > "$RUNNER_TEMP/stage-d1-preflight/preflight.json"
+          python -m evals.stage_d1_paid preflight --root . --freeze evals/stage_d1/stage_d1_freeze.json --approved-commit '${{ inputs.approved_commit }}' --freeze-sha256 '${{ inputs.freeze_sha256 }}' --runtime-contract-hash '${{ inputs.runtime_contract_hash }}' --pricing-sha256 '${{ inputs.pricing_sha256 }}' --preflight-evidence-root "$RUNNER_TEMP/stage-d1-preflight/paid-path" > "$RUNNER_TEMP/stage-d1-preflight/preflight.json"
           python - "$RUNNER_TEMP/stage-d1-preflight/preflight.json" <<'PY'
           import json, sys
           result = json.load(open(sys.argv[1], encoding='utf-8'))
           assert result['provider_requests'] == result['usage'] == 0
           assert result['charge'] == result['settlement'] == '0'
           assert result['active_reservation'] is None
+          assert result['budget_stage_key'] == 'STAGE_D1_CANARY'
+          assert result['preflight_cancellation_status'] == 'cancelled'
+          assert result['preflight_cancellation_settlement_cny'] == '0'
+          assert result['preflight_active_reservation'] is None
           PY
         working-directory: frozen-stage-d1
       - name: Scan zero-provider preflight evidence
