@@ -94,6 +94,7 @@ class Settlement(BaseModel):
     status: Literal["settled", "cancelled", "conservative_settled"]
     settlement_method: Literal[
         "provider_usage", "provider_confirmed_not_submitted",
+        "transport_connect_timeout",
         "conservative_reserved_amount",
     ] | None = None
     usage_status: Literal["known", "unknown"] = "known"
@@ -372,6 +373,43 @@ def reconcile_unknown_usage(
         settlement = _conservative_settlement(
             ledger, active, evidence_gap=evidence_gap,
         )
+        _write_ledger_atomic(ledger_path, ledger)
+        return settlement
+
+
+def reconcile_pretransport_connect_timeout(
+    ledger_path: Path, *, authorization: BudgetAuthorization, reservation_id: str,
+) -> Settlement:
+    """Close one historical reservation proven not to have reached transport.
+
+    The caller must provide the same frozen authorization.  A cancellation is
+    permitted only for the exact ``httpx.ConnectTimeout`` chain and only when
+    that reservation has neither a recorded charge nor a settlement.  This
+    preserves every historical charge and settlement byte-for-byte while making
+    the explicit CNY-zero cancellation auditable.
+    """
+    lock_path = ledger_path.with_suffix(ledger_path.suffix + ".lock")
+    with _exclusive_ledger_lock(lock_path):
+        ledger = BudgetLedger.model_validate_json(ledger_path.read_text(encoding="utf-8"))
+        if ledger.authorization_hash != authorization_hash(authorization):
+            raise ValueError("budget ledger belongs to a different authorization")
+        active = ledger.active_reservation
+        if active is None or active.reservation_id != reservation_id:
+            raise ValueError("requested reservation is not active")
+        if "httpx.ConnectTimeout" not in (active.failure_type or ""):
+            raise ValueError("reservation is not proven to be a pre-transport connect timeout")
+        if any(item.reservation_id == reservation_id for item in ledger.request_charges):
+            raise ValueError("connect-timeout reservation already has a Provider charge")
+        if any(item.reservation_id == reservation_id for item in ledger.settlements):
+            raise ValueError("connect-timeout reservation already has a settlement")
+        settlement = Settlement(
+            reservation_id=active.reservation_id, trial_id=active.trial_id,
+            stage=active.stage, requests=0, input_tokens=0, output_tokens=0,
+            actual_cny=Decimal("0"), status="cancelled",
+            settlement_method="transport_connect_timeout", settled_at=_utc_now(),
+        )
+        ledger.settlements.append(settlement)
+        ledger.active_reservation = None
         _write_ledger_atomic(ledger_path, ledger)
         return settlement
 
@@ -851,14 +889,14 @@ class PaidRunGate:
 
     def cancel(
         self, reservation: Reservation, *,
-        reason: Literal["provider_confirmed_not_submitted"],
+        reason: Literal["provider_confirmed_not_submitted", "transport_connect_timeout"],
     ) -> Settlement:
         with self.locked():
             return self._cancel(reservation, reason=reason)
 
     def _cancel(
         self, reservation: Reservation, *,
-        reason: Literal["provider_confirmed_not_submitted"],
+        reason: Literal["provider_confirmed_not_submitted", "transport_connect_timeout"],
     ) -> Settlement:
         ledger = self._load_ledger()
         active = ledger.active_reservation
@@ -1161,6 +1199,20 @@ class ProviderRequestBudget:
     ) -> Reservation:
         return self.gate.record_request_failure(
             reservation, failure_type=failure_type,
+        )
+
+    def cancel_connect_timeout_before_transport(
+        self, reservation: Reservation,
+    ) -> Settlement:
+        """Close a reservation only for a TCP connection timeout.
+
+        ``httpx.ConnectTimeout`` means the HTTP connection was not established,
+        so no Provider request could have reached the service.  Other transport
+        failures remain fail-closed with an active reservation because their
+        Provider Usage is not knowable from the client.
+        """
+        return self.gate.cancel(
+            reservation, reason="transport_connect_timeout",
         )
 
     def settle_after_usage(

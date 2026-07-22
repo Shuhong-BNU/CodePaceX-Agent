@@ -19,6 +19,7 @@ from evals.paid_gate import (
     authorization_hash,
     ledger_fingerprint,
     load_authorization,
+    reconcile_pretransport_connect_timeout,
     reconcile_unknown_usage,
     rebind_ledger_authorization,
     worst_case_reservation,
@@ -509,6 +510,56 @@ def test_request_failure_persists_trial_ordinal_and_keeps_reservation(tmp_path: 
     assert recorded.failure_type == "openai.APITimeoutError/httpx.ConnectTimeout"
     assert recorded.failure_recorded_at is not None
     assert ledger.active_reservation == recorded
+    assert not ledger.request_charges
+    assert not ledger.settlements
+
+
+def test_connect_timeout_cancellation_closes_only_its_reservation(tmp_path: Path) -> None:
+    gate = _gate(tmp_path)
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ):
+        reservation = gate.reserve(
+            "swe/run/preconnect-timeout", maximum_requests=1,
+            maximum_input_tokens_per_request=128_000,
+            maximum_output_tokens_per_request=8192,
+        )
+    before = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
+    gate.record_request_failure(
+        reservation,
+        failure_type="openai.APITimeoutError/httpx.ConnectTimeout",
+    )
+    settlement = reconcile_pretransport_connect_timeout(
+        gate.ledger_path, authorization=load_authorization(tmp_path / "authorization.json"),
+        reservation_id=reservation.reservation_id,
+    )
+    after = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
+    assert before.request_charges == after.request_charges == []
+    assert before.settlements == []
+    assert after.active_reservation is None
+    assert settlement.status == "cancelled"
+    assert settlement.settlement_method == "transport_connect_timeout"
+    assert settlement.actual_cny == Decimal("0")
+
+
+def test_connect_timeout_reconciliation_refuses_unproven_network_failure(tmp_path: Path) -> None:
+    gate = _gate(tmp_path)
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ):
+        reservation = gate.reserve(
+            "swe/run/unknown-network-failure", maximum_requests=1,
+            maximum_input_tokens_per_request=128_000,
+            maximum_output_tokens_per_request=8192,
+        )
+    gate.record_request_failure(reservation, failure_type="openai.APIConnectionError")
+    with pytest.raises(ValueError, match="not proven"):
+        reconcile_pretransport_connect_timeout(
+            gate.ledger_path, authorization=load_authorization(tmp_path / "authorization.json"),
+            reservation_id=reservation.reservation_id,
+        )
+    ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
+    assert ledger.active_reservation is not None
     assert not ledger.request_charges
     assert not ledger.settlements
 
