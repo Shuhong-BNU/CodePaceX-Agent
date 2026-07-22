@@ -437,7 +437,10 @@ class ValidationController:
                 exit_code=exit_code, timed_out=timed_out, output=output,
             )
             self._observations[tool_call_id] = observation
-            if operation is OperationClass.IMPLEMENTATION_WRITE:
+            # Opaque commands are gated before execution and must also invalidate
+            # test evidence afterwards: a wrapper script or MCP tool may write
+            # implementation files even when static classification cannot prove it.
+            if operation in {OperationClass.IMPLEMENTATION_WRITE, OperationClass.UNKNOWN_SIDE_EFFECT}:
                 self._edit_sequence += 1
                 for obligation in self._obligations.values():
                     obligation.last_result = "STALE"

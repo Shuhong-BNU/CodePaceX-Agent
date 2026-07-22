@@ -94,6 +94,21 @@ def test_target_and_regression_gate_require_post_edit_evidence(tmp_path: Path) -
     assert controller.assess_completion(agent_id="agent").status is CompletionStatus.VALIDATED_COMPLETE
 
 
+def test_unknown_side_effect_invalidates_prior_test_evidence(tmp_path: Path) -> None:
+    controller = ValidationController(ValidationProfile.stage_b(), state_dir=tmp_path)
+    _ready(controller)
+    _observe(controller, "target-before", "pytest tests/test_target.py", error=False,
+             output="1 passed", exit_code=0)
+    assert controller.assess_completion(agent_id="agent").allowed
+
+    _observe(controller, "opaque-write", "./generate_sources.sh", error=False,
+             output="generated source", exit_code=0)
+
+    decision = controller.assess_completion(agent_id="agent")
+    assert not decision.allowed
+    assert any("target test" in item and "STALE" in item for item in decision.blockers)
+
+
 def test_new_regression_is_not_hidden_by_target_test(tmp_path: Path) -> None:
     controller = ValidationController(ValidationProfile.stage_b(), state_dir=tmp_path)
     _ready(controller)
