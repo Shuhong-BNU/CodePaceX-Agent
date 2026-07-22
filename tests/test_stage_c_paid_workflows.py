@@ -28,7 +28,8 @@ def test_paid_phase_one_binds_commit_hashes_and_never_autostarts_phase_two() -> 
     for value in (
         "approved_commit", "freeze_sha256", "pricing_sha256", "authorization_identity",
         "task_bundle_artifact_id", "task_bundle_sha256", "--confirm-paid-run",
-        "stage-c-phase-1", "evals.stage_c_paid execute-phase",
+        "stage-c-phase-1", "workflow-pretransport.json", "mapfile -t task_bundles",
+        "${#task_bundles[@]}", "evals.stage_c_paid execute-phase",
     ):
         assert value in source
     assert "stage-c-continuation-paid.yml" not in source
