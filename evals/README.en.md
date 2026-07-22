@@ -154,3 +154,10 @@ has a `PHASE_2_NO_GO` decision. Its preserved zero-provider root-cause analysis
 is indexed in [`stage_d/phase1_analysis/`](stage_d/phase1_analysis/). Stage D is
 a separate protocol-unblocker effort; this index neither changes Goal 4 nor
 overwrites Stage C evidence.
+
+The two-task Stage D canary Freeze, runtime contract, and Claims boundary are
+in [`STAGE_D_CHARTER.md`](STAGE_D_CHARTER.md),
+[`STAGE_D_FREEZE_REPORT.md`](STAGE_D_FREEZE_REPORT.md), and
+[`STAGE_D_CLAIMS_BOUNDARY.md`](STAGE_D_CLAIMS_BOUNDARY.md). The Freeze does not
+authorize paid execution or create a Stage C Phase 2, six-task, or twenty-task
+result.

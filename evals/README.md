@@ -158,3 +158,8 @@ Stage C Phase 1 已完成六题可评分终态，结果为 0 resolved / 6 unreso
 `PHASE_2_NO_GO` 决定。保留的 zero-provider 根因分析索引位于
 [`stage_d/phase1_analysis/`](stage_d/phase1_analysis/)。Stage D 是独立的协议解锁
 工作；该索引不会修改 Goal 4 或覆盖 Stage C 的既有证据。
+
+Stage D 的两题 canary Freeze、运行时合同和 Claims 边界见
+[`STAGE_D_CHARTER.md`](STAGE_D_CHARTER.md)、[`STAGE_D_FREEZE_REPORT.md`](STAGE_D_FREEZE_REPORT.md)
+和 [`STAGE_D_CLAIMS_BOUNDARY.md`](STAGE_D_CLAIMS_BOUNDARY.md)。Freeze 默认不授权
+paid execution，且不构成 Stage C Phase 2 或新的六题/二十题结果。
