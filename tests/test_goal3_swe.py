@@ -136,6 +136,21 @@ def test_goal3_collector_rejects_missing_report(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize(("field", "resolved"), [("resolved_ids", True), ("unresolved_ids", False), ("empty_patch_ids", False)])
+def test_goal3_collector_reads_frozen_summary_report(tmp_path: Path, field: str, resolved: bool) -> None:
+    report = tmp_path / "model.run.json"
+    report.write_text(json.dumps({
+        "schema_version": 2, "resolved_ids": [], "resolved_instances": [],
+        "unresolved_ids": [], "unresolved_instances": [], "empty_patch_ids": [],
+        field: ["case"],
+    }), encoding="utf-8")
+    path = goal3_swe.official_evaluator_report_path(
+        cwd=tmp_path, run_id="run", model_id="model", instance_id="case",
+    )
+    assert path == report
+    assert goal3_swe.collect_goal3_official_outcome(path, "case") is resolved
+
+
 @pytest.mark.parametrize("status", ["infrastructure_error", "provider_error", "agent_error"])
 def test_goal3_terminal_events_preserve_the_original_trial_id(
     tmp_path: Path, status: str,

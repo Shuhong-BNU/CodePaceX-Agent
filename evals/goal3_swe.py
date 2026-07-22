@@ -940,15 +940,20 @@ def collect_official_outcomes(report_root: Path, required_ids: set[str]) -> dict
 
 def collect_goal3_official_outcome(report_path: Path, instance_id: str) -> bool:
     """Validate one exact frozen-evaluator report for one Goal 3 Trial."""
-    if report_path.name != "report.json" or not report_path.is_file():
+    if not report_path.is_file():
         raise ValueError("official evaluator report is missing")
-    candidates = sorted(report_path.parent.glob("report*.json"))
-    if candidates != [report_path]:
-        raise ValueError("official evaluator report candidates are ambiguous")
     try:
         payload = json.loads(report_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError("official evaluator report is unreadable") from exc
+    if report_path.name != "report.json":
+        if not isinstance(payload, dict) or payload.get("schema_version") != 2:
+            raise ValueError("official evaluator summary report has an invalid schema")
+        outcomes = collect_official_outcomes(report_path.parent, {instance_id})
+        return outcomes[instance_id]
+    candidates = sorted(report_path.parent.glob("report*.json"))
+    if candidates != [report_path]:
+        raise ValueError("official evaluator report candidates are ambiguous")
     required = {"patch_is_None", "patch_exists", "patch_successfully_applied", "resolved", "tests_status"}
     if not isinstance(payload, dict) or set(payload) != {instance_id}:
         raise ValueError("official evaluator report does not match the current instance")
