@@ -55,6 +55,10 @@ class _FakeBudget:
         assert "httpx.ConnectTimeout" in failure_type
         self.calls.append("failure")
 
+    def cancel_connect_timeout_before_transport(self, reservation: object) -> None:
+        assert reservation is self.reservation
+        self.calls.append("connect_timeout_cancel")
+
 
 def _client() -> OpenAICompatClient:
     return OpenAICompatClient(ProviderConfig(
@@ -135,7 +139,7 @@ async def test_compat_client_keeps_reservation_when_provider_returns_no_usage(mo
 
 
 @pytest.mark.asyncio
-async def test_compat_client_does_not_retry_or_settle_after_connect_timeout(monkeypatch) -> None:
+async def test_compat_client_closes_reservation_without_retry_after_connect_timeout(monkeypatch) -> None:
     budget = _FakeBudget()
     client = _client()
     calls = 0
@@ -161,7 +165,7 @@ async def test_compat_client_does_not_retry_or_settle_after_connect_timeout(monk
         async for _event in client.stream(conversation):
             pass
     assert calls == 1
-    assert budget.calls == ["reserve", "failure"]
+    assert budget.calls == ["reserve", "connect_timeout_cancel"]
 
 
 @pytest.mark.asyncio
