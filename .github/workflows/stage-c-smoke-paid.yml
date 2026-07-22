@@ -48,6 +48,18 @@ on:
         required: false
         default: ''
         type: string
+      continuation_source_run_id:
+        required: false
+        default: ''
+        type: string
+      continuation_source_artifact_id:
+        required: false
+        default: ''
+        type: string
+      continuation_source_archive_sha256:
+        required: false
+        default: ''
+        type: string
 
 permissions:
   actions: read
@@ -123,13 +135,24 @@ jobs:
           python -m pip install -e "$evaluator_root"
           python -m evals.goal3_swe preflight
       - name: Validate the immutable inputs and execute Phase 1 serially
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mapfile -t task_bundles < <(find "$RUNNER_TEMP/stage-c-task-bundle" -type f -name tasks.jsonl -print)
           test "${#task_bundles[@]}" -eq 1
           task_bundle="${task_bundles[0]}"
           test "$(sha256sum "$task_bundle" | awk '{print $1}')" = '${{ inputs.task_bundle_sha256 }}'
-          python -m evals.stage_c_paid prepare-phase --root . --freeze-dir evals/stage_c --evidence-root "$RUNNER_TEMP/stage-c-phase-1" --phase phase_1 --approved-commit '${{ inputs.approved_commit }}' --authorization-identity '${{ inputs.authorization_identity }}' --freeze-sha256 '${{ inputs.freeze_sha256 }}' --pricing-sha256 '${{ inputs.pricing_sha256 }}'
+          if test -n '${{ inputs.continuation_source_artifact_id }}'; then
+            test -n '${{ inputs.continuation_source_run_id }}'
+            test -n '${{ inputs.continuation_source_archive_sha256 }}'
+            source_root="$RUNNER_TEMP/stage-c-phase-1-source"
+            gh run download '${{ inputs.continuation_source_run_id }}' --repo '${{ github.repository }}' -n 'stage-c-phase-1-${{ inputs.continuation_source_run_id }}' -D "$source_root"
+            test "$(gh api "repos/${{ github.repository }}/actions/artifacts/${{ inputs.continuation_source_artifact_id }}" --jq .digest)" = "sha256:${{ inputs.continuation_source_archive_sha256 }}"
+            python -m evals.stage_c_paid prepare-phase1-continuation --root . --freeze-dir evals/stage_c --evidence-root "$RUNNER_TEMP/stage-c-phase-1" --source-root "$source_root" --source-artifact-id '${{ inputs.continuation_source_artifact_id }}' --source-archive-sha256 '${{ inputs.continuation_source_archive_sha256 }}' --authorization-identity '${{ inputs.authorization_identity }}'
+          else
+            python -m evals.stage_c_paid prepare-phase --root . --freeze-dir evals/stage_c --evidence-root "$RUNNER_TEMP/stage-c-phase-1" --phase phase_1 --approved-commit '${{ inputs.approved_commit }}' --authorization-identity '${{ inputs.authorization_identity }}' --freeze-sha256 '${{ inputs.freeze_sha256 }}' --pricing-sha256 '${{ inputs.pricing_sha256 }}'
+          fi
           python -m evals.stage_c_paid execute-phase --confirm-paid-run --root . --freeze-dir evals/stage_c --evidence-root "$RUNNER_TEMP/stage-c-phase-1" --phase phase_1 --run-id '${{ inputs.run_id }}' --task-bundle "$task_bundle"
       - name: Scan terminal evidence without printing credentials
         if: always()
