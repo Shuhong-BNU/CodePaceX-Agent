@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -16,9 +17,12 @@ from codepacex.permissions.sandbox import PathSandbox
 from codepacex.tools.edit_file import EditFile, Params as EditParams
 from codepacex.tools.run_test import RunTest, RunTestParams
 from codepacex.tools import ToolRegistry
-from codepacex.tools.base import StreamEnd, ToolCallComplete
+from codepacex.tools.base import RuntimeManifestEvent, StreamEnd, ToolCallComplete
 from codepacex.tools.validation_checkpoint import ValidationCheckpoint, ValidationCheckpointParams
 from codepacex.validation import OperationClass, ValidationController, ValidationProfile, classify_bash_command
+
+
+FIXTURE_PATH = Path(__file__).parent / "fixtures/stage_d_canary_contract_inventory_payloads.json"
 
 
 def _inventory() -> dict:
@@ -32,6 +36,13 @@ def _inventory() -> dict:
         "target_tests": [{"command": "pytest test_app.py", "scope": ["test_app.py"]}],
         "regression_tests": [{"command": "pytest test_app.py"}], "known_unknowns": [],
     }
+
+
+def _model_facing_inventory() -> dict:
+    inventory = _inventory()
+    inventory["target_tests"] = [{"file": "test_app.py", "name": "test_increment"}]
+    inventory["regression_tests"] = [{"file": "test_app.py", "name": "test_increment"}]
+    return inventory
 
 
 def _checker(root: Path) -> PermissionChecker:
@@ -55,6 +66,7 @@ class _ScriptedClient:
     async def stream(self, *args, **kwargs):
         response = self._responses[self._call]
         self._call += 1
+        yield RuntimeManifestEvent("fixture", "openai-compat", "fixture", "system", "tools", "messages")
         for event in response:
             yield event
 
@@ -110,17 +122,31 @@ async def test_stage_d_live_like_edit_test_export_loop(tmp_path: Path) -> None:
 async def test_stage_d_scripted_agent_executes_the_unblocked_tool_path(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text("def increment(value):\n    return value\n", encoding="utf-8")
     (tmp_path / "test_app.py").write_text("from app import increment\n\ndef test_increment():\n    assert increment(1) == 2\n", encoding="utf-8")
-    test_args = {"cwd": str(tmp_path), "argv": ["test_app.py"]}
-    inventory = _inventory()
-    client = _ScriptedClient([
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "-c", "user.email=test@example.invalid", "-c", "user.name=Test", "commit", "-qm", "initial"], cwd=tmp_path, check=True)
+    test_args = {"cwd": str(tmp_path), "argv": ["test_app.py::test_increment"]}
+    inventory = json.dumps(_model_facing_inventory())
+    responses: list[list[object]] = [
         [ToolCallComplete("repro", "RunTest", test_args), StreamEnd("tool_use")],
         [ToolCallComplete("reproduction", "ValidationCheckpoint", {"action": "record_reproduction", "use_recent_observed_result": True, "reproduction_status": "observed_failure"}), StreamEnd("tool_use")],
         [ToolCallComplete("inventory", "ValidationCheckpoint", {"action": "declare_contract_inventory", "contract_inventory": inventory}), StreamEnd("tool_use")],
         [ToolCallComplete("baseline", "RunTest", test_args), StreamEnd("tool_use")],
         [ToolCallComplete("edit", "EditFile", {"file_path": str(tmp_path / "app.py"), "old_string": "return value", "new_string": "return value + 1"}), StreamEnd("tool_use")],
         [ToolCallComplete("post", "RunTest", test_args), StreamEnd("tool_use")],
-        [StreamEnd("end_turn")],
-    ])
+    ]
+    # Request 20 causes the real Agent loop to mark a checkpoint pending.
+    responses.extend([[ToolCallComplete(f"post-{index}", "RunTest", test_args), StreamEnd("tool_use")] for index in range(7, 20)])
+    responses.append([ToolCallComplete("checkpoint-20", "ValidationCheckpoint", {
+        "action": "ack_request_checkpoint", "checkpoint_ordinal": 20,
+        "checkpoint_summary": "post-edit target and regression tests passed",
+        "checkpoint_details": json.dumps({
+            "reproduction_status": "observed_failure", "root_cause_hypothesis": "off by one",
+            "inventory_revision": 1, "target_tests_registered": 1, "target_tests_executed": 1,
+        }),
+    }), StreamEnd("tool_use")])
+    responses.append([StreamEnd("end_turn")])
+    client = _ScriptedClient(responses)
     registry = ToolRegistry()
     registry.register(EditFile())
     agent = Agent(
@@ -134,6 +160,50 @@ async def test_stage_d_scripted_agent_executes_the_unblocked_tool_path(tmp_path:
     assert summary["reproduction"]["evidence_reference"] == "repro"
     assert summary["regression_comparisons"][0]["baseline"]["exit_code"] == 1
     assert summary["regression_comparisons"][0]["post"]["exit_code"] == 0
+    assert summary["acknowledged_checkpoints"] == [20]
+    assert agent.validation_controller.assess_completion(agent_id="agent").allowed
+    workspace_diff = subprocess.run(["git", "diff", "--", "app.py"], cwd=tmp_path, text=True, capture_output=True, check=True).stdout
+    from evals.goal3_swe import _goal3_extract_patch
+    candidate_patch = _goal3_extract_patch(tmp_path)
+    assert candidate_patch and candidate_patch == workspace_diff
+
+
+@pytest.mark.asyncio
+async def test_stage_d_canary_inventory_json_string_fixture_normalizes_once(tmp_path: Path) -> None:
+    fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+    assert fixture["source"]["trace_verified_declare_contract_inventory_count"] == 8
+    assert len(fixture["payloads"]) == 8
+    accepted = 0
+    for index, payload in enumerate(fixture["payloads"]):
+        controller = ValidationController(ValidationProfile.stage_b(), state_dir=tmp_path / str(index) / ".validation")
+        checkpoint = ValidationCheckpoint(controller, "agent")
+        result = await checkpoint.execute(ValidationCheckpointParams(**payload))
+        events = controller.drain_events()
+        telemetry = [event.payload for event in events if event.event_type == "validation_payload_normalization"]
+        assert telemetry == [{
+            "field": "contract_inventory", "original_type": "str", "normalized": True,
+            "normalization_success": True,
+            "validation_result": "accepted" if not result.is_error else "rejected",
+        }]
+        accepted += not result.is_error
+    # The first three raw Canary payloads are complete object-shaped inventories.
+    assert accepted == 3
+
+
+@pytest.mark.asyncio
+async def test_inventory_normalization_rejects_non_json_double_encoded_and_unknown_fields(tmp_path: Path) -> None:
+    controller = ValidationController(ValidationProfile.stage_b(), state_dir=tmp_path / ".validation")
+    checkpoint = ValidationCheckpoint(controller, "agent")
+    for value in ("explain the inventory", "{not-json", json.dumps(json.dumps(_inventory())), "[]"):
+        result = await checkpoint.execute(ValidationCheckpointParams(action="declare_contract_inventory", contract_inventory=value))
+        assert result.is_error
+        assert '"normalization_success": false' in result.output
+    unknown = {**_inventory(), "unexpected": "field"}
+    result = await checkpoint.execute(ValidationCheckpointParams(action="declare_contract_inventory", contract_inventory=json.dumps(unknown)))
+    assert result.is_error
+    assert '"normalization_success": true' in result.output
+    with pytest.raises(ValidationError):
+        ValidationCheckpointParams(action="declare_contract_inventory", contract_inventory=_inventory(), invented_field=True)
 
 
 @pytest.mark.asyncio

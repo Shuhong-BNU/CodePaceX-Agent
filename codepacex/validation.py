@@ -29,6 +29,7 @@ INVENTORY_FIELDS = (
     "implementations", "config_surfaces", "default_values", "serialization_surfaces",
     "fixtures", "target_tests", "regression_tests", "known_unknowns",
 )
+_PYTEST_SELECTOR = re.compile(r"^[A-Za-z0-9_./-]+(?:::[A-Za-z0-9_.]+)*$")
 EXCEPTION_REASONS = frozenset({
     "environment_unavailable", "dependency_unavailable", "network_required",
     "test_not_runnable", "issue_not_reproducible", "external_service_unavailable",
@@ -542,7 +543,7 @@ class ValidationController:
                     self._exception = {name: payload[name] for name in ("reason_code", *required)}
                 elif action in {"declare_contract_inventory", "amend_contract_inventory"}:
                     inventory = payload.get("inventory")
-                    if not isinstance(inventory, dict) or any(name not in inventory for name in INVENTORY_FIELDS):
+                    if not isinstance(inventory, dict) or set(inventory) != set(INVENTORY_FIELDS):
                         raise ValueError("contract inventory is missing required fields")
                     if action == "amend_contract_inventory" and self._inventory is None:
                         raise ValueError("cannot amend a missing inventory")
@@ -586,6 +587,24 @@ class ValidationController:
             self._emit("validation_declaration", agent_id=agent_id, parent_agent_id=parent_agent_id,
                        action=action, revision=self._inventory_revision)
             return ValidationDecision(True, OperationClass.READ_ONLY)
+
+    def record_payload_normalization(
+        self,
+        *,
+        agent_id: str,
+        parent_agent_id: str | None,
+        telemetry: dict[str, Any],
+    ) -> None:
+        """Persist type-only normalization telemetry without retaining payload data."""
+        if not self.enabled:
+            return
+        with self._state_lock():
+            self._emit(
+                "validation_payload_normalization",
+                agent_id=agent_id,
+                parent_agent_id=parent_agent_id,
+                **telemetry,
+            )
 
     def latest_observed_tool_call_id(self) -> str | None:
         """Return the most recent actual tool result, never a model-supplied id."""
@@ -647,8 +666,7 @@ class ValidationController:
         if not isinstance(values, list) or not values:
             raise ValueError("at least one target test is required")
         for value in values:
-            if not isinstance(value, dict) or not isinstance(value.get("command"), str) or not value["command"].strip():
-                raise ValueError("target tests require a command")
+            value = self._canonical_test_spec(value)
             obligation_id = str(value.get("obligation_id") or uuid.uuid4().hex[:12])
             command = normalize_command(value["command"])
             self._obligations[obligation_id] = TestObligation(
@@ -661,13 +679,29 @@ class ValidationController:
         if not isinstance(values, list) or not values:
             raise ValueError("at least one bounded regression test is required")
         for value in values:
-            command = value.get("command") if isinstance(value, dict) else value
-            if not isinstance(command, str) or not command.strip():
-                raise ValueError("regression tests require a command")
+            value = self._canonical_test_spec(value)
+            command = value["command"]
             normalized = normalize_command(command)
             self._regression.setdefault(command_fingerprint(normalized), {
                 "command": normalized, "fingerprint": command_fingerprint(normalized), "baseline": None, "post": None,
             })
+
+    @staticmethod
+    def _canonical_test_spec(value: Any) -> dict[str, Any]:
+        """Accept only bounded command specs or the model-facing file/name form."""
+        if not isinstance(value, dict):
+            raise ValueError("tests require a structured command or file/name reference")
+        if "command" in value:
+            allowed = {"command", "scope", "obligation_id", "required"}
+            if set(value) - allowed or not isinstance(value["command"], str) or not value["command"].strip():
+                raise ValueError("tests require a bounded command")
+            return value
+        if set(value) != {"file", "name"}:
+            raise ValueError("tests require only file and name when command is omitted")
+        file_name, name = value.get("file"), value.get("name")
+        if not isinstance(file_name, str) or not isinstance(name, str) or not _PYTEST_SELECTOR.fullmatch(f"{file_name}::{name}"):
+            raise ValueError("tests require a bounded pytest file/name reference")
+        return {"command": f"pytest {file_name}::{name}", "scope": [file_name]}
 
     def assess_completion(self, *, agent_id: str, parent_agent_id: str | None = None) -> CompletionDecision:
         if not self.enabled:

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from evals.benchmark import current_git_commit
 from evals import stage_d_freeze, stage_d_paid
 from evals.paid_gate import BudgetLedger
@@ -50,45 +52,14 @@ def _prepare(tmp_path: Path) -> Path:
     return evidence
 
 
-def test_stage_d_preflight_and_authorization_are_zero_provider(tmp_path: Path, monkeypatch: object) -> None:
-    identities = _identities()
-    monkeypatch.setenv("BAILIAN_API_KEY", "offline-stage-d-fixture")
-    result = stage_d_paid.preflight(
-        root=ROOT, freeze_path=FREEZE, approved_commit=current_git_commit(ROOT),
-        supplied_freeze_sha256=identities["freeze_sha256"],
-        supplied_runtime_contract_hash=identities["runtime_contract_hash"],
-        supplied_pricing_hash=identities["pricing_snapshot_hash"], require_secret=False,
-    )
-    assert result["provider_requests"] == result["usage"] == 0
-    assert result["active_reservation"] is None
-    assert result["next_request_maximum_cny"] == "1.830912"
-    evidence = _prepare(tmp_path)
-    ledger = BudgetLedger.model_validate_json((evidence / "terminal-ledger.json").read_text(encoding="utf-8"))
-    assert ledger.spent_cny == 0
-    assert ledger.active_reservation is None
-    assert ledger.request_charges == ledger.settlements == []
+def test_stage_d_historical_paid_runner_refuses_changed_runtime_without_provider() -> None:
+    with pytest.raises(ValueError, match="Stage D Freeze differs"):
+        _identities()
 
 
-def test_stage_d_execute_empty_candidate_stops_without_provider(tmp_path: Path, monkeypatch: object) -> None:
-    evidence = _prepare(tmp_path)
-    bundle = _bundle(tmp_path)
-
-    def empty_executor(_task: object, _environment: object, _workspace: object) -> stage_d_paid.TaskExecution:
-        return stage_d_paid.TaskExecution("", "", "", 0)
-
-    # The runner source is intentionally dirty while this unit test is running;
-    # the paid workflow uses a separate clean immutable Freeze checkout.
-    monkeypatch.setattr("evals.paid_gate._git_is_clean", lambda _root: True)
-    artifact = stage_d_paid.execute(root=ROOT, freeze_path=FREEZE, evidence_root=evidence,
-                                    run_id="stage-d-zero-provider-test", task_bundle=bundle,
-                                    confirmed=True, executor=empty_executor)
-    assert artifact["terminal_statuses"] == {
-        stage_d_freeze.CANARY_INSTANCE_IDS[0]: "infrastructure_error",
-        stage_d_freeze.CANARY_INSTANCE_IDS[1]: "not_run",
-    }
-    ledger = BudgetLedger.model_validate_json((evidence / "terminal-ledger.json").read_text(encoding="utf-8"))
-    assert ledger.request_charges == ledger.settlements == []
-    assert ledger.active_reservation is None
+def test_stage_d_historical_runner_cannot_prepare_new_evidence_on_d1_source(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="Stage D Freeze differs"):
+        _prepare(tmp_path)
 
 
 def test_stage_d_paid_workflow_is_manual_and_closed_by_default() -> None:
