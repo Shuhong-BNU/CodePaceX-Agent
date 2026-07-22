@@ -24,6 +24,9 @@ RUNTIME_SOURCE_PATHS = (
     "codepacex/tools/validation_checkpoint.py",
     "codepacex/tools/run_test.py",
     "codepacex/permissions/checker.py",
+    "evals/paid_gate.py",
+    "evals/stage_d1_paid.py",
+    ".github/workflows/stage-d1-canary-paid.yml",
 )
 
 
@@ -60,6 +63,8 @@ def runtime_contract_payload(root: Path) -> dict[str, Any]:
             "bounded_pytest_argv",
             "permission_chain_after_reproduction",
             "completion_gate",
+            "stage_d1_registered_budget_key",
+            "pretransport_reservation_cancellation",
         ],
     }
 
@@ -92,6 +97,7 @@ def freeze_payload(root: Path) -> dict[str, Any]:
             "strict_serial": True,
             "one_formal_candidate_per_instance": True,
             "authorization_cap_cny": "15",
+            "budget_stage_key": "STAGE_D1_CANARY",
             "rolling_per_request_reservation": True,
         },
         "canary_instance_ids": list(CANARY_INSTANCE_IDS),

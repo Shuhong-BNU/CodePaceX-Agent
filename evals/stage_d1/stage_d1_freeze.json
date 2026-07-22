@@ -35,6 +35,7 @@
     "authorization_cap_cny": "15",
     "automatic_retry": 0,
     "base_url": "https://llm-ipge9fy38w648m28.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    "budget_stage_key": "STAGE_D1_CANARY",
     "fallback_enabled": false,
     "maximum_requests_per_instance": 40,
     "model_id": "qwen3.7-max-2026-06-08",
@@ -65,14 +66,19 @@
       "recent_observed_result_binding",
       "bounded_pytest_argv",
       "permission_chain_after_reproduction",
-      "completion_gate"
+      "completion_gate",
+      "stage_d1_registered_budget_key",
+      "pretransport_reservation_cancellation"
     ],
     "runtime_source_sha256": {
+      ".github/workflows/stage-d1-canary-paid.yml": "c16e829c650ba2dd18f0d03c90664340ac6b46960239ded61348c4af0bb9357f",
       "codepacex/agent.py": "cb8ab5ae16c2e41382c6a603c6f60be988db3c4e73100a3f08efb5bb2426050f",
       "codepacex/permissions/checker.py": "bab12d8cde66fac86bdb6df8e63c8540e0dba43dd8b2ae461047144afa380cd2",
       "codepacex/tools/run_test.py": "19335d85dbd43ea6062e419bfcc089eb98da15c928bb1fcb6280705bc27b52fe",
       "codepacex/tools/validation_checkpoint.py": "28932c101130d40ab9677432b0682e8a60b178554c5c06e48a561ce260d62519",
-      "codepacex/validation.py": "ac3d7ff6adbabb6f0f23b6142fdc15462ae8a03936b920e68b8612313984daba"
+      "codepacex/validation.py": "ac3d7ff6adbabb6f0f23b6142fdc15462ae8a03936b920e68b8612313984daba",
+      "evals/paid_gate.py": "0cc8c119346cf64f29254f9737ca45f5081780c26d0a7740fe8e3c91157b21df",
+      "evals/stage_d1_paid.py": "d5c0c1dd0c2cd4a74c1a75d0cc80f6a732be33bf976dc81137ed165c4d770d32"
     },
     "schema_version": 1,
     "tool_parameter_schema_sha256": {
@@ -80,7 +86,7 @@
       "ValidationCheckpoint": "12d0f1f7924f8ca5cbf286a40c4db172fd5c240b998744a29c122b199efa5298"
     }
   },
-  "runtime_contract_hash": "7c83a7623374c8679def9b92e31817a911aec7aabff01f3dc3cdf4dbd0bc7f45",
+  "runtime_contract_hash": "dc6302be4f0134bde5b60493939b577dd11d77587ae31f3ca0d3512fde118821",
   "schema_version": 1,
   "stage": "D.1",
   "status": "frozen_zero_provider_single_task_canary_not_authorized",
