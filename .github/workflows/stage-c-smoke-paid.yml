@@ -1,0 +1,122 @@
+name: Stage C Phase 1 paid execution
+
+on:
+  workflow_dispatch:
+    inputs:
+      paid_execution:
+        description: Explicitly authorize the Phase 1 Provider path
+        required: true
+        default: false
+        type: boolean
+      approved_commit:
+        description: User-approved immutable 40-character CodePaceX commit
+        required: false
+        default: ''
+        type: string
+      freeze_sha256:
+        description: SHA-256 of committed stage_c_freeze.json canonical payload
+        required: false
+        default: ''
+        type: string
+      pricing_sha256:
+        description: SHA-256 identity of the frozen pricing snapshot
+        required: false
+        default: ''
+        type: string
+      authorization_identity:
+        description: Separate non-secret Phase 1 approval identity
+        required: false
+        default: ''
+        type: string
+      task_bundle_run_id:
+        description: Run containing the immutable Agent-safe six-task bundle
+        required: false
+        default: ''
+        type: string
+      task_bundle_artifact_id:
+        description: Immutable GitHub Artifact ID containing tasks.jsonl only
+        required: false
+        default: ''
+        type: string
+      task_bundle_sha256:
+        description: SHA-256 of tasks.jsonl after download
+        required: false
+        default: ''
+        type: string
+      run_id:
+        description: New, unused Stage C Phase 1 run ID
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  zero-provider-validation:
+    if: ${{ !inputs.paid_execution }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e . pytest pytest-asyncio
+      - name: Validate the Freeze and inert paid entrypoint
+        run: |
+          set -euo pipefail
+          python -m evals.stage_c validate --output-dir evals/stage_c
+          python -m evals.stage_c_paid identities --root . --freeze-dir evals/stage_c
+          python -m evals.secret_scan
+
+  phase-1-paid:
+    if: ${{ inputs.paid_execution }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    env:
+      BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+    steps:
+      - name: Validate non-secret authorization inputs before checkout or transport
+        run: |
+          set -euo pipefail
+          test -n '${{ inputs.approved_commit }}'
+          test -n '${{ inputs.freeze_sha256 }}'
+          test -n '${{ inputs.pricing_sha256 }}'
+          test -n '${{ inputs.authorization_identity }}'
+          test -n '${{ inputs.task_bundle_run_id }}'
+          test -n '${{ inputs.task_bundle_artifact_id }}'
+          test -n '${{ inputs.task_bundle_sha256 }}'
+          test -n '${{ inputs.run_id }}'
+          case '${{ inputs.approved_commit }}' in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) exit 2;; esac
+          test -n "$BAILIAN_API_KEY"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.approved_commit }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ inputs.task_bundle_artifact_id }}
+          run-id: ${{ inputs.task_bundle_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/stage-c-task-bundle
+      - name: Validate the immutable inputs and execute Phase 1 serially
+        run: |
+          set -euo pipefail
+          python -m pip install -e . pytest pytest-asyncio
+          task_bundle="$RUNNER_TEMP/stage-c-task-bundle/tasks.jsonl"
+          test "$(sha256sum "$task_bundle" | awk '{print $1}')" = '${{ inputs.task_bundle_sha256 }}'
+          python -m evals.stage_c_paid prepare-phase --root . --freeze-dir evals/stage_c --evidence-root "$RUNNER_TEMP/stage-c-phase-1" --phase phase_1 --approved-commit '${{ inputs.approved_commit }}' --authorization-identity '${{ inputs.authorization_identity }}' --freeze-sha256 '${{ inputs.freeze_sha256 }}' --pricing-sha256 '${{ inputs.pricing_sha256 }}'
+          python -m evals.stage_c_paid execute-phase --confirm-paid-run --root . --freeze-dir evals/stage_c --evidence-root "$RUNNER_TEMP/stage-c-phase-1" --phase phase_1 --run-id '${{ inputs.run_id }}' --task-bundle "$task_bundle"
+      - name: Scan terminal evidence without printing credentials
+        if: always()
+        run: python -m evals.secret_scan --artifact-root "$RUNNER_TEMP/stage-c-phase-1" --untrusted-json-field problem_statement
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-c-phase-1-${{ github.run_id }}
+          path: ${{ runner.temp }}/stage-c-phase-1
+          if-no-files-found: error
