@@ -1,0 +1,1 @@
+{"type":"tool_result","tool_id":"edit-1","tool_name":"EditFile","tool_category":"write","arguments":{"file_path":"src/example.py"},"is_error":false,"output":"edited"}

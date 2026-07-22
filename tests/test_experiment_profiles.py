@@ -32,6 +32,8 @@ def test_profile_is_closed_and_typed() -> None:
     assert profile.compression_profile is CompressionProfile.RECOVERY_V1
     assert profile.permission_strategy is PermissionStrategy.DEFAULT
     assert profile.agent_mode is AgentMode.SINGLE
+    assert profile.validation_mode.value == "disabled"
+    assert "validation_mode" not in profile.canonical_payload()
 
     with pytest.raises(ValidationError):
         _profile(tool_loading="invented")

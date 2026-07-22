@@ -69,6 +69,12 @@ from codepacex.tools.base import (
     ToolCallStart,
     ToolResult,
 )
+from codepacex.validation import (
+    CompletionStatus,
+    ValidationController,
+    ValidationProfile,
+)
+from codepacex.tools.validation_checkpoint import ValidationCheckpoint
 
 log = logging.getLogger(__name__)
 
@@ -174,6 +180,13 @@ class PermissionDecisionEvent:
 
 
 @dataclass
+class ValidationTelemetryEvent:
+    """An append-only Stage B record, emitted only for enabled sessions."""
+
+    payload: dict[str, Any]
+
+
+@dataclass
 class HookEvent:
     hook_id: str
     event: str
@@ -211,6 +224,7 @@ AgentEvent = (
     | RuntimeManifestEvent
     | PermissionDecisionEvent
     | CompressionEvent
+    | ValidationTelemetryEvent
 )
 
 
@@ -440,6 +454,8 @@ class Agent:
         providers: list[ProviderConfig] | None = None,
         fallback: list[str] | None = None,
         experiment_profile: ExperimentProfile | None = None,
+        validation_profile: ValidationProfile | None = None,
+        validation_controller: ValidationController | None = None,
     ) -> None:
         self.client = client
         self.registry = registry
@@ -492,6 +508,23 @@ class Agent:
         self._team_manager: Any = None
         self.notification_fn: Callable[[], list[str]] | None = None
         self.file_history: Any = None
+        environment_stage_b = os.environ.get("CODEPACEX_VALIDATION_MODE") == "stage_b"
+        profile = validation_profile or (
+            ValidationProfile.stage_b()
+            if getattr(experiment_profile, "validation_mode", None) is not None
+            and experiment_profile.validation_mode.value == "stage_b"
+            else ValidationProfile.stage_b() if environment_stage_b else ValidationProfile()
+        )
+        inherited_state_dir = os.environ.get("CODEPACEX_VALIDATION_STATE_DIR")
+        inherited_session_id = os.environ.get("CODEPACEX_VALIDATION_SESSION_ID")
+        self.validation_controller = validation_controller or ValidationController(
+            profile,
+            session_id=inherited_session_id,
+            state_dir=(Path(inherited_state_dir) if inherited_state_dir else Path(work_dir) / ".codepacex" / "validation" / uuid.uuid4().hex)
+            if profile.enabled else None,
+        )
+        if self.validation_controller.enabled and self.registry.get("ValidationCheckpoint") is None:
+            self.registry.register(ValidationCheckpoint(self.validation_controller, self.agent_id))
 
         # 非阻塞 memory recall：prefetch task 与主 LLM 调用并行，工具执行后注入
         self.memory_recall_task: Any | None = None
@@ -509,6 +542,10 @@ class Agent:
 
     def _index_runtime_event(self, event: RuntimeManifestEvent) -> RuntimeManifestEvent:
         event.request_index = self._next_runtime_request_index()
+        if self.validation_controller.enabled:
+            self.validation_controller.observe_request_completed(
+                agent_id=self.agent_id, parent_agent_id=self.parent_id,
+            )
         if self.experiment_profile is not None:
             profile_hash = self.experiment_profile.profile_hash()
             event.experiment_profile_hash = profile_hash
@@ -519,6 +556,13 @@ class Agent:
                 tools_sha256=event.tools_sha256,
             )
         return event
+
+    def _drain_validation_events(self) -> list[ValidationTelemetryEvent]:
+        return [ValidationTelemetryEvent(event.to_dict()) for event in self.validation_controller.drain_events()]
+
+    @staticmethod
+    def _validation_event_payload(event: ValidationTelemetryEvent) -> dict[str, Any]:
+        return {"type": "validation", **event.payload}
 
     def _compression_recovery_inputs(
         self, protocol: str,
@@ -1108,9 +1152,26 @@ class Agent:
                 output_recoveries = 0
 
             if not response.tool_calls:
+                completion = self.validation_controller.assess_completion(
+                    agent_id=self.agent_id, parent_agent_id=self.parent_id,
+                )
+                for validation_event in self._drain_validation_events():
+                    yield validation_event
                 conversation.add_assistant_message(
                     response.text, thinking_blocks=conv_thinking
                 )
+                if not completion.allowed and not completion.terminal:
+                    conversation.add_user_message(
+                        completion.message() + "\nUse ValidationCheckpoint and observed tools to resolve these obligations."
+                    )
+                    continue
+                if not completion.allowed:
+                    # Stream text is always draft until this deterministic branch.
+                    # Consumers receive a terminal validation record rather than a
+                    # successful LoopComplete claim.
+                    yield ErrorEvent(message=completion.message())
+                    yield LoopComplete(total_turns=iteration)
+                    break
                 self._loop_count += 1
                 if (
                     self._loop_count % MEMORY_EXTRACTION_INTERVAL == 0
@@ -1301,6 +1362,9 @@ class Agent:
                 )
                 break
 
+            for validation_event in self._drain_validation_events():
+                yield validation_event
+
             exit_plan_called = any(
                 tc.tool_name == "ExitPlanMode" for tc in response.tool_calls
             )
@@ -1361,6 +1425,22 @@ class Agent:
         if not self.registry.is_enabled(tc.tool_name):
             return _ToolDecision(
                 Decision("deny", f"disabled tool: {tc.tool_name}", persistable=False)
+            )
+        validation_decision = self.validation_controller.assess_tool(
+            agent_id=self.agent_id,
+            parent_agent_id=self.parent_id,
+            workspace_id=self.work_dir,
+            tool_call_id=tc.tool_id,
+            tool_name=tc.tool_name,
+            tool_category=tool.category,
+            tool_module=tool.__class__.__module__,
+            arguments=tc.arguments,
+            plan_mode=self.plan_mode,
+            plan_artifact_path=str(self._get_plan_path()) if self.plan_mode else None,
+        )
+        if not validation_decision.allowed:
+            return _ToolDecision(
+                Decision("deny", f"Validation blocked: {validation_decision.reason}", persistable=False)
             )
         assessment = None
         assessment_error = ""
@@ -1669,6 +1749,24 @@ class Agent:
         auto_compact 能重新附加这些数据。每次 ReadFile 多一次磁盘读取，
         比从 tool 输出中反向解析行号要划算。
         """
+        tool = self.registry.get(tc.tool_name)
+        if tool is not None:
+            self.validation_controller.observe_tool_result(
+                agent_id=self.agent_id,
+                parent_agent_id=self.parent_id,
+                workspace_id=self.work_dir,
+                tool_call_id=tc.tool_id,
+                tool_name=tc.tool_name,
+                tool_category=tool.category,
+                tool_module=tool.__class__.__module__,
+                arguments=tc.arguments,
+                is_error=result.is_error,
+                output=result.output,
+                exit_code=result.exit_code,
+                timed_out=result.timed_out,
+                plan_mode=self.plan_mode,
+                plan_artifact_path=str(self._get_plan_path()) if self.plan_mode else None,
+            )
         if result.is_error or tc.tool_name != "ReadFile":
             return
         path = tc.arguments.get("file_path") if isinstance(tc.arguments, dict) else None
@@ -1928,7 +2026,21 @@ class Agent:
             )
 
             if not response.tool_calls:
+                completion = self.validation_controller.assess_completion(
+                    agent_id=self.agent_id, parent_agent_id=self.parent_id,
+                )
+                if event_callback:
+                    for validation_event in self._drain_validation_events():
+                        event_callback(self._validation_event_payload(validation_event))
                 conversation.add_assistant_message(response.text)
+                if not completion.allowed and not completion.terminal:
+                    conversation.add_user_message(
+                        completion.message() + "\nUse ValidationCheckpoint and observed tools to resolve these obligations."
+                    )
+                    continue
+                if not completion.allowed:
+                    last_text = completion.message()
+                    break
                 if self.file_history is not None:
                     summary = response.text[:60] + "..." if len(response.text) > 60 else response.text
                     self.file_history.make_snapshot(len(conversation.history), summary)
@@ -1964,6 +2076,8 @@ class Agent:
                 permission_event = self._permission_decision_event(outcome)
                 if event_callback:
                     event_callback(self._permission_event_payload(permission_event))
+                    for validation_event in self._drain_validation_events():
+                        event_callback(self._validation_event_payload(validation_event))
                 content = self._maybe_persist_or_truncate(
                     tc.tool_id, outcome.result.output,
                 )
@@ -2035,6 +2149,8 @@ class Agent:
             result = ToolResult(
                 output=f"Tool execution error: {e}", is_error=True
             )
+
+        self._snapshot_for_recovery(tc, result)
 
         if self.hook_engine and executed:
             file_path = self._infer_file_path(tc.arguments)

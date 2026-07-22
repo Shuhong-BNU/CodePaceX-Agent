@@ -222,6 +222,7 @@ async def _run_prompt_impl(
         ToolUseEvent,
         TurnComplete,
         UsageEvent,
+        ValidationTelemetryEvent,
     )
     from codepacex.client import create_client, resolve_context_window
     from codepacex.conversation import ConversationManager
@@ -507,6 +508,16 @@ async def _run_prompt_impl(
                     "attachment_count": event.attachment_count,
                     "error_category": event.error_category,
                 })
+
+        elif isinstance(event, ValidationTelemetryEvent):
+            if is_json:
+                emit_json({"type": "validation", **event.payload})
+            if event.payload.get("event_type") == "validation_finalized":
+                details = event.payload.get("payload")
+                if isinstance(details, dict) and details.get("status") != "VALIDATED_COMPLETE":
+                    blockers = details.get("blockers")
+                    suffix = "\n- " + "\n- ".join(blockers) if isinstance(blockers, list) and blockers else ""
+                    text_buf = f"Validation status: {details.get('status', 'UNRESOLVED')}{suffix}"
 
         elif isinstance(event, TurnComplete):
             if is_json:

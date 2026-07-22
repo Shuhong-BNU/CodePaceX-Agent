@@ -34,6 +34,10 @@ class PathAccess:
 class ToolResult:
     output: str
     is_error: bool = False
+    # Process metadata is optional so existing tools and callers retain their
+    # previous result contract.  Stage B uses it instead of guessing from prose.
+    exit_code: int | None = None
+    timed_out: bool = False
 
 
 class Tool(ABC):

@@ -42,6 +42,8 @@ def spawn_iterm2_teammate(
     agent_type: str = "",
     model: str = "",
     mailbox_dir: str = "",
+    validation_state_dir: str = "",
+    validation_session_id: str = "",
 ) -> ITermPaneInfo:
     from codepacex.teams.spawn_tmux import build_cli_command
 
@@ -53,6 +55,8 @@ def spawn_iterm2_teammate(
         agent_type=agent_type,
         model=model,
         mailbox_dir=mailbox_dir,
+        validation_state_dir=validation_state_dir,
+        validation_session_id=validation_session_id,
     )
 
     try:

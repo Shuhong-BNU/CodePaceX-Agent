@@ -108,6 +108,7 @@ class SkillExecutor:
             max_iterations=self.agent.max_iterations,
             permission_checker=None,
             context_window=self.agent.context_window,
+            validation_controller=self.agent.validation_controller,
         )
 
         result_parts: list[str] = []

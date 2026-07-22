@@ -1,0 +1,7 @@
+{"type":"tool_result","tool_id":"repro","tool_name":"Bash","tool_category":"command","arguments":{"command":"pytest tests/test_feature.py"},"is_error":true,"exit_code":1,"output":"FAILED tests/test_feature.py::test_target"}
+{"type":"validation_declaration","action":"record_reproduction","payload":{"evidence_reference":"repro","observed_failure":true}}
+{"type":"validation_declaration","action":"declare_contract_inventory","payload":{"inventory":{"target_behavior":"feature","failure_assertions":"test_target","touched_symbols":[],"direct_callers":[],"implementations":[],"config_surfaces":[],"default_values":[],"serialization_surfaces":[],"fixtures":[],"target_tests":[{"command":"pytest tests/test_feature.py"}],"regression_tests":[{"command":"pytest tests"}],"known_unknowns":[]}}}
+{"type":"tool_result","tool_id":"baseline","tool_name":"Bash","tool_category":"command","arguments":{"command":"pytest tests"},"is_error":false,"exit_code":0,"output":"2 passed"}
+{"type":"tool_result","tool_id":"edit","tool_name":"EditFile","tool_category":"write","arguments":{"file_path":"src/example.py"},"is_error":false,"output":"edited"}
+{"type":"tool_result","tool_id":"target","tool_name":"Bash","tool_category":"command","arguments":{"command":"pytest tests/test_feature.py"},"is_error":false,"exit_code":0,"output":"1 passed"}
+{"type":"tool_result","tool_id":"post","tool_name":"Bash","tool_category":"command","arguments":{"command":"pytest tests"},"is_error":true,"exit_code":1,"output":"FAILED tests/test_other.py::test_p2p"}

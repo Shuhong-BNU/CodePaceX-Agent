@@ -134,3 +134,14 @@ Goal 2 的四类 `ExperimentProfile` 会真实改变 ToolRegistry、压缩、权
 跨 Goal 的研究状态、单位、样本边界与结果统一记录在 [`EVALUATION_HISTORY.md`](EVALUATION_HISTORY.md)；run、Artifact、commit、SHA-256、保留状态和审计边界统一记录在 [`EVALUATION_ARTIFACT_INDEX.md`](EVALUATION_ARTIFACT_INDEX.md)。不同单位不会相加为一个“总实验数”，CI、dry-run、preflight、secret scan 和 pytest 也不计为正式 Provider 实验。
 
 当前正式边界包括：Goal 3 三题 paid Pilot 为 3/3 scorable、1 resolved / 2 unresolved；Goal 4 预注册 20-task Python-only Lite subset 为 `GOAL4_ACCEPTED`、20/20 scorable、4 resolved / 16 unresolved。Goal 4 的 16 题失败归因见 [`GOAL4_FAILURE_ANALYSIS.md`](GOAL4_FAILURE_ANALYSIS.md) 和 [`goal4_failure_taxonomy.csv`](goal4_failure_taxonomy.csv)。该归因是 zero-provider 证据整理，不是新实验，也不修改正式结果。
+
+## Stage B Agent Validation Gates
+
+Stage B 为未来的代码修改型 Agent session 增加默认关闭、显式启用的确定性
+validation profile：首次修改前复现/例外记录、contract inventory、修改后的目标
+测试、bounded pre/post regression comparison，以及共享请求序号 20/30/36
+checkpoint。它不会重跑或修改 Goal 4 的 4/20 历史结果，也不会发起 Provider
+请求。实现边界和启用合同见 [`STAGE_B_CHARTER.md`](STAGE_B_CHARTER.md)、
+[`STAGE_B_DESIGN.md`](STAGE_B_DESIGN.md) 与 [`STAGE_B_REPORT.md`](STAGE_B_REPORT.md)。
+`evals.stage_b_replay` 只回放脱敏 trace 到新的本地输出目录，并始终标记
+`replay_only=true`、`provider_requests=0` 和 `formal_experiment=false`。
