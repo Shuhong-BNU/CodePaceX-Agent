@@ -158,6 +158,14 @@ def classify_bash_command(command: str) -> OperationClass:
     lowered = normalized.lower()
     if not normalized:
         return OperationClass.UNKNOWN_SIDE_EFFECT
+    # Do not treat a test runner embedded in a shell program as a pure test.
+    # A chained command or redirection can modify implementation files after the
+    # test process returns, so it must pass through the conservative side-effect
+    # path instead.
+    if re.search(r"(^|[^<])>{1,2}(?!&)", normalized):
+        return OperationClass.IMPLEMENTATION_WRITE
+    if re.search(r"[;&|`$()]", normalized):
+        return OperationClass.UNKNOWN_SIDE_EFFECT
     test_patterns = (
         r"(^|\s)(pytest|tox|nox|unittest)(\s|$)",
         r"(^|\s)(python|python3)\s+-m\s+(pytest|unittest)(\s|$)",
@@ -171,7 +179,6 @@ def classify_bash_command(command: str) -> OperationClass:
         r"(^|\s)(pip|pip3|uv|npm|pnpm|yarn)\s+(install|add|remove|uninstall)\b",
         r"(^|\s)(python|python3)\b",
         r"(^|\s)(bash|sh|zsh)\s+-c\b",
-        r"(^|[^<])>{1,2}(?!&)",
     )
     if any(re.search(pattern, lowered) for pattern in write_markers):
         return OperationClass.IMPLEMENTATION_WRITE

@@ -15,7 +15,8 @@ from codepacex.validation import OperationClass, classify_bash_command, classify
     ("git apply change.patch", OperationClass.IMPLEMENTATION_WRITE),
     ("echo changed > file.py", OperationClass.IMPLEMENTATION_WRITE),
     ("custom-tool --mutate", OperationClass.UNKNOWN_SIDE_EFFECT),
-    ("pytest tests; rm file.py", OperationClass.TEST_EXECUTION),
+    ("pytest tests; rm file.py", OperationClass.UNKNOWN_SIDE_EFFECT),
+    ("pytest tests > source.py", OperationClass.IMPLEMENTATION_WRITE),
 ])
 def test_bash_classifier_is_deterministic(command: str, expected: OperationClass) -> None:
     assert classify_bash_command(command) is expected
