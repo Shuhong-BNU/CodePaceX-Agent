@@ -278,14 +278,18 @@ def official_evaluator_report_path(
     for label, value in (("run ID", run_id), ("model ID", model_id), ("instance ID", instance_id)):
         if not value or Path(value).name != value or value in {".", ".."}:
             raise ValueError(f"official evaluator has an unsafe {label}")
-    report_dir = cwd.resolve() / "logs" / "run_evaluation" / run_id / model_id / instance_id
-    expected = report_dir / "report.json"
-    candidates = sorted(report_dir.glob("report*.json")) if report_dir.is_dir() else []
-    if len(candidates) > 1:
-        raise ValueError(f"official evaluator produced multiple report candidates: {candidates}")
-    if candidates != [expected]:
-        raise ValueError(f"official evaluator report is missing: {expected}")
-    return expected
+    root = cwd.resolve()
+    report_dir = root / "logs" / "run_evaluation" / run_id / model_id / instance_id
+    detailed = report_dir / "report.json"
+    summary = root / f"{model_id}.{run_id}.json"
+    detailed_candidates = sorted(report_dir.glob("report*.json")) if report_dir.is_dir() else []
+    if detailed_candidates:
+        if detailed_candidates != [detailed] or summary.is_file():
+            raise ValueError(f"official evaluator produced multiple report candidates: {detailed_candidates}")
+        return detailed
+    if summary.is_file():
+        return summary
+    raise ValueError(f"official evaluator report is missing: {detailed}")
 
 
 def main(argv: list[str] | None = None) -> int:
