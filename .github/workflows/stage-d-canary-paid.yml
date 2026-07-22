@@ -1,0 +1,147 @@
+name: Stage D two-task paid canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      paid_execution:
+        description: Explicitly authorize the one Stage D two-task Provider canary
+        required: true
+        default: false
+        type: boolean
+      approved_commit:
+        description: Immutable Stage D Freeze commit
+        required: true
+        default: ''
+        type: string
+      freeze_sha256:
+        description: SHA-256 of stage_d_freeze.json
+        required: true
+        default: ''
+        type: string
+      runtime_contract_hash:
+        description: SHA-256 of the Stage D runtime contract
+        required: true
+        default: ''
+        type: string
+      pricing_sha256:
+        description: SHA-256 of the frozen pricing snapshot
+        required: true
+        default: ''
+        type: string
+      authorization_identity:
+        description: New non-secret authorization identity for this Canary only
+        required: true
+        default: ''
+        type: string
+      run_id:
+        description: New, unused Stage D Canary Run ID
+        required: true
+        default: ''
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  zero-provider-preflight:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    env:
+      BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.approved_commit }}
+          path: frozen-stage-d
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e . pytest pytest-asyncio
+      - name: Verify the independent Stage D authorization inputs
+        run: |
+          set -euo pipefail
+          test '${{ inputs.approved_commit }}' = 'fe0a52d5dfaaa4e0bc48d942a7c8d8fb0371877b'
+          test -n '${{ inputs.authorization_identity }}'
+          test -n '${{ inputs.run_id }}'
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: '8496125148'
+          run-id: '29830820618'
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/goal4-source
+      - name: Build the exact two-task Agent-safe bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          digest="$(gh api "repos/${{ github.repository }}/actions/artifacts/8496125148" --jq .digest)"
+          test "$digest" = 'sha256:8b9309a9ee03b068bf96e69afd50ecc2c18e4a70046dc1ae99359310dc70c6c8'
+          dataset="$(find "$RUNNER_TEMP/goal4-source" -type f -name formal-dataset.jsonl -print -quit)"
+          test -n "$dataset"
+          mkdir -p "$RUNNER_TEMP/stage-d-preflight"
+          python -m evals.stage_d_paid build-task-bundle --source-dataset "$dataset" --output "$RUNNER_TEMP/stage-d-preflight/tasks.jsonl" > "$RUNNER_TEMP/stage-d-preflight/bundle.json"
+      - name: Validate frozen runtime, evaluator host, secret presence, and no-transport accounting
+        run: |
+          set -euo pipefail
+          test "$(git -C frozen-stage-d rev-parse HEAD)" = '${{ inputs.approved_commit }}'
+          docker info >/dev/null
+          evaluator_root="$RUNNER_TEMP/swe-bench-live"
+          git clone --filter=blob:none https://github.com/microsoft/SWE-bench-Live.git "$evaluator_root"
+          git -C "$evaluator_root" checkout --detach ad79b850f15e33992e96f03f6e97f05ddf9aa0be
+          test "$(git -C "$evaluator_root" rev-parse HEAD)" = ad79b850f15e33992e96f03f6e97f05ddf9aa0be
+          python -m pip install -e "$evaluator_root"
+          python -m evals.stage_d_paid preflight --root frozen-stage-d --freeze frozen-stage-d/evals/stage_d/stage_d_freeze.json --approved-commit '${{ inputs.approved_commit }}' --freeze-sha256 '${{ inputs.freeze_sha256 }}' --runtime-contract-hash '${{ inputs.runtime_contract_hash }}' --pricing-sha256 '${{ inputs.pricing_sha256 }}' > "$RUNNER_TEMP/stage-d-preflight/preflight.json"
+          python - "$RUNNER_TEMP/stage-d-preflight/preflight.json" <<'PY'
+          import json, sys
+          result = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert result['provider_requests'] == result['usage'] == 0
+          assert result['charge'] == result['settlement'] == '0'
+          assert result['active_reservation'] is None
+          PY
+      - name: Scan zero-provider preflight evidence
+        run: python -m evals.secret_scan --artifact-root "$RUNNER_TEMP/stage-d-preflight" --untrusted-json-field problem_statement
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage-d-canary-preflight-${{ github.run_id }}
+          path: ${{ runner.temp }}/stage-d-preflight
+          if-no-files-found: error
+
+  paid-canary:
+    needs: zero-provider-preflight
+    if: ${{ inputs.paid_execution }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+    env:
+      BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.approved_commit }}
+          path: frozen-stage-d
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e . pytest pytest-asyncio
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage-d-canary-preflight-${{ github.run_id }}
+          path: ${{ runner.temp }}/stage-d-preflight
+      - name: Prepare independent Stage D evidence and execute serial Canary
+        run: |
+          set -euo pipefail
+          test "$(sha256sum "$RUNNER_TEMP/stage-d-preflight/tasks.jsonl" | awk '{print $1}')" = "$(python -c 'import json; print(json.load(open("'"$RUNNER_TEMP"'/stage-d-preflight/bundle.json"))["tasks_sha256"])')"
+          evidence="$RUNNER_TEMP/stage-d-canary"
+          python -m evals.stage_d_paid prepare --root frozen-stage-d --freeze frozen-stage-d/evals/stage_d/stage_d_freeze.json --evidence-root "$evidence" --approved-commit '${{ inputs.approved_commit }}' --authorization-identity '${{ inputs.authorization_identity }}' --freeze-sha256 '${{ inputs.freeze_sha256 }}' --runtime-contract-hash '${{ inputs.runtime_contract_hash }}' --pricing-sha256 '${{ inputs.pricing_sha256 }}'
+          python -m evals.stage_d_paid execute --confirm-paid-run --root frozen-stage-d --freeze frozen-stage-d/evals/stage_d/stage_d_freeze.json --evidence-root "$evidence" --run-id '${{ inputs.run_id }}' --task-bundle "$RUNNER_TEMP/stage-d-preflight/tasks.jsonl"
+      - name: Scan terminal evidence without exposing credentials
+        if: always()
+        run: python -m evals.secret_scan --artifact-root "$RUNNER_TEMP/stage-d-canary" --untrusted-json-field problem_statement
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-d-canary-${{ github.run_id }}
+          path: ${{ runner.temp }}/stage-d-canary
+          if-no-files-found: error
