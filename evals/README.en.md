@@ -129,3 +129,14 @@ request. The implementation boundary and activation contract are documented in
 [`STAGE_B_REPORT.md`](STAGE_B_REPORT.md). `evals.stage_b_replay` replays only a
 sanitized trace into a new local output directory and always labels its output
 `replay_only=true`, `provider_requests=0`, and `formal_experiment=false`.
+
+## Stage C Paired Rerun Freeze
+
+Stage C freezes the same twenty Goal 4 instances for a future descriptive paired
+rerun with `validation_mode=stage_b`; it currently makes no Provider request,
+Trial, or paid execution. The frozen matrix, historical baseline, and
+authorization templates live in [`stage_c/`](stage_c/); the execution boundary is
+in [`STAGE_C_CHARTER.md`](STAGE_C_CHARTER.md) and
+[`STAGE_C_RUNBOOK.md`](STAGE_C_RUNBOOK.md). Budget is reserved per request and a
+shortfall stops before transport, retaining unexecuted tasks as `not_run` rather
+than manufacturing a complete twenty-task Claim.

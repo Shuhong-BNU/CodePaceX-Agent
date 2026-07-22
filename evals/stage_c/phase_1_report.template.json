@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "formal_stage_c_trial": false,
+  "phase": "phase_1",
+  "status": "template_not_executed",
+  "registered": 6,
+  "attempted": 0,
+  "terminal": 0,
+  "scorable": 0,
+  "not_run": [
+    "aws-cloudformation__cfn-lint-3749",
+    "aws-cloudformation__cfn-lint-3764",
+    "beetbox__beets-5457",
+    "beetbox__beets-5495",
+    "deepset-ai__haystack-8489",
+    "beancount__beancount-931"
+  ],
+  "provider_requests": 0,
+  "paid_execution": false,
+  "active_reservation": null
+}
