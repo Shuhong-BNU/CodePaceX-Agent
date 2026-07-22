@@ -308,8 +308,11 @@ def _validate_ledger_totals(ledger: BudgetLedger) -> None:
         raise ValueError("budget ledger is internally inconsistent")
 
 
-def _write_ledger_atomic(ledger_path: Path, ledger: BudgetLedger) -> None:
-    ledger.updated_at = _utc_now()
+def _write_ledger_atomic(
+    ledger_path: Path, ledger: BudgetLedger, *, preserve_updated_at: bool = False,
+) -> None:
+    if not preserve_updated_at:
+        ledger.updated_at = _utc_now()
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = ledger_path.with_name(f".{ledger_path.name}.{uuid.uuid4().hex}.tmp")
     with temporary.open("w", encoding="utf-8") as handle:
@@ -379,6 +382,7 @@ def reconcile_unknown_usage(
 
 def reconcile_pretransport_connect_timeout(
     ledger_path: Path, *, authorization: BudgetAuthorization, reservation_id: str,
+    settled_at: str | None = None, updated_at: str | None = None,
 ) -> Settlement:
     """Close one historical reservation proven not to have reached transport.
 
@@ -406,11 +410,15 @@ def reconcile_pretransport_connect_timeout(
             reservation_id=active.reservation_id, trial_id=active.trial_id,
             stage=active.stage, requests=0, input_tokens=0, output_tokens=0,
             actual_cny=Decimal("0"), status="cancelled",
-            settlement_method="transport_connect_timeout", settled_at=_utc_now(),
+            settlement_method="transport_connect_timeout", settled_at=settled_at or _utc_now(),
         )
         ledger.settlements.append(settlement)
         ledger.active_reservation = None
-        _write_ledger_atomic(ledger_path, ledger)
+        if updated_at is not None:
+            ledger.updated_at = updated_at
+        _write_ledger_atomic(
+            ledger_path, ledger, preserve_updated_at=updated_at is not None,
+        )
         return settlement
 
 

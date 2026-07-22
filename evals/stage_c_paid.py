@@ -57,6 +57,7 @@ from evals.paid_gate import (
     authorization_hash,
     ledger_fingerprint,
     provider_request_budget_environment,
+    reconcile_pretransport_connect_timeout,
     rebind_ledger_authorization,
 )
 from evals.permission_study import trace_usage
@@ -352,6 +353,120 @@ def prepare_phase_one_continuation(
     return binding
 
 
+def prepare_phase_one_infrastructure_replacement(
+    *, root: Path, freeze_dir: Path, evidence_root: Path, source_root: Path,
+    source_artifact_id: str, source_archive_sha256: str, authorization_identity: str,
+    source_ledger_sha256: str, reconciled_ledger_sha256: str,
+    cancelled_reservation_id: str, reconciliation_settled_at: str,
+    reconciliation_updated_at: str,
+) -> dict[str, Any]:
+    """Prepare the one authorized replacement after a pre-connect timeout.
+
+    The first two scorable tasks are recovered from the failed continuation.
+    The third task is deliberately *not* recovered: it has no Candidate and is
+    recorded as one ``infrastructure_replacement_attempt`` after its original
+    reservation is closed with the supplied immutable reconciliation identity.
+    """
+    root, evidence_root, source_root = root.resolve(), evidence_root.resolve(), source_root.resolve()
+    if not source_artifact_id or not all(_SHA256.fullmatch(value) for value in (
+        source_archive_sha256, source_ledger_sha256, reconciled_ledger_sha256,
+    )):
+        raise ValueError("replacement requires immutable source and reconciliation identities")
+    if any(path.exists() for path in _phase_paths(evidence_root).values()):
+        raise ValueError("replacement evidence root is already initialized")
+    source_binding = _json(source_root / "phase-authorization.json")
+    first, second, replacement_task = stage_c.PHASE_1_IDS[:3]
+    if source_binding.get("completed_statuses") != {first: "unresolved"}:
+        raise ValueError("replacement source does not bind the recovered first task")
+    source_ledger_path = source_root / "terminal-ledger.json"
+    if _sha256(source_ledger_path) != source_ledger_sha256:
+        raise ValueError("replacement source ledger SHA-256 differs from authorization")
+    source_ledger = BudgetLedger.model_validate_json(source_ledger_path.read_text(encoding="utf-8"))
+    active = source_ledger.active_reservation
+    if active is None or active.reservation_id != cancelled_reservation_id:
+        raise ValueError("replacement source does not have the authorized active reservation")
+    if "httpx.ConnectTimeout" not in (active.failure_type or ""):
+        raise ValueError("replacement source is not a pre-transport ConnectTimeout")
+    run = next((path for path in source_root.iterdir() if path.is_dir() and (path / "manifest.json").is_file()), None)
+    if run is None:
+        raise ValueError("replacement source run evidence is missing")
+    first_evidence = _json(source_root / "recovery-evidence.json")
+    if first_evidence.get("instance_id") != first or first_evidence.get("status") not in SCORABLE:
+        raise ValueError("replacement source first-task recovery evidence is invalid")
+    second_hash = hashlib.sha256(second.encode()).hexdigest()
+    second_prediction = run / f"{second_hash}-prediction.json"
+    if not second_prediction.is_file():
+        raise ValueError("replacement source second Candidate is missing")
+    source_run_id = str(_json(run / "manifest.json").get("run_id", ""))
+    second_report = official_evaluator_report_path(
+        cwd=run, run_id=f"{source_run_id}-{second}",
+        model_id="qwen3.7-max-2026-06-08", instance_id=second,
+    )
+    second_status = "resolved" if collect_goal3_official_outcome(second_report, second) else "unresolved"
+    replacement_hash = hashlib.sha256(replacement_task.encode()).hexdigest()
+    replacement_absence = _json(run / f"{replacement_hash}-terminal-absence.json")
+    if replacement_absence.get("status") != "infrastructure_error" or (run / f"{replacement_hash}-prediction.json").exists():
+        raise ValueError("replacement task is not an eligible no-Candidate infrastructure attempt")
+    paths = _phase_paths(evidence_root)
+    evidence_root.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source_ledger_path, paths["ledger"])
+    previous = BudgetAuthorization.model_validate_json((source_root / "budget-authorization.json").read_text())
+    cancellation = reconcile_pretransport_connect_timeout(
+        paths["ledger"], authorization=previous, reservation_id=cancelled_reservation_id,
+        settled_at=reconciliation_settled_at, updated_at=reconciliation_updated_at,
+    )
+    if _sha256(paths["ledger"]) != reconciled_ledger_sha256 or cancellation.actual_cny != Decimal("0"):
+        raise ValueError("replacement reconciliation ledger differs from its immutable identity")
+    identities = frozen_identities(root, freeze_dir)
+    cap = stage_c.PHASE_1_CAP
+    envelope = cap + Decimal("0.000001")
+    replacement_authorization = BudgetAuthorization(
+        authorized_total_cny=envelope, stage_limits_cny={"A": envelope, "B": envelope, "C": envelope},
+        pricing_snapshot_hash=identities["pricing_snapshot_hash"], experiment_commit=current_git_commit(root),
+        authorized_at="user-approved-stage-c-infrastructure-replacement", authorized_by="user",
+    )
+    ledger = rebind_ledger_authorization(paths["ledger"], previous=previous, replacement=replacement_authorization)
+    allocation = StageCBudgetAllocation(
+        experiment_commit=current_git_commit(root), pricing_snapshot_hash=identities["pricing_snapshot_hash"],
+        baseline_ledger_sha256=ledger_fingerprint(ledger), baseline_authorization_hash=authorization_hash(replacement_authorization),
+        baseline_spent_cny=ledger.spent_cny, baseline_request_charge_count=len(ledger.request_charges),
+        baseline_settlement_count=len(ledger.settlements), baseline_rebind_count=len(ledger.authorization_rebinds),
+        safety_reserve_cny=Decimal("0.000001"), spendable_total_cny=cap,
+        category_limits_cny={"swe": cap - ledger.spent_cny, "mcp": Decimal("0"), "retention": Decimal("0"),
+                             "permission": Decimal("0"), "multi_agent": Decimal("0"), "long_session": Decimal("0")},
+    )
+    completed = {first: str(first_evidence["status"]), second: second_status}
+    replacement_binding = {
+        "classification": "infrastructure_replacement_attempt", "instance_id": replacement_task,
+        "source_terminal_status": "non_scorable_infrastructure_attempt",
+        "source_provider_requests": 11, "source_settled_cny": "1.361364",
+        "source_candidate": False, "source_prediction": False,
+        "cancelled_reservation_id": cancelled_reservation_id,
+        "cancelled_reservation_cny": str(active.reserved_cny), "cancellation_settlement_cny": "0",
+        "source_ledger_sha256": source_ledger_sha256, "reconciled_ledger_sha256": reconciled_ledger_sha256,
+    }
+    binding = {
+        "schema_version": 1, "phase": "phase_1", "paid_execution": True, "continuation": True,
+        "authorization_identity": authorization_identity, "approved_commit": current_git_commit(root), **identities,
+        "authorization_cap_cny": str(cap),
+        "next_request_maximum_cny": str(Decimal(stage_c.budget_contract(root)["per_request_maximum_reservation_cny"])),
+        "task_ids": list(stage_c.PHASE_1_IDS), "completed_statuses": completed,
+        "infrastructure_replacement_attempts": [replacement_binding],
+        "source_artifact_id": source_artifact_id, "source_archive_sha256": source_archive_sha256,
+        "source_ledger_sha256": source_ledger_sha256, "reconciled_ledger_sha256": reconciled_ledger_sha256,
+        "budget_authorization_sha256": authorization_hash(replacement_authorization),
+    }
+    _write_new(paths["binding"], binding)
+    _write_new(paths["budget_authorization"], replacement_authorization.model_dump(mode="json"))
+    _write_new(paths["allocation"], allocation.model_dump(mode="json"))
+    _write_new(evidence_root / "recovery-evidence.json", {
+        "schema_version": 1, "source_run_id": "29900372678", "source_artifact_id": source_artifact_id,
+        "source_archive_sha256": source_archive_sha256, "completed_statuses": completed,
+        "infrastructure_replacement": replacement_binding, "active_reservation": None,
+    })
+    return binding
+
+
 def _load_phase_gate(*, root: Path, evidence_root: Path) -> tuple[dict[str, Any], PaidRunGate]:
     paths = _phase_paths(evidence_root.resolve())
     binding = _json(paths["binding"])
@@ -542,8 +657,12 @@ def execute_phase(
         raise ValueError("paid phase identity differs from the committed Freeze")
     tasks = load_agent_task_bundle(task_bundle.resolve(), phase=phase)
     completed_statuses = dict(completed_statuses or binding.get("completed_statuses", {}))
-    if completed_statuses and (phase != "phase_1" or set(completed_statuses) != {stage_c.PHASE_1_IDS[0]} or completed_statuses[stage_c.PHASE_1_IDS[0]] not in SCORABLE):
-        raise ValueError("Phase 1 continuation must bind exactly one scorable first-task recovery")
+    if completed_statuses:
+        expected_prefix = stage_c.PHASE_1_IDS[:len(completed_statuses)]
+        if phase != "phase_1" or tuple(completed_statuses) != expected_prefix or any(
+            status not in SCORABLE for status in completed_statuses.values()
+        ):
+            raise ValueError("Phase 1 continuation must bind a scorable frozen task prefix")
     if phase == "phase_2":
         if not binding.get("phase_1_artifact_manifest"):
             raise ValueError("Phase 2 binding lacks Phase 1 Artifact")
@@ -573,8 +692,14 @@ def execute_phase(
             trial_id = _task_trial_id(run_id, phase, instance_id)
             accounting: dict[str, Any] = {"trial_id": trial_id, "request_count": 0, "actual_cny": "0"}
             terminal: dict[str, Any] | None = None
+            replacement_attempt = any(
+                item.get("instance_id") == instance_id
+                and item.get("classification") == "infrastructure_replacement_attempt"
+                for item in binding.get("infrastructure_replacement_attempts", [])
+            )
             recorder.event("trial_started", {"task_id": instance_id, "repetition_id": "1", "attempt_id": 1,
-                                              "trial_id": trial_id, "phase": phase, "budget_mode": "rolling_per_request"})
+                                              "trial_id": trial_id, "phase": phase, "budget_mode": "rolling_per_request",
+                                              "infrastructure_replacement_attempt": replacement_attempt})
             allowed, reason = stage_c.admit_task(
                 phase=phase, completed_terminal_ids=(stage_c.PHASE_1_IDS if phase == "phase_2" else ()), phase_conservative_consumption=Decimal(str(gate.summary()["spent_cny"])),
                 active_reservation=bool(gate.summary()["active_reservation"]),
@@ -755,7 +880,7 @@ def process_metrics(*, ledgers: Sequence[Path]) -> dict[str, Any]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Explicitly authorized Stage C paid execution")
-    parser.add_argument("command", choices=["identities", "build-task-bundle", "prepare-phase", "prepare-phase1-continuation", "validate-phase-1", "execute-phase"])
+    parser.add_argument("command", choices=["identities", "build-task-bundle", "prepare-phase", "prepare-phase1-continuation", "prepare-phase1-infrastructure-replacement", "validate-phase-1", "execute-phase"])
     parser.add_argument("--root", type=Path, default=Path("."))
     parser.add_argument("--freeze-dir", type=Path, default=Path("evals/stage_c"))
     parser.add_argument("--evidence-root", type=Path)
@@ -771,6 +896,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--source-root", type=Path)
     parser.add_argument("--source-artifact-id", default="")
     parser.add_argument("--source-archive-sha256", default="")
+    parser.add_argument("--source-ledger-sha256", default="")
+    parser.add_argument("--reconciled-ledger-sha256", default="")
+    parser.add_argument("--cancelled-reservation-id", default="")
+    parser.add_argument("--reconciliation-settled-at", default="")
+    parser.add_argument("--reconciliation-updated-at", default="")
     parser.add_argument("--task-bundle", type=Path)
     parser.add_argument("--source-dataset", type=Path)
     parser.add_argument("--output", type=Path)
@@ -807,6 +937,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 source_root=args.source_root, source_artifact_id=args.source_artifact_id,
                 source_archive_sha256=args.source_archive_sha256,
                 authorization_identity=args.authorization_identity,
+            )
+        elif args.command == "prepare-phase1-infrastructure-replacement":
+            if args.evidence_root is None or args.source_root is None:
+                raise ValueError("--evidence-root and --source-root are required")
+            result = prepare_phase_one_infrastructure_replacement(
+                root=args.root, freeze_dir=args.freeze_dir, evidence_root=args.evidence_root,
+                source_root=args.source_root, source_artifact_id=args.source_artifact_id,
+                source_archive_sha256=args.source_archive_sha256, authorization_identity=args.authorization_identity,
+                source_ledger_sha256=args.source_ledger_sha256,
+                reconciled_ledger_sha256=args.reconciled_ledger_sha256,
+                cancelled_reservation_id=args.cancelled_reservation_id,
+                reconciliation_settled_at=args.reconciliation_settled_at,
+                reconciliation_updated_at=args.reconciliation_updated_at,
             )
         else:
             if args.evidence_root is None or args.phase is None or args.task_bundle is None:
