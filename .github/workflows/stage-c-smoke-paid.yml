@@ -97,6 +97,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Create pre-transport evidence root
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/stage-c-phase-1"
+          printf '%s\n' '{"schema_version":1,"status":"pre_transport"}' > "$RUNNER_TEMP/stage-c-phase-1/workflow-pretransport.json"
       - uses: actions/download-artifact@v4
         with:
           artifact-ids: ${{ inputs.task_bundle_artifact_id }}
@@ -107,7 +112,9 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install -e . pytest pytest-asyncio
-          task_bundle="$RUNNER_TEMP/stage-c-task-bundle/tasks.jsonl"
+          mapfile -t task_bundles < <(find "$RUNNER_TEMP/stage-c-task-bundle" -type f -name tasks.jsonl -print)
+          test "${#task_bundles[@]}" -eq 1
+          task_bundle="${task_bundles[0]}"
           test "$(sha256sum "$task_bundle" | awk '{print $1}')" = '${{ inputs.task_bundle_sha256 }}'
           python -m evals.stage_c_paid prepare-phase --root . --freeze-dir evals/stage_c --evidence-root "$RUNNER_TEMP/stage-c-phase-1" --phase phase_1 --approved-commit '${{ inputs.approved_commit }}' --authorization-identity '${{ inputs.authorization_identity }}' --freeze-sha256 '${{ inputs.freeze_sha256 }}' --pricing-sha256 '${{ inputs.pricing_sha256 }}'
           python -m evals.stage_c_paid execute-phase --confirm-paid-run --root . --freeze-dir evals/stage_c --evidence-root "$RUNNER_TEMP/stage-c-phase-1" --phase phase_1 --run-id '${{ inputs.run_id }}' --task-bundle "$task_bundle"
