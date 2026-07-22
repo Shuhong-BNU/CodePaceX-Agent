@@ -60,6 +60,26 @@ on:
         required: false
         default: ''
         type: string
+      continuation_source_ledger_sha256:
+        required: false
+        default: ''
+        type: string
+      continuation_reconciled_ledger_sha256:
+        required: false
+        default: ''
+        type: string
+      continuation_cancelled_reservation_id:
+        required: false
+        default: ''
+        type: string
+      continuation_reconciliation_settled_at:
+        required: false
+        default: ''
+        type: string
+      continuation_reconciliation_updated_at:
+        required: false
+        default: ''
+        type: string
 
 permissions:
   actions: read
@@ -149,7 +169,15 @@ jobs:
             source_root="$RUNNER_TEMP/stage-c-phase-1-source"
             gh run download '${{ inputs.continuation_source_run_id }}' --repo '${{ github.repository }}' -n 'stage-c-phase-1-${{ inputs.continuation_source_run_id }}' -D "$source_root"
             test "$(gh api "repos/${{ github.repository }}/actions/artifacts/${{ inputs.continuation_source_artifact_id }}" --jq .digest)" = "sha256:${{ inputs.continuation_source_archive_sha256 }}"
-            python -m evals.stage_c_paid prepare-phase1-continuation --root . --freeze-dir evals/stage_c --evidence-root "$RUNNER_TEMP/stage-c-phase-1" --source-root "$source_root" --source-artifact-id '${{ inputs.continuation_source_artifact_id }}' --source-archive-sha256 '${{ inputs.continuation_source_archive_sha256 }}' --authorization-identity '${{ inputs.authorization_identity }}'
+            if test -n '${{ inputs.continuation_reconciled_ledger_sha256 }}'; then
+              test -n '${{ inputs.continuation_source_ledger_sha256 }}'
+              test -n '${{ inputs.continuation_cancelled_reservation_id }}'
+              test -n '${{ inputs.continuation_reconciliation_settled_at }}'
+              test -n '${{ inputs.continuation_reconciliation_updated_at }}'
+              python -m evals.stage_c_paid prepare-phase1-infrastructure-replacement --root . --freeze-dir evals/stage_c --evidence-root "$RUNNER_TEMP/stage-c-phase-1" --source-root "$source_root" --source-artifact-id '${{ inputs.continuation_source_artifact_id }}' --source-archive-sha256 '${{ inputs.continuation_source_archive_sha256 }}' --authorization-identity '${{ inputs.authorization_identity }}' --source-ledger-sha256 '${{ inputs.continuation_source_ledger_sha256 }}' --reconciled-ledger-sha256 '${{ inputs.continuation_reconciled_ledger_sha256 }}' --cancelled-reservation-id '${{ inputs.continuation_cancelled_reservation_id }}' --reconciliation-settled-at '${{ inputs.continuation_reconciliation_settled_at }}' --reconciliation-updated-at '${{ inputs.continuation_reconciliation_updated_at }}'
+            else
+              python -m evals.stage_c_paid prepare-phase1-continuation --root . --freeze-dir evals/stage_c --evidence-root "$RUNNER_TEMP/stage-c-phase-1" --source-root "$source_root" --source-artifact-id '${{ inputs.continuation_source_artifact_id }}' --source-archive-sha256 '${{ inputs.continuation_source_archive_sha256 }}' --authorization-identity '${{ inputs.authorization_identity }}'
+            fi
           else
             python -m evals.stage_c_paid prepare-phase --root . --freeze-dir evals/stage_c --evidence-root "$RUNNER_TEMP/stage-c-phase-1" --phase phase_1 --approved-commit '${{ inputs.approved_commit }}' --authorization-identity '${{ inputs.authorization_identity }}' --freeze-sha256 '${{ inputs.freeze_sha256 }}' --pricing-sha256 '${{ inputs.pricing_sha256 }}'
           fi

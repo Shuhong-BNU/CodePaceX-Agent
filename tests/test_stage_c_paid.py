@@ -284,3 +284,31 @@ def test_phase_one_continuation_never_reexecutes_the_recovered_first_task(tmp_pa
             executor=executor, evaluator=evaluator)
     assert seen == list(stage_c.PHASE_1_IDS[1:])
     assert artifact["terminal_statuses"][stage_c.PHASE_1_IDS[0]] == "unresolved"
+
+
+def test_phase_one_continuation_can_preserve_two_scorable_prefix_tasks(tmp_path: Path) -> None:
+    _prepare(tmp_path)
+    binding_path = tmp_path / "phase-authorization.json"
+    binding = json.loads(binding_path.read_text())
+    binding["completed_statuses"] = {
+        stage_c.PHASE_1_IDS[0]: "unresolved", stage_c.PHASE_1_IDS[1]: "unresolved",
+    }
+    binding_path.write_text(json.dumps(binding))
+    bundle = tmp_path / "phase-1-tasks.jsonl"
+    bundle.write_text("".join(json.dumps({
+        "instance_id": item, "repo": "owner/repo", "base_commit": "a" * 40,
+        "problem_statement": "Repair.", "platform": None, "version": None,
+        "environment_setup_commit": None,
+    }) + "\n" for item in stage_c.PHASE_1_IDS))
+    seen: list[str] = []
+    def executor(task, _environment, _workspace):
+        seen.append(task["instance_id"])
+        return stage_c_paid.TaskExecution("", "", "", 0)
+    def evaluator(task, execution, _recorder, _run_id):
+        return stage_c_paid.TaskExecution(execution.stdout, execution.stderr, execution.patch, 0, "{}", False)
+    with patch("evals.paid_gate._git_is_clean", return_value=True):
+        artifact = stage_c_paid.execute_phase(root=ROOT, freeze_dir=FREEZE, evidence_root=tmp_path,
+            phase="phase_1", run_id="replacement-continuation", task_bundle=bundle, confirmed=True,
+            executor=executor, evaluator=evaluator)
+    assert seen == list(stage_c.PHASE_1_IDS[2:])
+    assert all(artifact["terminal_statuses"][item] == "unresolved" for item in stage_c.PHASE_1_IDS[:2])
