@@ -339,7 +339,10 @@ def prepare_phase_one_continuation(
     replacement = BudgetAuthorization(authorized_total_cny=envelope, stage_limits_cny={"A": envelope, "B": envelope, "C": envelope}, pricing_snapshot_hash=identities["pricing_snapshot_hash"], experiment_commit=current_git_commit(root), authorized_at="user-approved-stage-c-continuation", authorized_by="user")
     previous = BudgetAuthorization.model_validate_json((source_root / "budget-authorization.json").read_text())
     paths = _phase_paths(evidence_root)
-    evidence_root.mkdir(parents=True)
+    # The paid workflow deliberately creates this root before any transport to
+    # preserve its pre-transport marker; only Phase evidence files themselves
+    # must be absent.
+    evidence_root.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source_ledger_path, paths["ledger"])
     ledger = rebind_ledger_authorization(paths["ledger"], previous=previous, replacement=replacement)
     baseline = ledger_fingerprint(ledger)
