@@ -441,7 +441,14 @@ def execute_phase(
         home = Path(home_text)
         profile_path = home / "profile.yaml"
         profile_path.write_text(yaml.safe_dump(stage_c.stage_c_profile().canonical_payload(), sort_keys=True), encoding="utf-8")
-        base_environment = _child_environment(_pilot_config(), home_text, root=root)
+        # Synthetic deterministic executors never enter a Provider transport and
+        # therefore must not require, read, or manufacture a Provider secret.
+        # The real subprocess path is guarded by the explicit secret-presence
+        # check above and alone receives the Provider child environment.
+        base_environment = (
+            _child_environment(_pilot_config(), home_text, root=root)
+            if executor is None else {}
+        )
         for task in tasks:
             instance_id = task["instance_id"]
             trial_id = _task_trial_id(run_id, phase, instance_id)
