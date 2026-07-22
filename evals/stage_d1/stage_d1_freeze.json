@@ -1,0 +1,94 @@
+{
+  "admission": {
+    "authorization_identity": null,
+    "paid_execution_authorized": false,
+    "required_before_execution": [
+      "separate Stage D.1 authorization identity",
+      "fresh immutable checkout commitment",
+      "per-request rolling reservation contract",
+      "zero-provider live-like E2E pass"
+    ],
+    "workflow_dispatch_allowed": false
+  },
+  "canary_instance_ids": [
+    "beetbox__beets-5495"
+  ],
+  "claims_boundary": {
+    "allowed_if_completed": [
+      "one-task Stage D.1 protocol-canary process evidence",
+      "a per-task scorable evaluator outcome",
+      "descriptive Goal 4, Stage C, and Stage D comparison"
+    ],
+    "next_decision": "Any second task requires a new user authorization after Stage D.1 reporting.",
+    "prohibited": [
+      "Stage D historical-evidence modification",
+      "Stage C Phase 2 claim",
+      "second Stage D.1 task claim",
+      "six-task Phase 1 claim",
+      "twenty-task claim",
+      "holdout_or_leaderboard_claim",
+      "general_model_capability_claim"
+    ]
+  },
+  "experiment_kind": "stage-d1-live-tool-protocol-canary",
+  "provider_contract": {
+    "authorization_cap_cny": "15",
+    "automatic_retry": 0,
+    "base_url": "https://llm-ipge9fy38w648m28.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    "fallback_enabled": false,
+    "maximum_requests_per_instance": 40,
+    "model_id": "qwen3.7-max-2026-06-08",
+    "official_evaluator_commit": "ad79b850f15e33992e96f03f6e97f05ddf9aa0be",
+    "one_formal_candidate_per_instance": true,
+    "protocol": "openai-compat",
+    "provider": "bailian-qwen37-max",
+    "rolling_per_request_reservation": true,
+    "strict_serial": true
+  },
+  "runtime_contract": {
+    "experiment_profile": {
+      "agent_mode": "single",
+      "compression_profile": "recovery_v1",
+      "permission_strategy": "session_allow",
+      "schema_version": 1,
+      "tool_loading": "deferred",
+      "validation_mode": "stage_b"
+    },
+    "experiment_profile_hash": "b371effcd3eec54ea1d1c79cf3cb28d5f680f14ed892ef36e54aa75d387a6beb",
+    "loop_entrypoints": [
+      "Agent._run",
+      "Agent.run_to_completion"
+    ],
+    "protocol_guarantees": [
+      "typed_checkpoint_declarations",
+      "single_json_string_container_normalization",
+      "recent_observed_result_binding",
+      "bounded_pytest_argv",
+      "permission_chain_after_reproduction",
+      "completion_gate"
+    ],
+    "runtime_source_sha256": {
+      "codepacex/agent.py": "cb8ab5ae16c2e41382c6a603c6f60be988db3c4e73100a3f08efb5bb2426050f",
+      "codepacex/permissions/checker.py": "bab12d8cde66fac86bdb6df8e63c8540e0dba43dd8b2ae461047144afa380cd2",
+      "codepacex/tools/run_test.py": "19335d85dbd43ea6062e419bfcc089eb98da15c928bb1fcb6280705bc27b52fe",
+      "codepacex/tools/validation_checkpoint.py": "28932c101130d40ab9677432b0682e8a60b178554c5c06e48a561ce260d62519",
+      "codepacex/validation.py": "ac3d7ff6adbabb6f0f23b6142fdc15462ae8a03936b920e68b8612313984daba"
+    },
+    "schema_version": 1,
+    "tool_parameter_schema_sha256": {
+      "RunTest": "bcabd483ea3e8fda86cb3004762bfeace7965cc9965caf08333f0fa9a72e61a4",
+      "ValidationCheckpoint": "12d0f1f7924f8ca5cbf286a40c4db172fd5c240b998744a29c122b199efa5298"
+    }
+  },
+  "runtime_contract_hash": "7c83a7623374c8679def9b92e31817a911aec7aabff01f3dc3cdf4dbd0bc7f45",
+  "schema_version": 1,
+  "stage": "D.1",
+  "status": "frozen_zero_provider_single_task_canary_not_authorized",
+  "supersedes": {
+    "artifact_sha256": "1129c64d9aa1153c8b21fe85f9030627683257d4d4e6aa14064d486002fe28a3",
+    "historical_evidence_modified": false,
+    "result": "NO_GO",
+    "run_id": "29933711107",
+    "stage": "D"
+  }
+}
