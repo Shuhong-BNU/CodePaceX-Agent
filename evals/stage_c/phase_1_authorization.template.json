@@ -1,0 +1,9 @@
+{
+  "authorization_cap_cny": "80",
+  "authorization_hash": null,
+  "authorization_required": true,
+  "freeze_sha256": "67fd51edf06369e239c3644974f2980be3961d460abab58ad79b873c3ea32c76",
+  "paid_execution": false,
+  "phase": "phase_1",
+  "schema_version": 1
+}

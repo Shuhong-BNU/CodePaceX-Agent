@@ -1,0 +1,19 @@
+{
+  "admission_rule": "phase_conservative_consumption + next_request_maximum <= authorization_cap",
+  "completion_guarantee": false,
+  "cumulative_authorization_cap_cny": "250",
+  "currency": "CNY",
+  "maximum_input_tokens_per_request": 128000,
+  "maximum_output_tokens_per_request": 8192,
+  "maximum_reasoning_tokens_per_request": 6144,
+  "maximum_requests_per_instance": 40,
+  "per_request_maximum_reservation_cny": "1.830912",
+  "phase_1_authorization_cap_cny": "80",
+  "phase_2_remaining_formula": "250 - phase_1_combined_conservative_consumption",
+  "pricing_snapshot_hash": "a09eb6e6955b9fb68d3e011771c948f7a14b7bbca5316a2433cab099d0b643d3",
+  "pricing_snapshot_path": "evals/goal2/pricing_bailian_qwen37_max_2026-07-13.json",
+  "reservation_granularity": "one_provider_request",
+  "theoretical_full_path_maximum_all_tasks_cny": "1464.729600",
+  "theoretical_full_path_maximum_per_instance_cny": "73.236480",
+  "theoretical_full_path_maximum_phase_1_cny": "439.418880"
+}

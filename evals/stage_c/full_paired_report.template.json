@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "formal_stage_c_trial": false,
+  "status": "template_not_executed",
+  "registered": 20,
+  "scorable": 0,
+  "full_claim": false,
+  "partial": true,
+  "not_run_count": 20,
+  "provider_requests": 0,
+  "paid_execution": false,
+  "metrics": {
+    "f2p": null,
+    "p2p": null,
+    "input_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": null,
+    "verified_cost_cny": null,
+    "uncertain_exposure_cny": null,
+    "combined_conservative_cost_cny": null,
+    "reproduced_before_edit": null,
+    "contract_inventory_revision_count": null,
+    "target_test_after_last_edit": null,
+    "regression_comparison_status": null,
+    "checkpoint_20_acknowledged": null,
+    "checkpoint_30_acknowledged": null,
+    "checkpoint_36_decision": null,
+    "final_validation_decision": null
+  },
+  "limitations": [
+    "Diagnostic-set reuse from Goal 4.",
+    "Historical rather than concurrent control.",
+    "Provider and time drift may confound attribution."
+  ]
+}

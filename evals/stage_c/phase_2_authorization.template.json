@@ -1,0 +1,10 @@
+{
+  "authorization_cap_formula": "250 - phase_1_combined_conservative_consumption",
+  "authorization_hash": null,
+  "authorization_required": true,
+  "freeze_sha256": "67fd51edf06369e239c3644974f2980be3961d460abab58ad79b873c3ea32c76",
+  "paid_execution": false,
+  "phase": "phase_2",
+  "required_phase_1_artifact": null,
+  "schema_version": 1
+}

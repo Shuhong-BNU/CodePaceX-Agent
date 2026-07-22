@@ -1,0 +1,113 @@
+name: Stage C continuation freeze
+
+on:
+  workflow_dispatch:
+    inputs:
+      freeze_commit:
+        description: Manually approved immutable Stage C Freeze commit (40 hexadecimal characters)
+        required: false
+        default: ''
+        type: string
+      paid_execution:
+        description: Reserved for a future separately authorized paid workflow; disabled in this Freeze
+        required: true
+        default: false
+        type: boolean
+      phase_1_artifact_id:
+        description: Immutable Phase 1 Artifact ID required by a future continuation
+        required: false
+        default: ''
+        type: string
+      phase_1_archive_sha256:
+        description: Immutable Phase 1 archive SHA-256 required by a future continuation
+        required: false
+        default: ''
+        type: string
+      phase_1_report_sha256:
+        description: Immutable Phase 1 report SHA-256 required by a future continuation
+        required: false
+        default: ''
+        type: string
+      phase_1_ledger_sha256:
+        description: Immutable Phase 1 terminal-ledger SHA-256 required by a future continuation
+        required: false
+        default: ''
+        type: string
+      phase_2_authorization_identity:
+        description: Separate Phase 2 authorization identity; never a credential
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  zero-provider-continuation-check:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate continuation is inert without separate authorization
+        run: |
+          set -euo pipefail
+          test "${{ inputs.paid_execution }}" = false
+          test -z "${{ inputs.phase_1_artifact_id }}"
+          test -z "${{ inputs.phase_1_archive_sha256 }}"
+          test -z "${{ inputs.phase_1_report_sha256 }}"
+          test -z "${{ inputs.phase_1_ledger_sha256 }}"
+          test -z "${{ inputs.phase_2_authorization_identity }}"
+          python -m pip install -e . pytest pytest-asyncio
+          python -m evals.stage_c validate --output-dir evals/stage_c
+          python -m evals.stage_c dry-run --root . --phase phase_2 --output-dir "$RUNNER_TEMP/stage-c-continuation"
+          python - "$RUNNER_TEMP/stage-c-continuation/phase_2-dry-run.json" <<'PY'
+          import json, sys
+          result = json.load(open(sys.argv[1]))
+          if result['provider_requests'] != 0 or result['paid_execution'] or result['formal_stage_c_trial']:
+              raise SystemExit('Stage C continuation Freeze is not zero-provider')
+          PY
+          python -m evals.secret_scan
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage-c-continuation-freeze-${{ github.run_id }}
+          path: ${{ runner.temp }}/stage-c-continuation
+          if-no-files-found: error
+
+  paid-continuation-gate:
+    if: ${{ inputs.paid_execution }}
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.freeze_commit }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          set -euo pipefail
+          python -m pip install -e .
+          python - "$RUNNER_TEMP/phase-1-artifact.json" <<'PY'
+          import json, os, sys
+          payload = {
+              'artifact_id': os.environ['PHASE_1_ARTIFACT_ID'],
+              'artifact_archive_sha256': os.environ['PHASE_1_ARCHIVE_SHA256'],
+              'report_sha256': os.environ['PHASE_1_REPORT_SHA256'],
+              'ledger_sha256': os.environ['PHASE_1_LEDGER_SHA256'],
+              'active_reservation': 'not-validated-by-freeze',
+              'phase_1_instance_ids': [], 'phase_2_instance_ids': [], 'terminal_statuses': {},
+          }
+          json.dump(payload, open(sys.argv[1], 'w'))
+          PY
+          python -m evals.stage_c validate-phase-1-artifact --output-dir evals/stage_c \
+            --phase-1-artifact "$RUNNER_TEMP/phase-1-artifact.json"
+          python -m evals.stage_c reject-paid --output-dir evals/stage_c \
+            --freeze-commit "${{ inputs.freeze_commit }}" \
+            --authorization-identity "${{ inputs.phase_2_authorization_identity }}"
+        env:
+          PHASE_1_ARTIFACT_ID: ${{ inputs.phase_1_artifact_id }}
+          PHASE_1_ARCHIVE_SHA256: ${{ inputs.phase_1_archive_sha256 }}
+          PHASE_1_REPORT_SHA256: ${{ inputs.phase_1_report_sha256 }}
+          PHASE_1_LEDGER_SHA256: ${{ inputs.phase_1_ledger_sha256 }}

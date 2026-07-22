@@ -1,0 +1,182 @@
+{
+  "baseline_snapshot_sha256": "caa0c1e4105dd0106b76999ae60c293ef65e5f1e5ae5a6603a579abb4bbdc8c2",
+  "limitations": [
+    "The 20 tasks were reused from Goal 4 after diagnostic failure analysis.",
+    "Goal 4 is the historical control, not a concurrent A/B arm.",
+    "Provider and time drift can confound descriptive paired attribution."
+  ],
+  "rows": [
+    {
+      "goal4_batch": "A",
+      "goal4_requests": 29,
+      "goal4_selected_terminal_cost_cny": "6.152004",
+      "goal4_status": "unresolved",
+      "instance_id": "aws-cloudformation__cfn-lint-3749",
+      "size_bucket": "one_file"
+    },
+    {
+      "goal4_batch": "A",
+      "goal4_requests": 15,
+      "goal4_selected_terminal_cost_cny": "1.468248",
+      "goal4_status": "unresolved",
+      "instance_id": "aws-cloudformation__cfn-lint-3764",
+      "size_bucket": "one_file"
+    },
+    {
+      "goal4_batch": "A",
+      "goal4_requests": 38,
+      "goal4_selected_terminal_cost_cny": "13.291632",
+      "goal4_status": "unresolved",
+      "instance_id": "beetbox__beets-5457",
+      "size_bucket": "two_to_four_files"
+    },
+    {
+      "goal4_batch": "A",
+      "goal4_requests": 11,
+      "goal4_selected_terminal_cost_cny": "1.010196",
+      "goal4_status": "resolved",
+      "instance_id": "beetbox__beets-5495",
+      "size_bucket": "two_to_four_files"
+    },
+    {
+      "goal4_batch": "A",
+      "goal4_requests": 24,
+      "goal4_selected_terminal_cost_cny": "5.881188",
+      "goal4_status": "unresolved",
+      "instance_id": "deepset-ai__haystack-8489",
+      "size_bucket": "five_plus_files"
+    },
+    {
+      "goal4_batch": "B",
+      "goal4_requests": 21,
+      "goal4_selected_terminal_cost_cny": "3.297720",
+      "goal4_status": "resolved",
+      "instance_id": "beancount__beancount-931",
+      "size_bucket": "one_file"
+    },
+    {
+      "goal4_batch": "B",
+      "goal4_requests": 12,
+      "goal4_selected_terminal_cost_cny": "1.230300",
+      "goal4_status": "resolved",
+      "instance_id": "beeware__briefcase-2075",
+      "size_bucket": "two_to_four_files"
+    },
+    {
+      "goal4_batch": "B",
+      "goal4_requests": 16,
+      "goal4_selected_terminal_cost_cny": "2.435436",
+      "goal4_status": "resolved",
+      "instance_id": "beeware__briefcase-2085",
+      "size_bucket": "two_to_four_files"
+    },
+    {
+      "goal4_batch": "B",
+      "goal4_requests": 23,
+      "goal4_selected_terminal_cost_cny": "4.013244",
+      "goal4_status": "unresolved",
+      "instance_id": "bridgecrewio__checkov-6893",
+      "size_bucket": "one_file"
+    },
+    {
+      "goal4_batch": "B",
+      "goal4_requests": 17,
+      "goal4_selected_terminal_cost_cny": "1.726740",
+      "goal4_status": "unresolved",
+      "instance_id": "bridgecrewio__checkov-6895",
+      "size_bucket": "one_file"
+    },
+    {
+      "goal4_batch": "B",
+      "goal4_requests": 40,
+      "goal4_selected_terminal_cost_cny": "22.084068",
+      "goal4_status": "unresolved",
+      "instance_id": "conan-io__conan-17092",
+      "size_bucket": "two_to_four_files"
+    },
+    {
+      "goal4_batch": "B",
+      "goal4_requests": 40,
+      "goal4_selected_terminal_cost_cny": "13.789632",
+      "goal4_status": "unresolved",
+      "instance_id": "conan-io__conan-17102",
+      "size_bucket": "two_to_four_files"
+    },
+    {
+      "goal4_batch": "B",
+      "goal4_requests": 12,
+      "goal4_selected_terminal_cost_cny": "1.734444",
+      "goal4_status": "unresolved",
+      "instance_id": "cyclotruc__gitingest-115",
+      "size_bucket": "one_file"
+    },
+    {
+      "goal4_batch": "B",
+      "goal4_requests": 14,
+      "goal4_selected_terminal_cost_cny": "2.452788",
+      "goal4_status": "unresolved",
+      "instance_id": "cyclotruc__gitingest-134",
+      "size_bucket": "one_file"
+    },
+    {
+      "goal4_batch": "B",
+      "goal4_requests": 18,
+      "goal4_selected_terminal_cost_cny": "3.193740",
+      "goal4_status": "unresolved",
+      "instance_id": "deepset-ai__haystack-8525",
+      "size_bucket": "two_to_four_files"
+    },
+    {
+      "goal4_batch": "B",
+      "goal4_requests": 12,
+      "goal4_selected_terminal_cost_cny": "1.475676",
+      "goal4_status": "unresolved",
+      "instance_id": "delgan__loguru-1297",
+      "size_bucket": "two_to_four_files"
+    },
+    {
+      "goal4_batch": "B",
+      "goal4_requests": 12,
+      "goal4_selected_terminal_cost_cny": "1.927308",
+      "goal4_status": "unresolved",
+      "instance_id": "delgan__loguru-1306",
+      "size_bucket": "one_file"
+    },
+    {
+      "goal4_batch": "B",
+      "goal4_requests": 40,
+      "goal4_selected_terminal_cost_cny": "15.279192",
+      "goal4_status": "unresolved",
+      "instance_id": "dynaconf__dynaconf-1225",
+      "size_bucket": "five_plus_files"
+    },
+    {
+      "goal4_batch": "B",
+      "goal4_requests": 35,
+      "goal4_selected_terminal_cost_cny": "16.647576",
+      "goal4_status": "unresolved",
+      "instance_id": "dynaconf__dynaconf-1249",
+      "size_bucket": "five_plus_files"
+    },
+    {
+      "goal4_batch": "B",
+      "goal4_requests": 37,
+      "goal4_selected_terminal_cost_cny": "11.794560",
+      "goal4_status": "unresolved",
+      "instance_id": "instructlab__instructlab-2540",
+      "size_bucket": "five_plus_files"
+    }
+  ],
+  "schema_version": 1,
+  "source": {
+    "artifact_archive_sha256": "8b9309a9ee03b068bf96e69afd50ecc2c18e4a70046dc1ae99359310dc70c6c8",
+    "artifact_final_report_sha256": "a404d82ec17c93471b842a4139e6d3f6350c672e8edf5744b57e16820e1c1a38",
+    "artifact_id": "8496125148",
+    "claims_valid": true,
+    "claims_verified": true,
+    "evidence_index_sha256": "e3bf36cd591501b66271d4b5992a4c4238a6e7e2be58684212226ccd9d8a64f3",
+    "goal4_final_run": "29830820618",
+    "goal4_freeze_commit": "75a1eca465913e1c5be81e58eba89bc4d1cd8853",
+    "source_goal4_matrix_sha256": "9ff16e850b92a6eb0bd1338cb85253a605fdfb0e0aa77180488382eca353972a"
+  }
+}

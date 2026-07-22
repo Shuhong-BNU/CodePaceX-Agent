@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "source_goal4_freeze_commit": "75a1eca465913e1c5be81e58eba89bc4d1cd8853",
+  "source_goal4_matrix_sha256": "9ff16e850b92a6eb0bd1338cb85253a605fdfb0e0aa77180488382eca353972a",
+  "stage": "C",
+  "stage_c_matrix_sha256": "5ce92a24bf71d93221e931083c6dc2df4d03d0afc92138b8c02c70959dbbca62",
+  "task_order_source": "GOAL4_EVIDENCE_INDEX.md selected-terminal order",
+  "tasks": [
+    {
+      "instance_id": "aws-cloudformation__cfn-lint-3749",
+      "ordinal": 1,
+      "phase": "phase_1"
+    },
+    {
+      "instance_id": "aws-cloudformation__cfn-lint-3764",
+      "ordinal": 2,
+      "phase": "phase_1"
+    },
+    {
+      "instance_id": "beetbox__beets-5457",
+      "ordinal": 3,
+      "phase": "phase_1"
+    },
+    {
+      "instance_id": "beetbox__beets-5495",
+      "ordinal": 4,
+      "phase": "phase_1"
+    },
+    {
+      "instance_id": "deepset-ai__haystack-8489",
+      "ordinal": 5,
+      "phase": "phase_1"
+    },
+    {
+      "instance_id": "beancount__beancount-931",
+      "ordinal": 6,
+      "phase": "phase_1"
+    },
+    {
+      "instance_id": "beeware__briefcase-2075",
+      "ordinal": 7,
+      "phase": "phase_2"
+    },
+    {
+      "instance_id": "beeware__briefcase-2085",
+      "ordinal": 8,
+      "phase": "phase_2"
+    },
+    {
+      "instance_id": "bridgecrewio__checkov-6893",
+      "ordinal": 9,
+      "phase": "phase_2"
+    },
+    {
+      "instance_id": "bridgecrewio__checkov-6895",
+      "ordinal": 10,
+      "phase": "phase_2"
+    },
+    {
+      "instance_id": "conan-io__conan-17092",
+      "ordinal": 11,
+      "phase": "phase_2"
+    },
+    {
+      "instance_id": "conan-io__conan-17102",
+      "ordinal": 12,
+      "phase": "phase_2"
+    },
+    {
+      "instance_id": "cyclotruc__gitingest-115",
+      "ordinal": 13,
+      "phase": "phase_2"
+    },
+    {
+      "instance_id": "cyclotruc__gitingest-134",
+      "ordinal": 14,
+      "phase": "phase_2"
+    },
+    {
+      "instance_id": "deepset-ai__haystack-8525",
+      "ordinal": 15,
+      "phase": "phase_2"
+    },
+    {
+      "instance_id": "delgan__loguru-1297",
+      "ordinal": 16,
+      "phase": "phase_2"
+    },
+    {
+      "instance_id": "delgan__loguru-1306",
+      "ordinal": 17,
+      "phase": "phase_2"
+    },
+    {
+      "instance_id": "dynaconf__dynaconf-1225",
+      "ordinal": 18,
+      "phase": "phase_2"
+    },
+    {
+      "instance_id": "dynaconf__dynaconf-1249",
+      "ordinal": 19,
+      "phase": "phase_2"
+    },
+    {
+      "instance_id": "instructlab__instructlab-2540",
+      "ordinal": 20,
+      "phase": "phase_2"
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "artifact_id": null,
+  "artifact_archive_sha256": null,
+  "report_sha256": null,
+  "ledger_sha256": null,
+  "active_reservation": null,
+  "phase_1_instance_ids": [
+    "aws-cloudformation__cfn-lint-3749",
+    "aws-cloudformation__cfn-lint-3764",
+    "beetbox__beets-5457",
+    "beetbox__beets-5495",
+    "deepset-ai__haystack-8489",
+    "beancount__beancount-931"
+  ],
+  "phase_2_instance_ids": [
+    "beeware__briefcase-2075",
+    "beeware__briefcase-2085",
+    "bridgecrewio__checkov-6893",
+    "bridgecrewio__checkov-6895",
+    "conan-io__conan-17092",
+    "conan-io__conan-17102",
+    "cyclotruc__gitingest-115",
+    "cyclotruc__gitingest-134",
+    "deepset-ai__haystack-8525",
+    "delgan__loguru-1297",
+    "delgan__loguru-1306",
+    "dynaconf__dynaconf-1225",
+    "dynaconf__dynaconf-1249",
+    "instructlab__instructlab-2540"
+  ],
+  "terminal_statuses": null
+}
