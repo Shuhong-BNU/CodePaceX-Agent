@@ -1,0 +1,71 @@
+name: Stage C smoke freeze
+
+on:
+  workflow_dispatch:
+    inputs:
+      freeze_commit:
+        description: Manually approved immutable Stage C Freeze commit (40 hexadecimal characters)
+        required: false
+        default: ''
+        type: string
+      paid_execution:
+        description: Reserved for a future separately authorized paid workflow; disabled in this Freeze
+        required: true
+        default: false
+        type: boolean
+      phase_1_authorization_identity:
+        description: Separate Phase 1 authorization identity; never a credential
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  zero-provider-freeze-check:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install deterministic validation dependencies
+        run: python -m pip install -e . pytest pytest-asyncio
+      - name: Validate frozen matrix and zero-provider smoke dry-run
+        run: |
+          set -euo pipefail
+          test "${{ inputs.paid_execution }}" = false
+          test -z "${{ inputs.phase_1_authorization_identity }}"
+          python -m evals.stage_c validate --output-dir evals/stage_c
+          python -m evals.stage_c dry-run --root . --phase phase_1 --output-dir "$RUNNER_TEMP/stage-c-smoke"
+          python - "$RUNNER_TEMP/stage-c-smoke/phase_1-dry-run.json" <<'PY'
+          import json, sys
+          result = json.load(open(sys.argv[1]))
+          expected = {'provider_requests': 0, 'paid_execution': False, 'formal_stage_c_trial': False}
+          if any(result.get(key) != value for key, value in expected.items()):
+              raise SystemExit('Stage C smoke Freeze is not zero-provider')
+          PY
+          python -m evals.secret_scan
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage-c-smoke-freeze-${{ github.run_id }}
+          path: ${{ runner.temp }}/stage-c-smoke
+          if-no-files-found: error
+
+  paid-execution-gate:
+    if: ${{ inputs.paid_execution }}
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.freeze_commit }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          python -m pip install -e .
+          python -m evals.stage_c reject-paid --output-dir evals/stage_c \
+            --freeze-commit "${{ inputs.freeze_commit }}" \
+            --authorization-identity "${{ inputs.phase_1_authorization_identity }}"
