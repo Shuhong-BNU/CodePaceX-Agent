@@ -7,7 +7,7 @@ phase-bound authorization and pass ``--confirm-paid-run`` before this module
 can start an Agent subprocess.
 
 The implementation deliberately consumes only the sanitized task bundle (the
-six Agent-visible SWE fields).  Published Goal 4 outcomes, traces, costs,
+seven Agent-visible SWE fields).  Published Goal 4 outcomes, traces, costs,
 taxonomy, evaluator reports, and gold patches are neither read nor copied into
 an Agent workspace or prompt.
 """
@@ -72,6 +72,8 @@ AGENT_TASK_FIELDS = frozenset({
     "instance_id", "repo", "base_commit", "problem_statement", "platform",
     "version", "environment_setup_commit",
 })
+_CORE_AGENT_TASK_FIELDS = frozenset({"instance_id", "repo", "base_commit", "problem_statement"})
+_NULLABLE_AGENT_TASK_FIELDS = AGENT_TASK_FIELDS - _CORE_AGENT_TASK_FIELDS
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
@@ -108,6 +110,17 @@ def phase_cap(*, phase: Phase, phase_1_conservative_consumption: Decimal = Decim
     return _money(available)
 
 
+def _validated_agent_task(value: Any) -> dict[str, Any]:
+    """Validate the exact, Agent-safe schema without changing source semantics."""
+    if not isinstance(value, dict) or set(value) != AGENT_TASK_FIELDS:
+        raise ValueError("Stage C task bundle must contain only the seven Agent-visible fields")
+    if not all(isinstance(value.get(key), str) and value[key] for key in _CORE_AGENT_TASK_FIELDS):
+        raise ValueError("Stage C task bundle has an incomplete core Agent-visible task")
+    if not all(value.get(key) is None or isinstance(value.get(key), str) for key in _NULLABLE_AGENT_TASK_FIELDS):
+        raise ValueError("Stage C task bundle has invalid nullable Agent-visible metadata")
+    return value
+
+
 def load_agent_task_bundle(path: Path, *, phase: Phase) -> list[dict[str, Any]]:
     """Load only the Agent-safe frozen task data; reject an overbroad bundle."""
     rows: list[dict[str, Any]] = []
@@ -115,11 +128,7 @@ def load_agent_task_bundle(path: Path, *, phase: Phase) -> list[dict[str, Any]]:
         if not line.strip():
             continue
         value = json.loads(line)
-        if not isinstance(value, dict) or set(value) != AGENT_TASK_FIELDS:
-            raise ValueError("Stage C task bundle must contain only the seven Agent-visible fields")
-        if not all(isinstance(value.get(key), str) and value[key] for key in AGENT_TASK_FIELDS):
-            raise ValueError("Stage C task bundle has an incomplete Agent-visible task")
-        rows.append(value)
+        rows.append(_validated_agent_task(value))
     expected = phase_ids(phase)
     actual = tuple(str(item["instance_id"]) for item in rows)
     if actual != expected or len(set(actual)) != len(expected):
@@ -129,6 +138,40 @@ def load_agent_task_bundle(path: Path, *, phase: Phase) -> list[dict[str, Any]]:
         if forbidden in rendered.lower():
             raise ValueError("Stage C task bundle contains forbidden historical or gold information")
     return rows
+
+
+def build_agent_task_bundle(*, source_dataset: Path, output: Path, phase: Phase) -> dict[str, Any]:
+    """Write a fresh Agent-safe bundle from an immutable formal Dataset.
+
+    The source is validated before selection so no historical results or
+    overbroad fields can silently cross the workflow boundary.  This function
+    never writes a synthetic metadata value: nullable source fields remain
+    ``null`` in the resulting task bundle.
+    """
+    if output.exists():
+        raise ValueError(f"refusing to overwrite Stage C task bundle: {output.name}")
+    selected: dict[str, dict[str, Any]] = {}
+    for line in source_dataset.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        task = _validated_agent_task(json.loads(line))
+        instance_id = task["instance_id"]
+        if instance_id in phase_ids(phase):
+            if instance_id in selected:
+                raise ValueError("formal Dataset contains a duplicate frozen instance")
+            selected[instance_id] = task
+    expected = phase_ids(phase)
+    if tuple(selected) != expected:
+        raise ValueError("formal Dataset does not contain the frozen phase order exactly once")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text("".join(json.dumps(selected[item], ensure_ascii=False, sort_keys=True) + "\n" for item in expected), encoding="utf-8")
+    load_agent_task_bundle(output, phase=phase)
+    return {
+        "phase": phase,
+        "task_ids": list(expected),
+        "schema": sorted(AGENT_TASK_FIELDS),
+        "tasks_sha256": _sha256(output),
+    }
 
 
 def frozen_identities(root: Path, freeze_dir: Path) -> dict[str, str]:
@@ -626,7 +669,7 @@ def process_metrics(*, ledgers: Sequence[Path]) -> dict[str, Any]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Explicitly authorized Stage C paid execution")
-    parser.add_argument("command", choices=["identities", "prepare-phase", "validate-phase-1", "execute-phase"])
+    parser.add_argument("command", choices=["identities", "build-task-bundle", "prepare-phase", "validate-phase-1", "execute-phase"])
     parser.add_argument("--root", type=Path, default=Path("."))
     parser.add_argument("--freeze-dir", type=Path, default=Path("evals/stage_c"))
     parser.add_argument("--evidence-root", type=Path)
@@ -640,12 +683,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--phase-1-artifact-id", default="")
     parser.add_argument("--phase-1-archive-sha256", default="")
     parser.add_argument("--task-bundle", type=Path)
+    parser.add_argument("--source-dataset", type=Path)
+    parser.add_argument("--output", type=Path)
     parser.add_argument("--run-id", default="")
     parser.add_argument("--confirm-paid-run", action="store_true")
     args = parser.parse_args(argv)
     try:
         if args.command == "identities":
             result = frozen_identities(args.root, args.freeze_dir)
+        elif args.command == "build-task-bundle":
+            if args.source_dataset is None or args.output is None or args.phase is None:
+                raise ValueError("--source-dataset, --output, and --phase are required")
+            result = build_agent_task_bundle(source_dataset=args.source_dataset, output=args.output, phase=args.phase)
         elif args.command == "validate-phase-1":
             if args.phase_1_artifact is None:
                 raise ValueError("--phase-1-artifact is required")

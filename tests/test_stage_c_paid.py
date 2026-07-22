@@ -88,6 +88,20 @@ def test_task_bundle_rejects_gold_and_historical_data(tmp_path: Path) -> None:
         stage_c_paid.load_agent_task_bundle(path, phase="phase_1")
 
 
+def test_task_bundle_preserves_nullable_formal_dataset_metadata(tmp_path: Path) -> None:
+    source = tmp_path / "formal-dataset.jsonl"
+    source.write_text("".join(json.dumps({
+        "instance_id": instance_id, "repo": "owner/repo", "base_commit": "a" * 40,
+        "problem_statement": "Repair the current repository.", "platform": None,
+        "version": None, "environment_setup_commit": None,
+    }) + "\n" for instance_id in stage_c.PHASE_1_IDS))
+    output = tmp_path / "tasks.jsonl"
+    built = stage_c_paid.build_agent_task_bundle(source_dataset=source, output=output, phase="phase_1")
+    rows = stage_c_paid.load_agent_task_bundle(output, phase="phase_1")
+    assert built["task_ids"] == list(stage_c.PHASE_1_IDS)
+    assert all(row["platform"] is None and row["version"] is None and row["environment_setup_commit"] is None for row in rows)
+
+
 def test_phase_two_deducts_verified_phase_one_conservative_consumption(tmp_path: Path) -> None:
     ledger = tmp_path / "terminal-ledger.json"
     report = tmp_path / "phase-report.json"

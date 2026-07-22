@@ -7,6 +7,7 @@ PAID_WORKFLOWS = (
     Path(".github/workflows/stage-c-smoke-paid.yml"),
     Path(".github/workflows/stage-c-continuation-paid.yml"),
 )
+TASK_BUNDLE_WORKFLOW = Path(".github/workflows/stage-c-task-bundle.yml")
 
 
 def test_paid_workflows_are_dispatch_only_and_default_inert() -> None:
@@ -41,3 +42,16 @@ def test_paid_continuation_binds_phase_one_artifact_before_phase_two_transport()
         "--phase-1-consumption-cny", "--phase-1-archive-sha256", "--confirm-paid-run",
     ):
         assert value in source
+
+
+def test_task_bundle_workflow_is_dispatch_only_and_zero_provider() -> None:
+    source = TASK_BUNDLE_WORKFLOW.read_text(encoding="utf-8")
+    for value in (
+        "workflow_dispatch:", "approved_commit", "8496125148", "29830820618",
+        "8b9309a9ee03b068bf96e69afd50ecc2c18e4a70046dc1ae99359310dc70c6c8",
+        "formal-dataset.jsonl", "build-task-bundle",
+        "stage-c-phase-1-task-bundle-",
+    ):
+        assert value in source
+    for forbidden in ("push:", "pull_request:", "schedule:", "BAILIAN_API_KEY", "execute-phase", "run_official_evaluator"):
+        assert forbidden not in source
