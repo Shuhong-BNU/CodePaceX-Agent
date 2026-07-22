@@ -333,12 +333,31 @@ def _pilot_config() -> PilotConfig:
 
 
 def _write_child_config(pilot: PilotConfig, home: Path) -> Path:
+    """Create and validate the isolated Agent configuration for one paid task.
+
+    The Stage C child runs from a freshly materialized SWE repository, so it
+    must not inherit either a developer's project config or their home config.
+    Only the frozen provider identity is written here; the credential remains
+    exclusively in the child environment under ``BAILIAN_API_KEY``.
+    """
+    from codepacex.config import load_config as load_codepacex_config
+
     payload = _provider_payload(pilot)
     payload["sandbox"] = {"enabled": False, "auto_allow": False, "network_enabled": False}
     config_dir = home / ".codepacex"
     config_dir.mkdir(parents=True)
     target = config_dir / "config.yaml"
     target.write_text(yaml.safe_dump(payload, sort_keys=True), encoding="utf-8")
+    loaded = load_codepacex_config(target)
+    if len(loaded.providers) != 1:
+        raise ValueError("generated Stage C child configuration must have one Provider")
+    provider = loaded.providers[0]
+    if (provider.name, provider.protocol, provider.base_url, provider.model) != (
+        pilot.provider, pilot.protocol, pilot.base_url, pilot.model_id,
+    ) or loaded.fallback:
+        raise ValueError("generated Stage C child configuration changed frozen identity")
+    if pilot.retry_budget != 0:
+        raise ValueError("Stage C child configuration requires retry=0")
     return target
 
 
@@ -484,6 +503,7 @@ def execute_phase(
         home = Path(home_text)
         profile_path = home / "profile.yaml"
         profile_path.write_text(yaml.safe_dump(stage_c.stage_c_profile().canonical_payload(), sort_keys=True), encoding="utf-8")
+        _write_child_config(_pilot_config(), home)
         # Synthetic deterministic executors never enter a Provider transport and
         # therefore must not require, read, or manufacture a Provider secret.
         # The real subprocess path is guarded by the explicit secret-presence

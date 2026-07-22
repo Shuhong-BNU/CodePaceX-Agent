@@ -7,6 +7,10 @@ from unittest.mock import patch
 
 import pytest
 
+from codepacex.agent import Agent
+from codepacex.client import create_client
+from codepacex.config import load_config
+from codepacex.tools import create_default_registry
 from evals import stage_c, stage_c_paid
 from evals.paid_gate import BudgetLedger, ProviderRequestBudget
 
@@ -54,6 +58,62 @@ def test_paid_phase_rejects_an_authorization_hash_mismatch_before_any_ledger_exi
             supplied_freeze_sha256="0" * 64, supplied_pricing_hash=identities["pricing_snapshot_hash"],
         )
     assert not list(tmp_path.iterdir())
+
+
+def test_stage_c_bootstraps_and_initializes_agent_from_a_clean_workspace_without_transport(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cover the real paid-run failure before any Provider transport is allowed.
+
+    The workspace deliberately has no project config.  Stage C must generate a
+    temporary HOME config, load it through CodePaceX's normal discovery path,
+    and initialize a real Agent.  The dummy key is a test fixture only; this
+    test never invokes ``Agent.run`` or a client stream method.
+    """
+    home = tmp_path / "isolated-home"
+    workspace = tmp_path / "fresh-workspace"
+    workspace.mkdir()
+    assert not (workspace / ".codepacex" / "config.yaml").exists()
+    assert not (home / ".codepacex" / "config.yaml").exists()
+    monkeypatch.chdir(workspace)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("BAILIAN_API_KEY", "offline-bootstrap-fixture")
+
+    config_path = stage_c_paid._write_child_config(stage_c_paid._pilot_config(), home)
+    assert config_path == home / ".codepacex" / "config.yaml"
+    assert "offline-bootstrap-fixture" not in config_path.read_text(encoding="utf-8")
+
+    config = load_config()
+    provider = config.providers[0]
+    assert (provider.name, provider.protocol, provider.base_url, provider.model) == (
+        "bailian-qwen37-max",
+        "openai-compat",
+        "https://llm-ipge9fy38w648m28.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        "qwen3.7-max-2026-06-08",
+    )
+    assert config.fallback == []
+    assert stage_c_paid._pilot_config().retry_budget == 0
+
+    # Constructing the concrete client and Agent reaches the exact startup
+    # boundary before Provider transport; no completion/stream call occurs.
+    agent = Agent(
+        client=create_client(provider, max_retries=0), registry=create_default_registry(),
+        protocol=provider.protocol, work_dir=str(workspace), max_iterations=stage_c.MAX_REQUESTS,
+        active_provider=provider, providers=config.providers, fallback=config.fallback,
+        experiment_profile=stage_c.stage_c_profile(),
+    )
+    assert agent.active_provider is provider
+    assert agent.max_iterations == stage_c.MAX_REQUESTS
+    assert not (workspace / ".codepacex" / "config.yaml").exists()
+
+    # No gate is opened and no Agent turn is run: therefore no Provider request,
+    # Usage, charge, settlement, or active reservation can exist in this test.
+    evidence_root = tmp_path / "zero-provider-evidence"
+    _prepare(evidence_root)
+    ledger = BudgetLedger.model_validate_json((evidence_root / "terminal-ledger.json").read_text())
+    assert ledger.active_reservation is None
+    assert ledger.request_charges == []
+    assert ledger.settlements == []
 
 
 def test_paid_phase_reserves_exactly_one_request_and_settles_to_no_active_reservation(tmp_path: Path) -> None:
