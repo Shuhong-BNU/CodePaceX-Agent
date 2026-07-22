@@ -140,3 +140,5 @@ in [`STAGE_C_CHARTER.md`](STAGE_C_CHARTER.md) and
 [`STAGE_C_RUNBOOK.md`](STAGE_C_RUNBOOK.md). Budget is reserved per request and a
 shortfall stops before transport, retaining unexecuted tasks as `not_run` rather
 than manufacturing a complete twenty-task Claim.
+The Freeze identities and zero-provider verification are in
+[`STAGE_C_FREEZE_REPORT.md`](STAGE_C_FREEZE_REPORT.md).
