@@ -17,6 +17,13 @@ recommendations, evaluator reports, and other task traces. The only treatment
 profile is the frozen `validation_mode=stage_b` profile and its profile/runtime
 hashes are bound into both the authorization and Run manifest.
 
+The zero-provider `build-task-bundle` command converts only the immutable
+formal Dataset into a fresh `tasks.jsonl`. Its schema is exactly seven fields:
+the four core fields are non-empty strings; `platform`, `version`, and
+`environment_setup_commit` retain their source string-or-`null` semantics.
+It never replaces `null` with synthetic metadata, and the generated file is
+reloaded through `load_agent_task_bundle()` before a workflow can upload it.
+
 ## Budget and terminal evidence
 
 Every actual Provider request uses the existing `ProviderRequestBudget` bridge:
@@ -51,3 +58,10 @@ also verifies the Phase 1 Artifact manifest, Artifact ID/archive digest,
 report/ledger hashes, all six scorable terminals, and exact 6/14 task binding.
 Neither workflow has schedule, push, or pull-request triggers, and Phase 1
 never starts Phase 2 automatically.
+
+[`stage-c-task-bundle.yml`](../.github/workflows/stage-c-task-bundle.yml) is a
+separate dispatch-only, zero-provider preparation workflow. It checks out an
+explicit immutable commit, verifies the fixed Goal 4 source Artifact digest,
+and uploads only a six-row `tasks.jsonl` plus a no-statement manifest/hash. It
+does not initialize a Provider, run an Agent or evaluator, or create a Stage C
+Trial.

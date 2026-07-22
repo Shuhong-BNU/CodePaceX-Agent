@@ -1,0 +1,68 @@
+name: Stage C Phase 1 safe task bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      approved_commit:
+        description: Immutable commit that will own the generated task bundle
+        required: true
+        default: ''
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  build-phase-1-task-bundle:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.approved_commit }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e . pytest pytest-asyncio
+      - name: Verify the immutable Goal 4 source Artifact identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test '${{ inputs.approved_commit }}' = "$(git rev-parse HEAD)"
+          digest="$(gh api "repos/${{ github.repository }}/actions/artifacts/8496125148" --jq .digest)"
+          test "$digest" = 'sha256:8b9309a9ee03b068bf96e69afd50ecc2c18e4a70046dc1ae99359310dc70c6c8'
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: '8496125148'
+          run-id: '29830820618'
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/goal4-source
+      - name: Produce a fresh six-task Agent-safe bundle
+        env:
+          SOURCE_ROOT: ${{ runner.temp }}/goal4-source
+          BUNDLE_ROOT: ${{ runner.temp }}/stage-c-task-bundle
+        run: |
+          set -euo pipefail
+          mapfile -t datasets < <(find "$SOURCE_ROOT" -type f -name formal-dataset.jsonl -print)
+          test "${#datasets[@]}" -eq 1
+          mkdir -p "$BUNDLE_ROOT"
+          python -m evals.stage_c_paid build-task-bundle --source-dataset "${datasets[0]}" --output "$BUNDLE_ROOT/tasks.jsonl" --phase phase_1 > "$BUNDLE_ROOT/bundle-summary.json"
+          python - "$BUNDLE_ROOT/bundle-summary.json" "$BUNDLE_ROOT/manifest.json" <<'PY'
+          import json, sys
+          summary, manifest = map(__import__('pathlib').Path, sys.argv[1:])
+          payload = json.loads(summary.read_text(encoding='utf-8'))
+          payload.update({
+              'source_workflow_run_id': '29830820618',
+              'source_artifact_id': '8496125148',
+              'source_archive_sha256': '8b9309a9ee03b068bf96e69afd50ecc2c18e4a70046dc1ae99359310dc70c6c8',
+          })
+          manifest.write_text(json.dumps(payload, sort_keys=True) + '\n', encoding='utf-8')
+          PY
+          python -m evals.secret_scan --artifact-root "$BUNDLE_ROOT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage-c-phase-1-task-bundle-${{ github.run_id }}
+          path: ${{ runner.temp }}/stage-c-task-bundle
+          if-no-files-found: error
