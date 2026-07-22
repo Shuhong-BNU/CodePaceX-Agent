@@ -57,6 +57,7 @@ from evals.paid_gate import (
     authorization_hash,
     ledger_fingerprint,
     provider_request_budget_environment,
+    rebind_ledger_authorization,
 )
 from evals.permission_study import trace_usage
 from evals.pilot import PilotConfig
@@ -300,6 +301,54 @@ def prepare_phase(
     return {"valid": True, "provider_requests": 0, "paid_workflow_dispatched": False, **binding}
 
 
+def prepare_phase_one_continuation(
+    *, root: Path, freeze_dir: Path, evidence_root: Path, source_root: Path,
+    source_artifact_id: str, source_archive_sha256: str, authorization_identity: str,
+) -> dict[str, Any]:
+    """Bind one recovered first Candidate and continue exactly the remaining five tasks.
+
+    This copies settled accounting (never a Candidate) into a new immutable root,
+    rebinds it to the current approved commit, and leaves the first task outside
+    the later Agent loop.
+    """
+    root, evidence_root, source_root = root.resolve(), evidence_root.resolve(), source_root.resolve()
+    if not _SHA256.fullmatch(source_archive_sha256) or not source_artifact_id:
+        raise ValueError("continuation requires an immutable source Artifact identity")
+    source_binding = _json(source_root / "phase-authorization.json")
+    source_ledger_path = source_root / "terminal-ledger.json"
+    source_ledger = BudgetLedger.model_validate_json(source_ledger_path.read_text(encoding="utf-8"))
+    if source_ledger.active_reservation is not None or len(source_ledger.request_charges) != len(source_ledger.settlements):
+        raise ValueError("source Phase 1 accounting is not terminal")
+    run = next((p for p in source_root.iterdir() if p.is_dir() and (p / "result.json").is_file()), None)
+    if run is None:
+        raise ValueError("source Candidate evidence is missing")
+    first = stage_c.PHASE_1_IDS[0]
+    prediction = run / f"{hashlib.sha256(first.encode()).hexdigest()}-prediction.json"
+    report = next(run.glob("qwen3.7-max-*.json"), None)
+    if not prediction.is_file() or report is None:
+        raise ValueError("source Candidate or frozen evaluator report is missing")
+    evaluator_id = f"{json.loads((run/'manifest.json').read_text())['run_id']}-{first}"
+    report_path = official_evaluator_report_path(cwd=run, run_id=evaluator_id, model_id="qwen3.7-max-2026-06-08", instance_id=first)
+    first_status = "resolved" if collect_goal3_official_outcome(report_path, first) else "unresolved"
+    if any(path.exists() for path in _phase_paths(evidence_root).values()):
+        raise ValueError("continuation evidence root is already initialized")
+    pricing = load_pricing(root / stage_c.PRICING_PATH)
+    identities = frozen_identities(root, freeze_dir)
+    cap = stage_c.PHASE_1_CAP
+    envelope = cap + Decimal("0.000001")
+    replacement = BudgetAuthorization(authorized_total_cny=envelope, stage_limits_cny={"A": envelope, "B": envelope, "C": envelope}, pricing_snapshot_hash=identities["pricing_snapshot_hash"], experiment_commit=current_git_commit(root), authorized_at="user-approved-stage-c-continuation", authorized_by="user")
+    previous = BudgetAuthorization.model_validate_json((source_root / "budget-authorization.json").read_text())
+    paths = _phase_paths(evidence_root)
+    evidence_root.mkdir(parents=True)
+    shutil.copyfile(source_ledger_path, paths["ledger"])
+    ledger = rebind_ledger_authorization(paths["ledger"], previous=previous, replacement=replacement)
+    baseline = ledger_fingerprint(ledger)
+    allocation = StageCBudgetAllocation(experiment_commit=current_git_commit(root), pricing_snapshot_hash=identities["pricing_snapshot_hash"], baseline_ledger_sha256=baseline, baseline_authorization_hash=authorization_hash(replacement), baseline_spent_cny=ledger.spent_cny, baseline_request_charge_count=len(ledger.request_charges), baseline_settlement_count=len(ledger.settlements), baseline_rebind_count=len(ledger.authorization_rebinds), safety_reserve_cny=Decimal("0.000001"), spendable_total_cny=cap, category_limits_cny={"swe": cap-ledger.spent_cny, "mcp":Decimal("0"), "retention":Decimal("0"), "permission":Decimal("0"), "multi_agent":Decimal("0"), "long_session":Decimal("0")})
+    binding = {"schema_version":1,"phase":"phase_1","paid_execution":True,"continuation":True,"authorization_identity":authorization_identity,"approved_commit":current_git_commit(root),**identities,"authorization_cap_cny":str(cap),"next_request_maximum_cny":str(Decimal(stage_c.budget_contract(root)["per_request_maximum_reservation_cny"])),"task_ids":list(stage_c.PHASE_1_IDS),"completed_statuses":{first:first_status},"source_artifact_id":source_artifact_id,"source_archive_sha256":source_archive_sha256,"source_candidate_sha256":_sha256(prediction),"source_evaluator_report_sha256":_sha256(report_path),"source_ledger_sha256":_sha256(source_ledger_path),"budget_authorization_sha256":authorization_hash(replacement)}
+    _write_new(paths["binding"], binding); _write_new(paths["budget_authorization"], replacement.model_dump(mode="json")); _write_new(paths["allocation"], allocation.model_dump(mode="json")); _write_new(evidence_root / "recovery-evidence.json", {"schema_version":1,"source_artifact_id":source_artifact_id,"source_archive_sha256":source_archive_sha256,"candidate_sha256":_sha256(prediction),"evaluator_report_sha256":_sha256(report_path),"instance_id":first,"status":first_status,"provider_requests_added":0,"usage_added":0,"charge_added_cny":"0","settlements_added":0,"active_reservation":None})
+    return binding
+
+
 def _load_phase_gate(*, root: Path, evidence_root: Path) -> tuple[dict[str, Any], PaidRunGate]:
     paths = _phase_paths(evidence_root.resolve())
     binding = _json(paths["binding"])
@@ -468,6 +517,7 @@ def execute_phase(
     *, root: Path, freeze_dir: Path, evidence_root: Path, phase: Phase, run_id: str,
     task_bundle: Path, confirmed: bool, executor: TaskExecutor | None = None,
     evaluator: Callable[[Mapping[str, str], TaskExecution, RunRecorder, str], TaskExecution] | None = None,
+    completed_statuses: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Run one authorized phase serially, stopping at the first non-scorable terminal.
 
@@ -488,6 +538,9 @@ def execute_phase(
     if any(binding.get(key) != identities[key] for key in identities):
         raise ValueError("paid phase identity differs from the committed Freeze")
     tasks = load_agent_task_bundle(task_bundle.resolve(), phase=phase)
+    completed_statuses = dict(completed_statuses or binding.get("completed_statuses", {}))
+    if completed_statuses and (phase != "phase_1" or set(completed_statuses) != {stage_c.PHASE_1_IDS[0]} or completed_statuses[stage_c.PHASE_1_IDS[0]] not in SCORABLE):
+        raise ValueError("Phase 1 continuation must bind exactly one scorable first-task recovery")
     if phase == "phase_2":
         if not binding.get("phase_1_artifact_manifest"):
             raise ValueError("Phase 2 binding lacks Phase 1 Artifact")
@@ -512,7 +565,7 @@ def execute_phase(
             _child_environment(_pilot_config(), home_text, root=root)
             if executor is None else {}
         )
-        for task in tasks:
+        for task in tasks[len(completed_statuses):]:
             instance_id = task["instance_id"]
             trial_id = _task_trial_id(run_id, phase, instance_id)
             accounting: dict[str, Any] = {"trial_id": trial_id, "request_count": 0, "actual_cny": "0"}
@@ -609,8 +662,13 @@ def execute_phase(
                                                 "provider_request_count": terminal["provider_requests"]})
             if terminal["status"] not in SCORABLE:
                 break
-    statuses = {task["instance_id"]: _json(_task_record_path(recorder, task["instance_id"]))["status"]
-                for task in tasks if _task_record_path(recorder, task["instance_id"]).exists()}
+    statuses = {
+        **completed_statuses,
+        **{
+            task["instance_id"]: _json(_task_record_path(recorder, task["instance_id"]))["status"]
+            for task in tasks if _task_record_path(recorder, task["instance_id"]).exists()
+        },
+    }
     statuses = {**statuses, **{item: "not_run" for item in phase_ids(phase) if item not in statuses}}
     if phase == "phase_2" and formal_stage_c_trial and all(value in SCORABLE for value in statuses.values()):
         report = compile_full_paired_result(
@@ -694,7 +752,7 @@ def process_metrics(*, ledgers: Sequence[Path]) -> dict[str, Any]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Explicitly authorized Stage C paid execution")
-    parser.add_argument("command", choices=["identities", "build-task-bundle", "prepare-phase", "validate-phase-1", "execute-phase"])
+    parser.add_argument("command", choices=["identities", "build-task-bundle", "prepare-phase", "prepare-phase1-continuation", "validate-phase-1", "execute-phase"])
     parser.add_argument("--root", type=Path, default=Path("."))
     parser.add_argument("--freeze-dir", type=Path, default=Path("evals/stage_c"))
     parser.add_argument("--evidence-root", type=Path)
@@ -707,6 +765,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--phase-1-artifact", type=Path)
     parser.add_argument("--phase-1-artifact-id", default="")
     parser.add_argument("--phase-1-archive-sha256", default="")
+    parser.add_argument("--source-root", type=Path)
+    parser.add_argument("--source-artifact-id", default="")
+    parser.add_argument("--source-archive-sha256", default="")
     parser.add_argument("--task-bundle", type=Path)
     parser.add_argument("--source-dataset", type=Path)
     parser.add_argument("--output", type=Path)
@@ -735,6 +796,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                                    phase_1_artifact=args.phase_1_artifact,
                                    phase_1_artifact_id=args.phase_1_artifact_id or None,
                                    phase_1_archive_sha256=args.phase_1_archive_sha256 or None)
+        elif args.command == "prepare-phase1-continuation":
+            if args.evidence_root is None or args.source_root is None:
+                raise ValueError("--evidence-root and --source-root are required")
+            result = prepare_phase_one_continuation(
+                root=args.root, freeze_dir=args.freeze_dir, evidence_root=args.evidence_root,
+                source_root=args.source_root, source_artifact_id=args.source_artifact_id,
+                source_archive_sha256=args.source_archive_sha256,
+                authorization_identity=args.authorization_identity,
+            )
         else:
             if args.evidence_root is None or args.phase is None or args.task_bundle is None:
                 raise ValueError("--evidence-root, --phase, and --task-bundle are required")
