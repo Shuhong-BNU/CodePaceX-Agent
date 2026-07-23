@@ -28,7 +28,10 @@ from evals.paid_gate import (
     BudgetAuthorization,
     BudgetLedger,
     PaidRunGate,
+    StageCBudgetAllocation,
+    allocation_hash,
     authorization_hash,
+    ledger_fingerprint,
     worst_case_reservation,
 )
 
@@ -276,6 +279,34 @@ def run_environment_preflight(*, freeze: Path, artifact_root: Path) -> dict[str,
     return summary
 
 
+def _fresh_rehearsal_allocation(
+    authorization: BudgetAuthorization, ledger: BudgetLedger, pricing_hash: str,
+) -> StageCBudgetAllocation:
+    safety_reserve = Decimal("0.000001")
+    spendable_total = authorization.authorized_total_cny - safety_reserve
+    return StageCBudgetAllocation(
+        experiment_commit=authorization.experiment_commit,
+        pricing_snapshot_hash=pricing_hash,
+        baseline_ledger_sha256=ledger_fingerprint(ledger),
+        baseline_authorization_hash=authorization_hash(authorization),
+        baseline_spent_cny=ledger.spent_cny,
+        baseline_request_charge_count=len(ledger.request_charges),
+        baseline_settlement_count=len(ledger.settlements),
+        baseline_budget_block_count=len(ledger.budget_blocks),
+        baseline_rebind_count=len(ledger.authorization_rebinds),
+        safety_reserve_cny=safety_reserve,
+        spendable_total_cny=spendable_total,
+        category_limits_cny={
+            "swe": spendable_total,
+            "mcp": Decimal("0"),
+            "retention": Decimal("0"),
+            "permission": Decimal("0"),
+            "multi_agent": Decimal("0"),
+            "long_session": Decimal("0"),
+        },
+    )
+
+
 def rehearse_paid_path(*, root: Path, freeze: Path, preflight_summary: Path, artifact_root: Path) -> dict[str, Any]:
     root, artifact_root = root.resolve(), artifact_root.resolve()
     freeze_payload = json.loads((freeze / "control-canary-freeze.json").read_text(encoding="utf-8"))
@@ -294,9 +325,20 @@ def rehearse_paid_path(*, root: Path, freeze: Path, preflight_summary: Path, art
     )
     authorization_path = artifact_root / "rehearsal-authorization.json"
     ledger_path = artifact_root / "rehearsal-ledger.json"
+    allocation_path = artifact_root / "rehearsal-stage-c-allocation.json"
     _write_json(authorization_path, authorization.model_dump(mode="json"))
-    _write_json(ledger_path, BudgetLedger(authorization_hash=authorization_hash(authorization), updated_at="zero-provider-rehearsal").model_dump(mode="json"))
-    gate = PaidRunGate(root=root, authorization_path=authorization_path, ledger_path=ledger_path, pricing=pricing, stage="C")
+    initial_ledger = BudgetLedger(
+        authorization_hash=authorization_hash(authorization), updated_at="zero-provider-rehearsal",
+    )
+    _write_json(ledger_path, initial_ledger.model_dump(mode="json"))
+    allocation = _fresh_rehearsal_allocation(
+        authorization, initial_ledger, pricing_snapshot_hash(pricing),
+    )
+    _write_json(allocation_path, allocation.model_dump(mode="json"))
+    gate = PaidRunGate(
+        root=root, authorization_path=authorization_path, ledger_path=ledger_path,
+        pricing=pricing, stage="C", allocation_path=allocation_path,
+    )
     reservations: list[dict[str, Any]] = []
     for task in freeze_payload["tasks"]:
         reservation = gate.reserve(f"swe/v2-control/rehearsal/{task['instance_id']}", maximum_requests=1, maximum_input_tokens_per_request=MAX_INPUT_TOKENS, maximum_output_tokens_per_request=MAX_OUTPUT_TOKENS)
@@ -305,7 +347,27 @@ def rehearse_paid_path(*, root: Path, freeze: Path, preflight_summary: Path, art
     ledger = BudgetLedger.model_validate_json(ledger_path.read_text(encoding="utf-8"))
     if ledger.active_reservation is not None or ledger.request_charges or ledger.spent_cny != 0:
         raise RuntimeError("zero-provider paid-path rehearsal did not close cleanly")
-    result = {"schema_version": SCHEMA_VERSION, "paid_execution": False, "provider_requests": 0, "usage": 0, "charge_cny": "0", "settlements": len(ledger.settlements), "active_reservation": None, "provider_secret_read": False, "reservations": reservations, "freeze_sha256": _sha256(freeze / "control-canary-freeze.json")}
+    result = {
+        "schema_version": SCHEMA_VERSION,
+        "paid_execution": False,
+        "provider_requests": 0,
+        "usage": 0,
+        "charge_cny": "0",
+        "settlements": len(ledger.settlements),
+        "active_reservation": None,
+        "provider_secret_read": False,
+        "reservations": reservations,
+        "freeze_sha256": _sha256(freeze / "control-canary-freeze.json"),
+        "allocation": {
+            "path": allocation_path.name,
+            "sha256": allocation_hash(allocation),
+            "baseline_ledger_sha256": allocation.baseline_ledger_sha256,
+            "spendable_total_cny": str(allocation.spendable_total_cny),
+            "safety_reserve_cny": str(allocation.safety_reserve_cny),
+            "remaining_spendable_cny": str(allocation.spendable_total_cny - ledger.spent_cny),
+            "closed": ledger.active_reservation is None and not ledger.request_charges and ledger.spent_cny == 0,
+        },
+    }
     _write_json(artifact_root / "paid-path-rehearsal.json", result)
     return result
 

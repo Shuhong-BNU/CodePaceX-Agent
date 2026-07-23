@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -105,3 +106,108 @@ def test_paid_runner_requires_explicit_executor(tmp_path: Path) -> None:
     assert canary.execute_paid_canary(freeze=freeze, paid_execution=False) == []
     with pytest.raises(ValueError, match="separately authorized"):
         canary.execute_paid_canary(freeze=freeze, paid_execution=True)
+
+
+def test_rehearsal_allocation_fails_closed_when_missing_or_not_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    pricing = canary.load_pricing(root / canary.PRICING_PATH)
+    authorization = canary.BudgetAuthorization(
+        authorized_total_cny=canary.RECOMMENDED_HARD_CAP_CNY,
+        stage_limits_cny={"A": canary.RECOMMENDED_HARD_CAP_CNY, "B": canary.RECOMMENDED_HARD_CAP_CNY, "C": canary.RECOMMENDED_HARD_CAP_CNY},
+        pricing_snapshot_hash=canary.pricing_snapshot_hash(pricing),
+        experiment_commit=canary.current_git_commit(root),
+        authorized_at="zero-provider-rehearsal",
+        authorized_by="user",
+    )
+    authorization_path = tmp_path / "authorization.json"
+    ledger_path = tmp_path / "ledger.json"
+    allocation_path = tmp_path / "allocation.json"
+    canary._write_json(authorization_path, authorization.model_dump(mode="json"))
+    ledger = canary.BudgetLedger(
+        authorization_hash=canary.authorization_hash(authorization), updated_at="zero-provider-rehearsal",
+    )
+    canary._write_json(ledger_path, ledger.model_dump(mode="json"))
+    monkeypatch.setattr("evals.paid_gate._git_is_clean", lambda _root: True)
+    with pytest.raises(ValueError, match="requires a budget allocation"):
+        canary.PaidRunGate(root=root, authorization_path=authorization_path, ledger_path=ledger_path, pricing=pricing, stage="C")
+
+    allocation = canary._fresh_rehearsal_allocation(
+        authorization, ledger, canary.pricing_snapshot_hash(pricing),
+    )
+    canary._write_json(allocation_path, allocation.model_copy(update={"experiment_commit": "0" * 40}).model_dump(mode="json"))
+    with pytest.raises(ValueError, match="not bound to the authorization"):
+        canary.PaidRunGate(root=root, authorization_path=authorization_path, ledger_path=ledger_path, pricing=pricing, stage="C", allocation_path=allocation_path)
+
+    canary._write_json(allocation_path, allocation.model_copy(update={"spendable_total_cny": Decimal("15")}).model_dump(mode="json"))
+    with pytest.raises(ValueError, match="consumes the reserved safety margin"):
+        canary.PaidRunGate(root=root, authorization_path=authorization_path, ledger_path=ledger_path, pricing=pricing, stage="C", allocation_path=allocation_path)
+
+    canary._write_json(allocation_path, allocation.model_dump(mode="json"))
+    historical = ledger.model_copy(update={"authorization_hash": "f" * 64})
+    canary._write_json(ledger_path, historical.model_dump(mode="json"))
+    with pytest.raises(ValueError, match="belongs to a different authorization"):
+        gate = canary.PaidRunGate(root=root, authorization_path=authorization_path, ledger_path=ledger_path, pricing=pricing, stage="C", allocation_path=allocation_path)
+        gate.reserve("swe/v2-control/rehearsal/historical", maximum_requests=1, maximum_input_tokens_per_request=canary.MAX_INPUT_TOKENS, maximum_output_tokens_per_request=canary.MAX_OUTPUT_TOKENS)
+
+
+def test_workflow_owns_output_directories_and_redirect_parents(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repository_root = Path(__file__).resolve().parents[1]
+    workflow = (repository_root / ".github" / "workflows" / "evaluation-v2-control-canary.yml").read_text(encoding="utf-8")
+    assert 'mkdir -p "$root"' in workflow
+    for child in ("freeze", "preflight", "rehearsal"):
+        assert f'mkdir -p "$root/{child}"' not in workflow
+    setup_index = workflow.index('mkdir -p "$root"')
+    command_indexes = [workflow.index(f'> "$CANARY_ROOT/{name}"') for name in ("freeze-result.json", "preflight-result.json", "rehearsal-result.json")]
+    assert setup_index < min(command_indexes)
+    assert workflow.index("control_canary freeze") < workflow.index("control_canary validate") < workflow.index("control_canary preflight") < workflow.index("control_canary rehearse")
+    for name in ("freeze-result.json", "freeze-validation.json", "preflight-result.json", "rehearsal-result.json"):
+        assert f'"$CANARY_ROOT/{name}"' in workflow
+
+    root = tmp_path / "workflow-root"
+    root.mkdir()
+    freeze = root / "freeze"
+    preflight = root / "preflight"
+    rehearsal = root / "rehearsal"
+    assert not any(path.exists() for path in (freeze, preflight, rehearsal))
+
+    canary.main(["freeze", "--root", str(repository_root), "--output", str(freeze)])
+    canary.main(["validate", "--root", str(repository_root), "--freeze", str(freeze)])
+
+    def materialize(task: dict[str, str], workspace: Path) -> None:
+        workspace.mkdir(parents=True)
+
+    def bootstrap(workspace: Path) -> tuple[Path, list[dict[str, object]]]:
+        python = workspace / "fake-python"
+        return python, [{"command": [str(python), "-m", "pip", "install", "-e", ".", "pytest"], "exit_code": 0, "stdout": "installed", "stderr": ""}]
+
+    def run(command: list[str], *, cwd: Path, timeout: int = 1200) -> canary.subprocess.CompletedProcess[str]:
+        if "pytest" in command:
+            return canary.subprocess.CompletedProcess(command, 0, "collected 1 item\n1 passed", "")
+        return canary.subprocess.CompletedProcess(command, 0, "installed", "")
+
+    monkeypatch.setattr(canary, "_goal3_materialize_instance", materialize)
+    monkeypatch.setattr(canary, "_bootstrap", bootstrap)
+    monkeypatch.setattr(canary, "_run", run)
+    monkeypatch.setattr("evals.paid_gate._git_is_clean", lambda _root: True)
+    canary.main(["preflight", "--freeze", str(freeze), "--artifact-root", str(preflight)])
+    canary.main(["rehearse", "--root", str(repository_root), "--freeze", str(freeze), "--preflight-summary", str(preflight / "preflight-summary.json"), "--artifact-root", str(rehearsal)])
+
+    assert freeze.is_dir() and preflight.is_dir() and rehearsal.is_dir()
+    summary = json.loads((preflight / "preflight-summary.json").read_text(encoding="utf-8"))
+    rehearsal_result = json.loads((rehearsal / "paid-path-rehearsal.json").read_text(encoding="utf-8"))
+    ledger = canary.BudgetLedger.model_validate_json((rehearsal / "rehearsal-ledger.json").read_text(encoding="utf-8"))
+    assert summary["passed"] is True
+    assert all(item["task_workspace_materialized"] and item["dependencies_installed"] and item["test_collection_completed"] and item["meaningful_test_executed"] and item["environment_blocker"] is None for item in summary["tasks"])
+    assert rehearsal_result["provider_requests"] == rehearsal_result["usage"] == 0
+    assert rehearsal_result["charge_cny"] == "0"
+    assert rehearsal_result["active_reservation"] is None
+    assert (rehearsal / rehearsal_result["allocation"]["path"]).is_file()
+    assert rehearsal_result["allocation"]["closed"] is True
+    assert rehearsal_result["allocation"]["remaining_spendable_cny"] == "14.999999"
+    assert ledger.request_charges == []
+    assert ledger.spent_cny == 0
+    assert ledger.active_reservation is None
+    assert [item["status"] for item in rehearsal_result["reservations"]] == ["cancelled", "cancelled"]
+    assert all(Decimal(item["settlement_cny"]) == 0 for item in rehearsal_result["reservations"])
