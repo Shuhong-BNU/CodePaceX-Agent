@@ -1,6 +1,11 @@
 name: Evaluation V2 Control Canary
 
 on:
+  pull_request:
+    paths:
+      - ".github/workflows/evaluation-v2-control-canary.yml"
+      - "evals/evaluation_v2/control_canary.py"
+      - "tests/test_evaluation_v2_control_canary.py"
   workflow_dispatch:
     inputs:
       paid_execution:
@@ -14,7 +19,7 @@ permissions:
 
 jobs:
   zero-provider-preflight:
-    if: ${{ inputs.paid_execution == false }}
+    if: ${{ github.event_name == 'pull_request' || inputs.paid_execution == false }}
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     env:
@@ -73,7 +78,7 @@ jobs:
           if-no-files-found: warn
 
   paid-execution-disabled:
-    if: ${{ inputs.paid_execution == true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.paid_execution == true }}
     runs-on: ubuntu-22.04
     steps:
       - name: Refuse paid execution in the zero-provider phase

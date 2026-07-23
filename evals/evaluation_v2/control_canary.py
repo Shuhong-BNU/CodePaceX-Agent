@@ -44,19 +44,21 @@ MAX_INPUT_TOKENS = 128_000
 MAX_OUTPUT_TOKENS = 8_192
 MAX_REASONING_TOKENS = 6_144
 RECOMMENDED_HARD_CAP_CNY = Decimal("15.000000")
-TASKS: tuple[dict[str, str], ...] = (
+TASKS: tuple[dict[str, Any], ...] = (
     {
         "instance_id": "beetbox__beets-5495",
         "repo": "beetbox/beets",
         "base_commit": "fa10dcf11add0afd3b4b22af29f8d504e7ef8a0a",
-        "test_command": "test/test_importer.py::ImportTest::test_set_fields",
+        "test_target": "test/test_importer.py::ImportSingletonTest::test_set_fields",
+        "preflight_dependencies": ["responses>=0.3.0"],
         "historical_goal4_cost_cny": "1.010196",
     },
     {
         "instance_id": "beancount__beancount-931",
         "repo": "beancount/beancount",
         "base_commit": "a0e6f445fbf0d101602a4b6d886d6320971587b6",
-        "test_command": "beancount/plugins/leafonly_test.py::TestLeafOnly::test_leaf_only3",
+        "test_target": "beancount/plugins/leafonly_test.py",
+        "preflight_dependencies": [],
         "historical_goal4_cost_cny": "3.297720",
     },
 )
@@ -155,7 +157,7 @@ def freeze_payload(root: Path) -> dict[str, Any]:
             "report_selection": "detailed_then_summary_fail_closed-v1",
         },
         "workspace_materialization": "git-clone-filter-blob-none-detached-base-v1",
-        "dependency_bootstrap": "isolated-venv-pip-install-editable-plus-pytest-v1",
+        "dependency_bootstrap": "isolated-venv-pip-install-editable-pytest-and-frozen-preflight-dependencies-v2",
         "gold_patch_forbidden": True,
         "fresh_authorization_and_ledger_required": True,
         "terminal_status_schema": ["resolved", "unresolved", "agent_no_candidate", "protocol_blocked", "provider_transport_error", "evaluator_unavailable", "evaluator_execution_error", "evaluator_report_selection_error", "runner_error", "budget_blocked"],
@@ -208,6 +210,8 @@ def _environment_blocker(result: subprocess.CompletedProcess[str]) -> str | None
     text = (result.stdout + "\n" + result.stderr).lower()
     if "modulenotfounderror" in text or "no module named" in text:
         return "missing_python_dependency"
+    if "not found:" in text or "not found\n" in text or "file or directory not found" in text:
+        return "pytest_selector_not_found"
     if "error collecting" in text or result.returncode == 4:
         return "pytest_collection_error"
     if "command not found" in text or result.returncode == 127:
@@ -217,40 +221,89 @@ def _environment_blocker(result: subprocess.CompletedProcess[str]) -> str | None
     return None
 
 
-def _bootstrap(workspace: Path) -> tuple[Path, list[dict[str, Any]]]:
+def _bootstrap(
+    workspace: Path, preflight_dependencies: Sequence[str],
+) -> tuple[Path, list[dict[str, Any]]]:
     venv_path = workspace / ".evaluation-v2-preflight-venv"
     venv.EnvBuilder(with_pip=True, clear=True).create(venv_path)
     python = venv_path / "bin" / "python"
-    install = _run([str(python), "-m", "pip", "install", "--disable-pip-version-check", "-e", ".", "pytest"], cwd=workspace)
-    logs = [{"command": [str(python), "-m", "pip", "install", "--disable-pip-version-check", "-e", ".", "pytest"], "exit_code": install.returncode, "stdout": install.stdout, "stderr": install.stderr}]
+    command = [
+        str(python), "-m", "pip", "install", "--disable-pip-version-check",
+        "-e", ".", "pytest", *preflight_dependencies,
+    ]
+    install = _run(command, cwd=workspace)
+    logs = [{
+        "command": command,
+        "exit_code": install.returncode,
+        "stdout": install.stdout,
+        "stderr": install.stderr,
+        "preflight_dependencies": list(preflight_dependencies),
+    }]
     return python, logs
 
 
-def preflight_task(task: dict[str, str], *, work_root: Path) -> dict[str, Any]:
+def _collected_test_count(result: subprocess.CompletedProcess[str]) -> int:
+    output = result.stdout + "\n" + result.stderr
+    matches = re.findall(r"(\d+)\s+(?:tests?|items?)\s+collected", output, re.IGNORECASE)
+    return int(matches[-1]) if matches else 0
+
+
+def preflight_task(task: dict[str, Any], *, work_root: Path) -> dict[str, Any]:
     work_root.mkdir(parents=True, exist_ok=True)
     workspace = work_root / task["instance_id"]
     artifact = work_root / "evidence" / task["instance_id"]
     artifact.mkdir(parents=True, exist_ok=True)
-    result: dict[str, Any] = {"instance_id": task["instance_id"], "repository": task["repo"], "base_commit": task["base_commit"], "task_workspace_materialized": False, "dependencies_installed": False, "test_collection_completed": False, "meaningful_test_executed": False, "environment_blocker": None, "test_command": task["test_command"]}
+    test_target = str(task["test_target"])
+    dependencies = [str(item) for item in task["preflight_dependencies"]]
+    result: dict[str, Any] = {
+        "instance_id": task["instance_id"],
+        "repository": task["repo"],
+        "base_commit": task["base_commit"],
+        "test_target": test_target,
+        "preflight_dependencies": dependencies,
+        "task_workspace_materialized": False,
+        "dependencies_installed": False,
+        "test_collection_completed": False,
+        "collected_test_count": 0,
+        "meaningful_test_executed": False,
+        "environment_blocker": None,
+    }
     phase = "workspace_materialization"
     try:
         _goal3_materialize_instance(task, workspace)
         result["task_workspace_materialized"] = True
         phase = "dependency_bootstrap"
-        python, installs = _bootstrap(workspace)
+        python, installs = _bootstrap(workspace, dependencies)
         _write_json(artifact / "dependency-bootstrap.json", installs)
         if installs[-1]["exit_code"]:
             raise RuntimeError("dependency bootstrap command failed")
         result["dependencies_installed"] = True
-        phase = "test_execution"
-        test = _run([str(python), "-m", "pytest", task["test_command"]], cwd=workspace)
-        _write_json(artifact / "test-command.json", {"command": [str(python), "-m", "pytest", task["test_command"]]})
-        (artifact / "test.stdout.txt").write_text(test.stdout, encoding="utf-8")
-        (artifact / "test.stderr.txt").write_text(test.stderr, encoding="utf-8")
-        result["exit_code"] = test.returncode
-        result["test_collection_completed"] = bool(re.search(r"collected\s+\d+\s+items?", test.stdout)) and "error collecting" not in (test.stdout + test.stderr).lower()
-        result["environment_blocker"] = _environment_blocker(test)
-        result["meaningful_test_executed"] = result["environment_blocker"] is None and result["test_collection_completed"]
+        phase = "test_collection"
+        collect_command = [str(python), "-m", "pytest", "--collect-only", "-q", test_target]
+        collected = _run(collect_command, cwd=workspace)
+        _write_json(artifact / "collection-command.json", {"command": collect_command})
+        (artifact / "collection.stdout.txt").write_text(collected.stdout, encoding="utf-8")
+        (artifact / "collection.stderr.txt").write_text(collected.stderr, encoding="utf-8")
+        count = _collected_test_count(collected)
+        result["collection_exit_code"] = collected.returncode
+        result["collected_test_count"] = count
+        blocker = _environment_blocker(collected)
+        if blocker is None and count == 0:
+            blocker = "pytest_collected_zero_tests"
+        if blocker is not None:
+            result["environment_blocker"] = blocker
+        else:
+            result["test_collection_completed"] = True
+            phase = "test_execution"
+            execute_command = [str(python), "-m", "pytest", test_target]
+            test = _run(execute_command, cwd=workspace)
+            _write_json(artifact / "execution-command.json", {"command": execute_command})
+            (artifact / "execution.stdout.txt").write_text(test.stdout, encoding="utf-8")
+            (artifact / "execution.stderr.txt").write_text(test.stderr, encoding="utf-8")
+            result["execution_exit_code"] = test.returncode
+            result["exit_code"] = test.returncode
+            result["environment_blocker"] = _environment_blocker(test)
+            result["meaningful_test_executed"] = result["environment_blocker"] is None
     except subprocess.TimeoutExpired as exc:
         result["environment_blocker"] = f"{phase}_timeout"
         result["error"] = str(exc)
@@ -258,6 +311,7 @@ def preflight_task(task: dict[str, str], *, work_root: Path) -> dict[str, Any]:
         result["environment_blocker"] = {
             "workspace_materialization": "workspace_materialization_failed",
             "dependency_bootstrap": "dependency_bootstrap_failed",
+            "test_collection": "test_collection_failed",
             "test_execution": "test_execution_failed",
         }[phase]
         result["error"] = str(exc)
