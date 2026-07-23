@@ -92,6 +92,26 @@ jobs:
           assert rehearsal['settlements'] == 2 and rehearsal['active_reservation'] is None
           assert rehearsal['provider_secret_read'] is False
           PY
+      - name: Run deterministic two-task paid-path shadow without Provider transport
+        run: |
+          set -euo pipefail
+          python -m evals.evaluation_v2.control_canary shadow --root . --freeze "$CANARY_ROOT/freeze" --preflight-summary "$CANARY_ROOT/preflight/preflight-summary.json" --artifact-root "$CANARY_ROOT/shadow" --run-id "shadow-$GITHUB_RUN_ID" > "$CANARY_ROOT/shadow-result.json"
+          python -m evals.evaluation_v2.control_canary summary --artifact-root "$CANARY_ROOT/shadow" > "$CANARY_ROOT/shadow-summary-result.json"
+          python - "$CANARY_ROOT/shadow/shadow-canary-summary.json" "$CANARY_ROOT/shadow/canary-result-summary.json" <<'PY'
+          import json, sys
+          shadow, summary = (json.load(open(path, encoding='utf-8')) for path in sys.argv[1:])
+          assert shadow['paid_execution'] is False
+          assert shadow['provider_requests'] == shadow['usage'] == 0
+          assert shadow['charge_cny'] == '0' and shadow['provider_secret_read'] is False
+          assert shadow['simulated_provider_requests'] == 2 and shadow['active_reservation'] is None
+          assert [item['terminal_status'] for item in shadow['results']] == ['unresolved', 'resolved']
+          assert summary['candidate_count'] == summary['scorable_count'] == 2
+          assert summary['v2_2_gate']['status'] == 'V2_2_DIAGNOSTIC_PILOT_GO'
+          PY
+      - name: Compile release readiness check without dispatching paid execution
+        run: |
+          set -euo pipefail
+          python -m evals.evaluation_v2.control_canary release-check --root . --freeze "$CANARY_ROOT/freeze" --preflight-summary "$CANARY_ROOT/preflight/preflight-summary.json" --ledger "$CANARY_ROOT/shadow/ledger.json" --output "$CANARY_ROOT/release-check.json" > "$CANARY_ROOT/release-check-result.json"
       - name: Upload Control Canary evidence
         if: always()
         uses: actions/upload-artifact@v4

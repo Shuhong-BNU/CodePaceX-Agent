@@ -257,6 +257,83 @@ def test_fake_paid_path_validates_authorization_and_serial_health(
     assert (tmp_path / "paid" / "stage-c-compatibility-allocation.json").is_file()
 
 
+def test_shadow_canary_exercises_two_serial_tasks_and_compiles_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    freeze = tmp_path / "freeze"
+    canary.write_freeze(root=root, output=freeze)
+    preflight = tmp_path / "preflight-summary.json"
+    preflight.write_text(json.dumps({"passed": True}), encoding="utf-8")
+    monkeypatch.setattr("evals.paid_gate._git_is_clean", lambda _root: True)
+    result = canary.run_shadow_canary(
+        root=root, freeze=freeze, preflight_summary=preflight,
+        artifact_root=tmp_path / "shadow", run_id="shadow-001",
+    )
+    assert result["paid_execution"] is False
+    assert result["provider_requests"] == result["usage"] == 0
+    assert result["charge_cny"] == "0"
+    assert result["simulated_provider_requests"] == 2
+    assert [item["terminal_status"] for item in result["results"]] == ["unresolved", "resolved"]
+    ledger = canary.BudgetLedger.model_validate_json((tmp_path / "shadow" / "ledger.json").read_text())
+    assert len(ledger.request_charges) == len(ledger.settlements) == 2
+    assert ledger.active_reservation is None
+    summary = json.loads((tmp_path / "shadow" / "canary-result-summary.json").read_text())
+    assert summary["v2_2_gate"]["status"] == "V2_2_DIAGNOSTIC_PILOT_GO"
+    assert summary["candidate_count"] == summary["scorable_count"] == 2
+    assert (tmp_path / "shadow" / "canary-result-summary.md").is_file()
+
+
+@pytest.mark.parametrize("terminal_status", ["agent_no_candidate", "evaluator_execution_error", "provider_transport_error", "budget_blocked"])
+def test_unhealthy_paid_results_stop_before_task_two(terminal_status: str, tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    freeze = tmp_path / "freeze"
+    canary.write_freeze(root=root, output=freeze)
+    calls: list[str] = []
+
+    def executor(task: dict[str, str]) -> canary.PaidTaskResult:
+        calls.append(task["instance_id"])
+        return canary.PaidTaskResult(
+            instance_id=task["instance_id"], agent_status="completed", candidate_status="not_exported",
+            validation_status="not_run", evaluator_status="not_run", runner_status="error",
+            provider_status=terminal_status, terminal_status=terminal_status,
+            active_reservation=None, failure_classification=terminal_status,
+        )
+
+    results = canary.execute_paid_canary(root=root, freeze=freeze, paid_execution=True, executor=executor)
+    assert len(results) == len(calls) == 1
+    assert calls == ["beetbox__beets-5495"]
+
+
+def test_v2_2_gate_reports_precise_no_go_reasons() -> None:
+    outcome = canary.v2_2_gate([{"candidate_status": "not_exported", "evaluator_status": "not_run", "terminal_status": "agent_no_candidate"}], ledger_closed=False)
+    assert outcome["status"] == "V2_2_DIAGNOSTIC_PILOT_NO_GO"
+    assert {"not_all_control_tasks_completed", "candidate_missing", "official_evaluator_not_scorable", "ledger_not_closed"} <= set(outcome["reasons"])
+
+
+def test_release_check_emits_frozen_dispatch_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = Path(__file__).resolve().parents[1]
+    freeze = tmp_path / "freeze"
+    monkeypatch.setattr(canary, "current_git_commit", lambda _root: "a" * 40)
+    canary.write_freeze(root=root, output=freeze)
+    preflight = tmp_path / "preflight.json"
+    preflight.write_text(json.dumps({"passed": True}), encoding="utf-8")
+    original_run = canary.subprocess.run
+
+    def git(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if command[-2:] == ["rev-parse", "origin/main"]:
+            return subprocess.CompletedProcess(command, 0, "a" * 40 + "\n", "")
+        if command[-2:] == ["status", "--porcelain"]:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(canary.subprocess, "run", git)
+    result = canary.release_check(root=root, freeze=freeze, preflight_summary=preflight)
+    assert result["status"] == "READY_FOR_PAID_CANARY"
+    assert result["workflow_inputs"]["paid_execution"] == "true"
+    assert result["workflow_inputs"]["expected_freeze_sha256"] == result["freeze_sha256"]
+
+
 def test_rehearsal_allocation_fails_closed_when_missing_or_not_bound(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -314,6 +391,9 @@ def test_workflow_owns_output_directories_and_redirect_parents(tmp_path: Path, m
     command_indexes = [workflow.index(f'> "$CANARY_ROOT/{name}"') for name in ("freeze-result.json", "preflight-result.json", "rehearsal-result.json")]
     assert setup_index < min(command_indexes)
     assert workflow.index("control_canary freeze") < workflow.index("control_canary validate") < workflow.index("control_canary preflight") < workflow.index("control_canary rehearse")
+    assert workflow.index("control_canary rehearse") < workflow.index("control_canary shadow") < workflow.index("control_canary release-check")
+    assert "deterministic two-task paid-path shadow without Provider transport" in workflow
+    assert "shadow['provider_requests'] == shadow['usage'] == 0" in workflow
     for name in ("freeze-result.json", "freeze-validation.json", "preflight-result.json", "rehearsal-result.json"):
         assert f'"$CANARY_ROOT/{name}"' in workflow
 

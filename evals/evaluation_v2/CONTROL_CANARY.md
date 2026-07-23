@@ -25,3 +25,43 @@ The only runnable workflow path is a zero-provider preflight and two cancelled
 one-request reservations. The future serial paid runner has no built-in Provider
 executor, requires separately authorized injection, and stops before task two
 when task one has a runner, evaluator, provider, or reservation failure.
+
+## Release Readiness
+
+The Control Canary workflow also runs a deterministic two-task shadow path. It
+creates fresh authorization, allocation, ledger, rolling reservations,
+Candidates, and evaluator-shaped reports, but uses no Provider transport or
+secret. Its first task is deliberately unresolved and healthy, so the second
+task proves the serial continuation rule; the second task is resolved. The
+shadow Artifact contains `shadow-canary-summary.json`,
+`canary-result-summary.json`, and a concise Markdown receipt.
+
+To inspect a frozen release locally after the normal zero-provider preflight:
+
+```bash
+python -m evals.evaluation_v2.control_canary release-check \
+  --root . --freeze ARTIFACT/freeze \
+  --preflight-summary ARTIFACT/preflight/preflight-summary.json \
+  --output ARTIFACT/release-check.json
+```
+
+`READY_FOR_PAID_CANARY` requires `HEAD == origin/main`, a clean worktree, a
+valid Freeze, healthy two-task preflight, and no active reservation. The output
+also supplies the exact future workflow inputs. A user must provide a new
+authorization acknowledgement and fresh run ID before dispatching exactly one
+`paid_execution=true` workflow; this command never dispatches it.
+
+For a completed paid or shadow Artifact, compile the receipt with:
+
+```bash
+python -m evals.evaluation_v2.control_canary summary --artifact-root ARTIFACT
+```
+
+An unresolved first task may continue only with a non-empty Candidate, matching
+diff SHA, completed evaluator/report selection, closed ledger, and no Provider,
+runner, task-environment, or evaluator infrastructure failure. Missing
+Candidate, evaluator failure, provider transport failure, active reservation,
+or budget block stops task two. Never retry automatically, enable fallback,
+increase the CNY 15 cap, or automatically enter V2.2. The summary's V2.2 Gate
+is GO only for two Candidates, two scorable reports, no infrastructure failure,
+a closed ledger, and a positive capability signal.
