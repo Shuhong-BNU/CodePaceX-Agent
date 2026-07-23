@@ -114,19 +114,58 @@ def test_evaluator_return_code_is_propagated(tmp_path: Path) -> None:
     assert run_mock.call_args.kwargs["cwd"] is None
 
 
-def test_official_report_path_requires_one_exact_evaluator_contract_file(tmp_path: Path) -> None:
+def _official_report_layout(tmp_path: Path) -> tuple[Path, Path]:
     report_dir = tmp_path / "logs" / "run_evaluation" / "run-1" / "model" / "case"
     report_dir.mkdir(parents=True)
-    report = report_dir / "report.json"
+    return report_dir / "report.json", tmp_path / "model.run-1.json"
+
+
+def test_official_report_path_selects_the_exact_detailed_evaluator_report(tmp_path: Path) -> None:
+    report, _ = _official_report_layout(tmp_path)
     report.write_text("{}", encoding="utf-8")
     assert official_evaluator_report_path(
         cwd=tmp_path, run_id="run-1", model_id="model", instance_id="case",
     ) == report
-    (report_dir / "report-copy.json").write_text("{}", encoding="utf-8")
-    with pytest.raises(ValueError, match="multiple report candidates"):
+
+
+def test_official_report_path_prefers_detailed_report_over_aggregate_summary(tmp_path: Path) -> None:
+    report, summary = _official_report_layout(tmp_path)
+    report.write_text("{}", encoding="utf-8")
+    summary.write_text("{}", encoding="utf-8")
+    assert official_evaluator_report_path(
+        cwd=tmp_path, run_id="run-1", model_id="model", instance_id="case",
+    ) == report
+
+
+def test_official_report_path_falls_back_to_aggregate_summary(tmp_path: Path) -> None:
+    _, summary = _official_report_layout(tmp_path)
+    summary.write_text("{}", encoding="utf-8")
+    assert official_evaluator_report_path(
+        cwd=tmp_path, run_id="run-1", model_id="model", instance_id="case",
+    ) == summary
+
+
+def test_official_report_path_rejects_extra_detailed_report_candidates(tmp_path: Path) -> None:
+    report, _ = _official_report_layout(tmp_path)
+    report.write_text("{}", encoding="utf-8")
+    extra = report.with_name("report-copy.json")
+    extra.write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="multiple report candidates") as error:
         official_evaluator_report_path(
             cwd=tmp_path, run_id="run-1", model_id="model", instance_id="case",
         )
+    assert str(report) in str(error.value)
+    assert str(extra) in str(error.value)
+
+
+def test_official_report_path_reports_missing_detailed_and_summary_paths(tmp_path: Path) -> None:
+    report, summary = _official_report_layout(tmp_path)
+    with pytest.raises(ValueError, match="report is missing") as error:
+        official_evaluator_report_path(
+            cwd=tmp_path, run_id="run-1", model_id="model", instance_id="case",
+        )
+    assert str(report) in str(error.value)
+    assert str(summary) in str(error.value)
 
 
 def test_cli_dry_run_needs_no_evaluator(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
