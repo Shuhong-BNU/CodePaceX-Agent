@@ -47,6 +47,8 @@ jobs:
       EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
