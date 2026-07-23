@@ -414,13 +414,15 @@ def _goal3_materialize_instance(instance: dict[str, Any], workspace: Path) -> No
         ], text=True, capture_output=True, timeout=600, check=False,
     )
     if clone.returncode != 0:
-        raise ValueError(f"failed to clone frozen Goal 3 repository: {repository}")
+        detail = (clone.stderr or clone.stdout).strip()
+        raise ValueError(f"failed to clone frozen Goal 3 repository: {repository}: {detail}")
     switch = subprocess.run(
         ["git", "-C", str(workspace), "switch", "--detach", commit],
         text=True, capture_output=True, timeout=300, check=False,
     )
     if switch.returncode != 0:
-        raise ValueError(f"failed to materialize frozen Goal 3 base commit: {commit}")
+        detail = (switch.stderr or switch.stdout).strip()
+        raise ValueError(f"failed to materialize frozen Goal 3 base commit: {commit}: {detail}")
     head = subprocess.run(
         ["git", "-C", str(workspace), "rev-parse", "HEAD"],
         text=True, capture_output=True, check=False,
