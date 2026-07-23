@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from decimal import Decimal
 from pathlib import Path
@@ -129,27 +130,72 @@ def test_preflight_reports_the_phase_of_a_materialization_failure(tmp_path: Path
 
 
 def test_future_paid_runner_stops_before_second_task_when_first_is_unhealthy(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
     freeze = tmp_path / "freeze"
-    freeze.mkdir()
-    (freeze / "control-canary-freeze.json").write_text(json.dumps({"tasks": list(canary.TASKS)}), encoding="utf-8")
+    canary.write_freeze(root=root, output=freeze)
     calls: list[str] = []
 
     def executor(task: dict[str, str]) -> canary.PaidTaskResult:
         calls.append(task["instance_id"])
         return canary.PaidTaskResult(task["instance_id"], "completed", "exported_nonempty", "executed", "evaluator_execution_error", "error", "zero_provider")
 
-    results = canary.execute_paid_canary(freeze=freeze, paid_execution=True, executor=executor)
+    results = canary.execute_paid_canary(root=root, freeze=freeze, paid_execution=True, executor=executor)
     assert len(results) == len(calls) == 1
     assert calls == ["beetbox__beets-5495"]
 
 
 def test_paid_runner_requires_explicit_executor(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
     freeze = tmp_path / "freeze"
-    freeze.mkdir()
-    (freeze / "control-canary-freeze.json").write_text(json.dumps({"tasks": list(canary.TASKS)}), encoding="utf-8")
-    assert canary.execute_paid_canary(freeze=freeze, paid_execution=False) == []
-    with pytest.raises(ValueError, match="separately authorized"):
-        canary.execute_paid_canary(freeze=freeze, paid_execution=True)
+    canary.write_freeze(root=root, output=freeze)
+    assert canary.execute_paid_canary(root=root, freeze=freeze, paid_execution=False) == []
+    with pytest.raises(ValueError, match="configured Provider executor"):
+        canary.execute_paid_canary(root=root, freeze=freeze, paid_execution=True)
+
+
+def test_payloads_are_exactly_allowlisted_and_bound_to_the_manifest(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    payloads = canary.load_frozen_payloads(root)
+    assert [item["instance_id"] for item in payloads] == [task["instance_id"] for task in canary.TASKS]
+    assert [hashlib.sha256(item["problem_statement"].encode()).hexdigest() for item in payloads] == [
+        "34fc3d488e4b585ec0d850d6708b58a5d4277a82d75074a1585c148d1f46094d",
+        "51268fc5326eefb57b052aeba817c2991e72e75a108ce59cdb8b4d3224d958a4",
+    ]
+    payload = root / canary.PAYLOAD_DIRECTORY / "beetbox__beets-5495.json"
+    original = payload.read_text(encoding="utf-8")
+    payload.write_text(original.replace('"repo"', '"gold_patch":"forbidden","repo"'), encoding="utf-8")
+    with pytest.raises(ValueError, match="SHA differs"):
+        canary.load_frozen_payloads(root)
+    payload.write_text(original, encoding="utf-8")
+
+
+def test_fake_paid_path_validates_authorization_and_serial_health(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    freeze = tmp_path / "freeze"
+    canary.write_freeze(root=root, output=freeze)
+    freeze_sha = canary._sha256(freeze / "control-canary-freeze.json")
+    monkeypatch.setattr("evals.paid_gate._git_is_clean", lambda _root: True)
+
+    def replay(task: dict[str, str]) -> canary.PaidTaskResult:
+        return canary.PaidTaskResult(
+            task["instance_id"], "completed", "exported_nonempty", "executed", "completed",
+            "completed", "replay", terminal_status="unresolved", candidate_sha256="a" * 64,
+            workspace_diff_sha256="a" * 64, candidate_diff_identity=True,
+        )
+
+    summary = canary.run_paid_canary(
+        root=root, freeze=freeze, artifact_root=tmp_path / "paid", expected_freeze_sha256=freeze_sha,
+        approved_hard_cap_cny="15.000000", authorization_acknowledgement="test-only-replay",
+        run_id="replay-001", executor=replay,
+    )
+    assert summary["completed"] is True
+    assert summary["provider_requests"] == summary["usage"] == 0
+    assert summary["charge_cny"] == "0"
+    assert summary["active_reservation"] is None
+    assert (tmp_path / "paid" / "authorization.json").is_file()
+    assert (tmp_path / "paid" / "stage-c-compatibility-allocation.json").is_file()
 
 
 def test_rehearsal_allocation_fails_closed_when_missing_or_not_bound(

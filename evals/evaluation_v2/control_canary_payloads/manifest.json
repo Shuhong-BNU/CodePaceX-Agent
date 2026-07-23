@@ -1,0 +1,31 @@
+{
+  "payloads": [
+    {
+      "file": "beetbox__beets-5495.json",
+      "instance_id": "beetbox__beets-5495",
+      "payload_sha256": "406334c82446ea13a3e0b7caa1c6a7ca6dc46a7f26035ac9db5771532ccd5cbb",
+      "problem_statement_sha256": "34fc3d488e4b585ec0d850d6708b58a5d4277a82d75074a1585c148d1f46094d"
+    },
+    {
+      "file": "beancount__beancount-931.json",
+      "instance_id": "beancount__beancount-931",
+      "payload_sha256": "2682de02666452f9742d5fc86d74111703fe38abbd4a57fd5fe55b84b1f027cc",
+      "problem_statement_sha256": "51268fc5326eefb57b052aeba817c2991e72e75a108ce59cdb8b4d3224d958a4"
+    }
+  ],
+  "schema_version": 1,
+  "source": {
+    "dataset": "SWE-bench-Live/SWE-bench-Live",
+    "dataset_revision": "ad79b850f15e33992e96f03f6e97f05ddf9aa0be",
+    "extraction_contract": "allowlisted-non-gold-fields-v1",
+    "safe_bundle_artifact_id": "8528702966",
+    "safe_bundle_artifact_name": "stage-c-phase-1-task-bundle-29918015071",
+    "safe_bundle_path": "tasks.jsonl",
+    "safe_bundle_workflow_run_id": "29918015071",
+    "split": "lite"
+  },
+  "task_order": [
+    "beetbox__beets-5495",
+    "beancount__beancount-931"
+  ]
+}

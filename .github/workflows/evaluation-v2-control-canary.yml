@@ -5,6 +5,7 @@ on:
     paths:
       - ".github/workflows/evaluation-v2-control-canary.yml"
       - "evals/evaluation_v2/control_canary.py"
+      - "evals/evaluation_v2/control_canary_payloads/**"
       - "tests/test_evaluation_v2_control_canary.py"
   workflow_dispatch:
     inputs:
@@ -13,6 +14,26 @@ on:
         required: true
         default: false
         type: boolean
+      expected_freeze_sha256:
+        description: Exact SHA-256 of the Freeze produced on main.
+        required: false
+        default: ''
+        type: string
+      approved_hard_cap_cny:
+        description: Must be the frozen CNY 15.000000 hard cap.
+        required: false
+        default: '15.000000'
+        type: string
+      authorization_acknowledgement:
+        description: One-time authorization acknowledgement recorded in the fresh ledger.
+        required: false
+        default: ''
+        type: string
+      run_id:
+        description: Fresh, caller-selected paid Control Canary Run ID.
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -77,11 +98,40 @@ jobs:
           path: ${{ runner.temp }}/evaluation-v2-control-canary/${{ github.run_id }}
           if-no-files-found: warn
 
-  paid-execution-disabled:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.paid_execution == true }}
+  paid-execution:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.paid_execution == true && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    env:
+      EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be
+      BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
     steps:
-      - name: Refuse paid execution in the zero-provider phase
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install project and frozen official evaluator
         run: |
-          echo 'PAID_EXECUTION_NOT_STARTED: this workflow revision only permits zero-provider preflight.'
-          exit 1
+          set -euo pipefail
+          docker info >/dev/null
+          python -m pip install -e . pytest pytest-asyncio
+          evaluator_root="$RUNNER_TEMP/swe-bench-live"
+          git clone --filter=blob:none https://github.com/microsoft/SWE-bench-Live.git "$evaluator_root"
+          git -C "$evaluator_root" checkout --detach "$EVALUATOR_COMMIT"
+          test "$(git -C "$evaluator_root" rev-parse HEAD)" = "$EVALUATOR_COMMIT"
+          python -m pip install -e "$evaluator_root"
+      - name: Run the explicit paid Control Canary
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/evaluation-v2-control-canary-paid/${{ inputs.run_id }}"
+          mkdir -p "$root"
+          python -m evals.evaluation_v2.control_canary freeze --root . --output "$root/freeze" > "$root/freeze-result.json"
+          python -m evals.evaluation_v2.control_canary preflight --freeze "$root/freeze" --artifact-root "$root/preflight" > "$root/preflight-result.json"
+          python -m evals.evaluation_v2.control_canary paid-run --confirm-paid-execution --root . --freeze "$root/freeze" --artifact-root "$root/paid" --expected-freeze-sha256 '${{ inputs.expected_freeze_sha256 }}' --approved-hard-cap-cny '${{ inputs.approved_hard_cap_cny }}' --authorization-acknowledgement '${{ inputs.authorization_acknowledgement }}' --run-id '${{ inputs.run_id }}' > "$root/paid-result.json"
+      - name: Upload paid Control Canary evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaluation-v2-control-canary-paid-${{ inputs.run_id }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/evaluation-v2-control-canary-paid/${{ inputs.run_id }}
+          if-no-files-found: warn

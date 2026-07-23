@@ -10,20 +10,33 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
+import sys
+import tempfile
 import venv
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+import yaml
+from codepacex.experiments import ExperimentProfile
 from codepacex.prompts import build_system_prompt
 from codepacex.tools import create_default_registry
 from evals.benchmark import canonical_hash, current_git_commit
 from evals.costing import load_pricing, pricing_snapshot_hash
-from evals.goal3_swe import _goal3_materialize_instance
+from evals.goal3_swe import (
+    ENVIRONMENT as SWE_ENVIRONMENT,
+    _child_environment,
+    _goal3_child_config,
+    _goal3_extract_patch,
+    _goal3_inference_prompt,
+    _goal3_materialize_instance,
+    collect_goal3_official_outcome,
+)
 from evals.paid_gate import (
     BudgetAuthorization,
     BudgetLedger,
@@ -32,8 +45,11 @@ from evals.paid_gate import (
     allocation_hash,
     authorization_hash,
     ledger_fingerprint,
+    provider_request_budget_environment,
     worst_case_reservation,
 )
+from evals.pilot import PilotConfig
+from evals.swe_bench_live import official_evaluator_report_path, run_official_evaluator
 
 
 SCHEMA_VERSION = 1
@@ -44,6 +60,11 @@ MAX_INPUT_TOKENS = 128_000
 MAX_OUTPUT_TOKENS = 8_192
 MAX_REASONING_TOKENS = 6_144
 RECOMMENDED_HARD_CAP_CNY = Decimal("15.000000")
+PAYLOAD_DIRECTORY = Path("evals/evaluation_v2/control_canary_payloads")
+PAYLOAD_MANIFEST = PAYLOAD_DIRECTORY / "manifest.json"
+PAYLOAD_FIELDS = frozenset({"instance_id", "repo", "base_commit", "problem_statement"})
+FORBIDDEN_PAYLOAD_KEY = re.compile(r"(?:^|_)(?:patch|gold|test_patch|solution|reference_patch|expected_patch|answer)(?:_|$)", re.I)
+PROVIDER_BASE_URL = "https://llm-ipge9fy38w648m28.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
 TASKS: tuple[dict[str, Any], ...] = (
     {
         "instance_id": "beetbox__beets-5495",
@@ -79,6 +100,75 @@ def _sha256(path: Path) -> str:
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _scan_payload_value(value: Any) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if FORBIDDEN_PAYLOAD_KEY.search(str(key)):
+                raise ValueError(f"Control Canary payload has forbidden key: {key}")
+            _scan_payload_value(item)
+    elif isinstance(value, list):
+        for item in value:
+            _scan_payload_value(item)
+    elif isinstance(value, str) and "diff --git" in value and "--- a/" in value and "+++ b/" in value:
+        raise ValueError("Control Canary payload contains a unified diff")
+
+
+def load_frozen_payloads(root: Path) -> list[dict[str, str]]:
+    """Load only the committed four-field, Agent-visible task projection."""
+    payload_root = (root / PAYLOAD_DIRECTORY).resolve()
+    manifest_path = payload_root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if set(manifest) != {"schema_version", "task_order", "payloads", "source"}:
+        raise ValueError("Control Canary payload manifest schema changed")
+    if manifest["schema_version"] != 1 or manifest["task_order"] != [task["instance_id"] for task in TASKS]:
+        raise ValueError("Control Canary payload manifest task order changed")
+    if not isinstance(manifest["source"], dict) or manifest["source"].get("extraction_contract") != "allowlisted-non-gold-fields-v1":
+        raise ValueError("Control Canary payload source contract changed")
+    payloads: list[dict[str, str]] = []
+    records = manifest["payloads"]
+    if not isinstance(records, list) or len(records) != len(TASKS):
+        raise ValueError("Control Canary payload manifest count changed")
+    for task, record in zip(TASKS, records, strict=True):
+        if not isinstance(record, dict) or record.get("instance_id") != task["instance_id"]:
+            raise ValueError("Control Canary payload manifest identity changed")
+        name = record.get("file")
+        if not isinstance(name, str) or Path(name).name != name or not name.endswith(".json"):
+            raise ValueError("Control Canary payload manifest filename is unsafe")
+        path = payload_root / name
+        if _sha256(path) != record.get("payload_sha256"):
+            raise ValueError("Control Canary payload SHA differs from its manifest")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        _scan_payload_value(payload)
+        if set(payload) != PAYLOAD_FIELDS:
+            raise ValueError("Control Canary payload must contain exactly four allowlisted fields")
+        if payload["instance_id"] != task["instance_id"] or payload["repo"] != task["repo"] or payload["base_commit"] != task["base_commit"]:
+            raise ValueError("Control Canary payload identity differs from the frozen task")
+        if not isinstance(payload["problem_statement"], str) or not payload["problem_statement"]:
+            raise ValueError("Control Canary payload has no problem statement")
+        if hashlib.sha256(payload["problem_statement"].encode()).hexdigest() != record.get("problem_statement_sha256"):
+            raise ValueError("Control Canary problem statement SHA differs from its manifest")
+        payloads.append({key: str(payload[key]) for key in PAYLOAD_FIELDS})
+    return payloads
+
+
+def payload_contract(root: Path) -> dict[str, Any]:
+    payloads = load_frozen_payloads(root)
+    manifest = json.loads((root / PAYLOAD_MANIFEST).read_text(encoding="utf-8"))
+    return {
+        "manifest_sha256": _sha256(root / PAYLOAD_MANIFEST),
+        "source": manifest["source"],
+        "payloads": [
+            {
+                "instance_id": payload["instance_id"],
+                "payload_sha256": _sha256(root / PAYLOAD_DIRECTORY / record["file"]),
+                "problem_statement_sha256": hashlib.sha256(payload["problem_statement"].encode()).hexdigest(),
+            }
+            for payload, record in zip(payloads, manifest["payloads"], strict=True)
+        ],
+        "prompt_construction": "goal3-swe-inference-prompt-v1",
+    }
 
 
 def _runtime_contract(root: Path) -> dict[str, Any]:
@@ -131,6 +221,7 @@ def budget_contract(root: Path) -> dict[str, Any]:
 def freeze_payload(root: Path) -> dict[str, Any]:
     runtime = _runtime_contract(root)
     budget = budget_contract(root)
+    payloads = payload_contract(root)
     return {
         "schema_version": SCHEMA_VERSION,
         "experiment_name": "evaluation-v2-control-canary",
@@ -138,12 +229,14 @@ def freeze_payload(root: Path) -> dict[str, Any]:
         "evaluated_codepacex_commit": current_git_commit(root),
         "base_lane": {"run_id": "29981654331", "artifact_id": "8553450494", "commit": "97fa5ad"},
         "tasks": list(TASKS),
+        "payload_contract": payloads,
         "runtime_contract": runtime,
         "runtime_contract_hash": canonical_hash(runtime),
         "provider_contract": {
             "provider": "bailian-qwen37-max",
             "protocol": "openai-compat",
             "model_id": "qwen3.7-max-2026-06-08",
+            "base_url": PROVIDER_BASE_URL,
             "provider_secret_name": "BAILIAN_API_KEY",
             "fallback_enabled": False,
             "retry": 0,
@@ -160,7 +253,7 @@ def freeze_payload(root: Path) -> dict[str, Any]:
         "dependency_bootstrap": "isolated-venv-pip-install-editable-pytest-and-frozen-preflight-dependencies-v2",
         "gold_patch_forbidden": True,
         "fresh_authorization_and_ledger_required": True,
-        "terminal_status_schema": ["resolved", "unresolved", "agent_no_candidate", "protocol_blocked", "provider_transport_error", "evaluator_unavailable", "evaluator_execution_error", "evaluator_report_selection_error", "runner_error", "budget_blocked"],
+        "terminal_status_schema": ["resolved", "unresolved", "agent_no_candidate", "protocol_blocked", "provider_transport_error", "evaluator_unavailable", "evaluator_execution_error", "evaluator_report_selection_error", "runner_error", "budget_blocked", "task_environment_blocked", "preflight_wiring_blocked"],
         "budget_contract": budget,
         "go_no_go": {
             "go": "both task environment preflights pass and zero-provider paid-path rehearsal closes its ledger",
@@ -435,28 +528,216 @@ class PaidTaskResult:
     evaluator_status: str
     runner_status: str
     provider_status: str
+    terminal_status: str = "runner_error"
+    provider_requests: int = 0
+    usage: dict[str, int] | None = None
+    charge_cny: str = "0"
+    candidate_sha256: str | None = None
+    workspace_diff_sha256: str | None = None
+    candidate_diff_identity: bool = False
+    evaluator_report_sha256: str | None = None
+    resolved: bool | None = None
+    failure_classification: str | None = None
     active_reservation: Any = None
 
 
-def execute_paid_canary(*, freeze: Path, paid_execution: bool, executor: Callable[[dict[str, str]], PaidTaskResult] | None = None) -> list[PaidTaskResult]:
-    """Future serial runner: execute task two only after task one is healthy.
+def _healthy_paid_result(result: PaidTaskResult) -> bool:
+    return (
+        result.runner_status == "completed"
+        and result.candidate_status == "exported_nonempty"
+        and result.candidate_diff_identity
+        and result.evaluator_status == "completed"
+        and result.provider_status != "provider_transport_error"
+        and result.active_reservation is None
+    )
 
-    No default executor is supplied in this phase, preventing accidental model
-    transport even if this function is called incorrectly.
-    """
+
+def execute_paid_canary(*, root: Path, freeze: Path, paid_execution: bool, executor: Callable[[dict[str, str]], PaidTaskResult] | None = None) -> list[PaidTaskResult]:
+    """Run the frozen tasks serially, stopping before task two on an unhealthy path."""
     if not paid_execution:
         return []
     if executor is None:
-        raise ValueError("paid execution requires a separately authorized Provider executor")
-    tasks = json.loads((freeze / "control-canary-freeze.json").read_text(encoding="utf-8"))["tasks"]
+        raise ValueError("paid execution requires a configured Provider executor")
+    payload = json.loads((freeze / "control-canary-freeze.json").read_text(encoding="utf-8"))
+    if payload.get("payload_contract") != payload_contract(root.resolve()):
+        raise ValueError("paid execution payload identity differs from Freeze")
+    by_id = {item["instance_id"]: item for item in load_frozen_payloads(root.resolve())}
     results: list[PaidTaskResult] = []
-    for task in tasks:
-        result = executor(dict(task))
+    for task in payload["tasks"]:
+        task_payload = by_id[str(task["instance_id"])]
+        result = executor(task_payload)
         results.append(result)
-        unhealthy = result.runner_status != "completed" or result.evaluator_status in {"evaluator_unavailable", "evaluator_execution_error", "evaluator_report_selection_error"} or result.provider_status == "provider_transport_error" or result.active_reservation is not None
-        if unhealthy:
+        if not _healthy_paid_result(result):
             break
     return results
+
+
+def _paid_pilot_config(freeze_payload: dict[str, Any]) -> PilotConfig:
+    profile = ExperimentProfile(
+        tool_loading="deferred", compression_profile="recovery_v1",
+        permission_strategy="session_allow", agent_mode="single",
+    )
+    provider = freeze_payload["provider_contract"]
+    return PilotConfig.model_validate({
+        "schema_version": 2, "experiment_kind": "pilot", "provider": provider["provider"],
+        "protocol": provider["protocol"], "base_url": provider["base_url"],
+        "api_key_env": provider["provider_secret_name"], "model_id": provider["model_id"],
+        "fallback_enabled": False, "retry_budget": 0, "task_ids": [], "repetitions": 1,
+        "feature_flags": {}, "experiment_profile": profile.canonical_payload(),
+        "max_iterations": MAX_REQUESTS_PER_TASK,
+        "model_parameters": {
+            "temperature": None, "top_p": None, "max_output_tokens": None,
+            "max_completion_tokens": MAX_OUTPUT_TOKENS, "enable_thinking": True,
+            "thinking_budget": MAX_REASONING_TOKENS,
+        },
+    })
+
+
+def _fresh_paid_gate(*, root: Path, freeze: Path, artifact_root: Path, acknowledgement: str) -> PaidRunGate:
+    if not acknowledgement:
+        raise ValueError("paid execution requires an authorization acknowledgement")
+    pricing = load_pricing(freeze / "pricing-snapshot.json")
+    authorization = BudgetAuthorization(
+        authorized_total_cny=RECOMMENDED_HARD_CAP_CNY,
+        stage_limits_cny={"A": RECOMMENDED_HARD_CAP_CNY, "B": RECOMMENDED_HARD_CAP_CNY, "C": RECOMMENDED_HARD_CAP_CNY},
+        pricing_snapshot_hash=pricing_snapshot_hash(pricing), experiment_commit=current_git_commit(root),
+        authorized_at="single-control-canary-authorization", authorized_by="user",
+    )
+    authorization_path = artifact_root / "authorization.json"
+    ledger_path = artifact_root / "ledger.json"
+    allocation_path = artifact_root / "stage-c-compatibility-allocation.json"
+    _write_json(authorization_path, authorization.model_dump(mode="json"))
+    _write_json(artifact_root / "authorization-acknowledgement.json", {"acknowledgement": acknowledgement})
+    ledger = BudgetLedger(authorization_hash=authorization_hash(authorization), updated_at="paid-canary-start")
+    _write_json(ledger_path, ledger.model_dump(mode="json"))
+    allocation = _fresh_rehearsal_allocation(authorization, ledger, pricing_snapshot_hash(pricing))
+    _write_json(allocation_path, allocation.model_dump(mode="json"))
+    return PaidRunGate(
+        root=root, authorization_path=authorization_path, ledger_path=ledger_path,
+        allocation_path=allocation_path, pricing_path=freeze / "pricing-snapshot.json",
+        pricing=pricing, stage="C",
+    )
+
+
+def _live_task_executor(*, root: Path, freeze_payload: dict[str, Any], task: dict[str, str], metadata: dict[str, Any], gate: PaidRunGate, artifact_root: Path, run_id: str) -> PaidTaskResult:
+    task_root = artifact_root / "tasks" / task["instance_id"]
+    workspace = task_root / "workspace"
+    task_root.mkdir(parents=True)
+    trial_id = f"swe/v2-control/{run_id}/{task['instance_id']}"
+    prompt = _goal3_inference_prompt(task)
+    evidence: dict[str, Any] = {
+        "instance_id": task["instance_id"], "payload_sha256": _sha256(root / PAYLOAD_DIRECTORY / f"{task['instance_id']}.json"),
+        "problem_statement_sha256": hashlib.sha256(task["problem_statement"].encode()).hexdigest(),
+        "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
+        "system_prompt_sha256": hashlib.sha256(build_system_prompt().encode()).hexdigest(),
+        "pre_edit_test": None, "post_edit_test": None,
+    }
+    try:
+        _goal3_materialize_instance(task, workspace)
+        python, bootstrap = _bootstrap(workspace, metadata["preflight_dependencies"])
+        _write_json(task_root / "dependency-bootstrap.json", bootstrap)
+        test_command = [str(python), "-m", "pytest", str(metadata["test_target"])]
+        pre_edit = _run(test_command, cwd=workspace)
+        (task_root / "pre-edit.stdout.txt").write_text(pre_edit.stdout, encoding="utf-8")
+        (task_root / "pre-edit.stderr.txt").write_text(pre_edit.stderr, encoding="utf-8")
+        evidence["pre_edit_test"] = {"command": test_command, "exit_code": pre_edit.returncode}
+    except Exception as exc:
+        evidence["failure"] = str(exc)
+        _write_json(task_root / "task-result.json", evidence)
+        return PaidTaskResult(task["instance_id"], "not_started", "not_exported", "not_run", "not_run", "error", "not_started", failure_classification="task_environment_blocked")
+    pilot = _paid_pilot_config(freeze_payload)
+    if not os.environ.get(pilot.api_key_env):
+        raise ValueError("paid execution requires the configured Provider secret")
+    with tempfile.TemporaryDirectory(prefix="codepacex-v2-control-home-") as home_text:
+        home = Path(home_text)
+        _goal3_child_config(pilot=pilot, home=home)
+        profile_path = home / "profile.yaml"
+        profile_path.write_text(yaml.safe_dump(pilot.experiment_profile.canonical_payload(), sort_keys=True), encoding="utf-8")
+        environment = _child_environment(pilot, home_text, root=root)
+        environment.update(provider_request_budget_environment(
+            gate, trial_id=trial_id, maximum_input_tokens_per_request=MAX_INPUT_TOKENS,
+            maximum_output_tokens_per_request=MAX_OUTPUT_TOKENS,
+            maximum_reasoning_tokens_per_request=MAX_REASONING_TOKENS,
+            maximum_provider_requests_per_trial=MAX_REQUESTS_PER_TASK,
+        ))
+        process = subprocess.run(
+            [sys.executable, "-m", "codepacex", "-p", prompt, "--output-format", "stream-json", "--experiment-profile", str(profile_path)],
+            cwd=workspace, env=environment, text=True, capture_output=True, timeout=1800, check=False,
+        )
+    (task_root / "agent.stdout.ndjson").write_text(process.stdout or "", encoding="utf-8")
+    (task_root / "agent.stderr.txt").write_text(process.stderr or "", encoding="utf-8")
+    accounting = gate.trial_accounting(trial_id)
+    if accounting["budget_blocked"]:
+        return PaidTaskResult(task["instance_id"], "not_completed", "not_exported", "not_run", "not_run", "blocked", "budget_blocked", terminal_status="budget_blocked", charge_cny=accounting["actual_cny"], failure_classification="budget_blocked", active_reservation=accounting["active_reservation"])
+    if accounting["active_reservation"] is not None:
+        return PaidTaskResult(task["instance_id"], "error", "not_exported", "not_run", "not_run", "error", "provider_transport_error", failure_classification="provider_transport_error", active_reservation=accounting["active_reservation"])
+    patch = _goal3_extract_patch(workspace)
+    patch_path = task_root / "candidate.patch"
+    patch_path.write_text(patch, encoding="utf-8")
+    candidate_sha = _sha256(patch_path)
+    evidence.update({"agent_exit_code": process.returncode, "candidate_sha256": candidate_sha, "workspace_diff_sha256": hashlib.sha256(patch.encode()).hexdigest()})
+    post_edit = _run(test_command, cwd=workspace)
+    (task_root / "post-edit.stdout.txt").write_text(post_edit.stdout, encoding="utf-8")
+    (task_root / "post-edit.stderr.txt").write_text(post_edit.stderr, encoding="utf-8")
+    evidence["post_edit_test"] = {"command": test_command, "exit_code": post_edit.returncode}
+    if process.returncode or not patch.strip():
+        evidence["failure_classification"] = "agent_no_candidate" if not patch.strip() else "runner_error"
+        _write_json(task_root / "task-result.json", evidence)
+        return PaidTaskResult(task["instance_id"], "completed" if not process.returncode else "error", "not_exported" if not patch.strip() else "exported_nonempty", "executed", "not_run", "error", "completed", terminal_status="agent_no_candidate" if not patch.strip() else "runner_error", provider_requests=accounting["request_count"], charge_cny=accounting["actual_cny"], candidate_sha256=candidate_sha, workspace_diff_sha256=candidate_sha, candidate_diff_identity=True, failure_classification=evidence["failure_classification"])
+    prediction = task_root / "prediction.json"
+    _write_json(prediction, [{"instance_id": task["instance_id"], "model_name_or_path": pilot.model_id, "model_patch": patch}])
+    try:
+        evaluator_run_id = f"{run_id}-{task['instance_id']}"
+        evaluated = run_official_evaluator(dataset_name=SWE_ENVIRONMENT["dataset"], split=SWE_ENVIRONMENT["split"], predictions_path=prediction, instance_ids=[task["instance_id"]], max_workers=1, run_id=evaluator_run_id, namespace=SWE_ENVIRONMENT["evaluator_namespace"], cwd=task_root, evaluator_architecture="native")
+        (task_root / "evaluator.stdout.txt").write_text((evaluated.stdout or "") + "\n" + (evaluated.stderr or ""), encoding="utf-8")
+        if evaluated.returncode:
+            raise RuntimeError(f"official evaluator exit {evaluated.returncode}")
+        report = official_evaluator_report_path(cwd=task_root, run_id=evaluator_run_id, model_id=pilot.model_id, instance_id=task["instance_id"])
+        resolved = collect_goal3_official_outcome(report, task["instance_id"])
+        report_copy = task_root / "official-report.json"
+        shutil.copyfile(report, report_copy)
+    except RuntimeError as exc:
+        status = "evaluator_unavailable" if "not installed" in str(exc).lower() else "evaluator_execution_error"
+        return PaidTaskResult(task["instance_id"], "completed", "exported_nonempty", "executed", status, "error", "completed", provider_requests=accounting["request_count"], charge_cny=accounting["actual_cny"], candidate_sha256=candidate_sha, workspace_diff_sha256=candidate_sha, candidate_diff_identity=True, failure_classification=status)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return PaidTaskResult(task["instance_id"], "completed", "exported_nonempty", "executed", "evaluator_report_selection_error", "error", "completed", provider_requests=accounting["request_count"], charge_cny=accounting["actual_cny"], candidate_sha256=candidate_sha, workspace_diff_sha256=candidate_sha, candidate_diff_identity=True, failure_classification="evaluator_report_selection_error")
+    evidence.update({"resolved": resolved, "official_report_sha256": _sha256(report_copy), "provider_requests": accounting["request_count"], "charge_cny": accounting["actual_cny"]})
+    _write_json(task_root / "task-result.json", evidence)
+    return PaidTaskResult(task["instance_id"], "completed", "exported_nonempty", "executed", "completed", "completed", "completed", terminal_status="resolved" if resolved else "unresolved", provider_requests=accounting["request_count"], charge_cny=accounting["actual_cny"], candidate_sha256=candidate_sha, workspace_diff_sha256=candidate_sha, candidate_diff_identity=True, evaluator_report_sha256=_sha256(report_copy), resolved=resolved)
+
+
+def run_paid_canary(*, root: Path, freeze: Path, artifact_root: Path, expected_freeze_sha256: str, approved_hard_cap_cny: str, authorization_acknowledgement: str, run_id: str, executor: Callable[[dict[str, str]], PaidTaskResult] | None = None) -> dict[str, Any]:
+    """The future paid path; every external authorization identity is explicit."""
+    root, freeze, artifact_root = root.resolve(), freeze.resolve(), artifact_root.resolve()
+    validate_freeze(root=root, freeze=freeze)
+    freeze_sha = _sha256(freeze / "control-canary-freeze.json")
+    if expected_freeze_sha256 != freeze_sha:
+        raise ValueError("paid execution expected Freeze SHA does not match")
+    if Decimal(approved_hard_cap_cny) != RECOMMENDED_HARD_CAP_CNY:
+        raise ValueError("paid execution approved hard cap does not match the frozen CNY 15 contract")
+    if not run_id or Path(run_id).name != run_id or artifact_root.exists():
+        raise ValueError("paid execution requires a fresh safe Run ID and artifact root")
+    artifact_root.mkdir(parents=True)
+    frozen = json.loads((freeze / "control-canary-freeze.json").read_text(encoding="utf-8"))
+    gate = _fresh_paid_gate(root=root, freeze=freeze, artifact_root=artifact_root, acknowledgement=authorization_acknowledgement)
+    metadata = {item["instance_id"]: item for item in frozen["tasks"]}
+    if executor is None:
+        executor = lambda task: _live_task_executor(root=root, freeze_payload=frozen, task=task, metadata=metadata[task["instance_id"]], gate=gate, artifact_root=artifact_root, run_id=run_id)
+    results = execute_paid_canary(root=root, freeze=freeze, paid_execution=True, executor=executor)
+    ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
+    summary = {
+        "schema_version": SCHEMA_VERSION, "run_id": run_id, "freeze_sha256": freeze_sha,
+        "runtime_contract_hash": frozen["runtime_contract_hash"],
+        "payload_manifest_sha256": frozen["payload_contract"]["manifest_sha256"],
+        "ledger_budget_stage": "C", "ledger_stage_note": "generic gate compatibility only; not a Stage C experiment or historical Stage C ledger",
+        "results": [result.__dict__ for result in results], "provider_requests": len(ledger.request_charges),
+        "usage": sum(charge.input_tokens + charge.output_tokens for charge in ledger.request_charges),
+        "charge_cny": str(ledger.spent_cny), "active_reservation": None if ledger.active_reservation is None else ledger.active_reservation.model_dump(mode="json"),
+        "ledger_closed": ledger.active_reservation is None,
+        "completed": len(results) == len(TASKS) and all(_healthy_paid_result(result) for result in results),
+    }
+    _write_json(artifact_root / "paid-canary-summary.json", summary)
+    return summary
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -466,11 +747,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     validate = sub.add_parser("validate"); validate.add_argument("--root", type=Path, required=True); validate.add_argument("--freeze", type=Path, required=True)
     preflight = sub.add_parser("preflight"); preflight.add_argument("--freeze", type=Path, required=True); preflight.add_argument("--artifact-root", type=Path, required=True)
     rehearsal = sub.add_parser("rehearse"); rehearsal.add_argument("--root", type=Path, required=True); rehearsal.add_argument("--freeze", type=Path, required=True); rehearsal.add_argument("--preflight-summary", type=Path, required=True); rehearsal.add_argument("--artifact-root", type=Path, required=True)
+    paid = sub.add_parser("paid-run"); paid.add_argument("--root", type=Path, required=True); paid.add_argument("--freeze", type=Path, required=True); paid.add_argument("--artifact-root", type=Path, required=True); paid.add_argument("--expected-freeze-sha256", required=True); paid.add_argument("--approved-hard-cap-cny", required=True); paid.add_argument("--authorization-acknowledgement", required=True); paid.add_argument("--run-id", required=True); paid.add_argument("--confirm-paid-execution", action="store_true")
     args = parser.parse_args(argv)
     if args.command == "freeze": result = write_freeze(root=args.root, output=args.output)
     elif args.command == "validate": result = validate_freeze(root=args.root, freeze=args.freeze)
     elif args.command == "preflight": result = run_environment_preflight(freeze=args.freeze, artifact_root=args.artifact_root)
-    else: result = rehearse_paid_path(root=args.root, freeze=args.freeze, preflight_summary=args.preflight_summary, artifact_root=args.artifact_root)
+    elif args.command == "rehearse": result = rehearse_paid_path(root=args.root, freeze=args.freeze, preflight_summary=args.preflight_summary, artifact_root=args.artifact_root)
+    else:
+        if not args.confirm_paid_execution:
+            raise ValueError("paid execution requires --confirm-paid-execution")
+        result = run_paid_canary(root=args.root, freeze=args.freeze, artifact_root=args.artifact_root, expected_freeze_sha256=args.expected_freeze_sha256, approved_hard_cap_cny=args.approved_hard_cap_cny, authorization_acknowledgement=args.authorization_acknowledgement, run_id=args.run_id)
     print(json.dumps(result, sort_keys=True)); return 0
 
 
