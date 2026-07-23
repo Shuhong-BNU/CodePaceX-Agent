@@ -740,6 +740,164 @@ def run_paid_canary(*, root: Path, freeze: Path, artifact_root: Path, expected_f
     return summary
 
 
+def v2_2_gate(results: Sequence[dict[str, Any]], *, ledger_closed: bool) -> dict[str, Any]:
+    """Evaluate the fixed V2.2 decision rule without selecting a V2.2 task."""
+    reasons: list[str] = []
+    candidates = [item.get("candidate_status") == "exported_nonempty" for item in results]
+    scorable = [item.get("evaluator_status") == "completed" for item in results]
+    infrastructure = [
+        item for item in results if item.get("terminal_status") in {
+            "provider_transport_error", "runner_error", "task_environment_blocked",
+            "evaluator_unavailable", "evaluator_execution_error", "evaluator_report_selection_error",
+        }
+    ]
+    positive = any(item.get("terminal_status") == "resolved" for item in results) or any(
+        (item.get("post_edit_test") or {}).get("exit_code") == 0 for item in results
+    )
+    if len(results) != len(TASKS): reasons.append("not_all_control_tasks_completed")
+    if not all(candidates): reasons.append("candidate_missing")
+    if not all(scorable): reasons.append("official_evaluator_not_scorable")
+    if infrastructure: reasons.append("infrastructure_failure")
+    if not ledger_closed: reasons.append("ledger_not_closed")
+    if not positive: reasons.append("no_positive_capability_signal")
+    return {
+        "status": "V2_2_DIAGNOSTIC_PILOT_GO" if not reasons else "V2_2_DIAGNOSTIC_PILOT_NO_GO",
+        "reasons": reasons,
+        "candidate_count": sum(candidates), "scorable_count": sum(scorable),
+        "infrastructure_failure_count": len(infrastructure), "ledger_closed": ledger_closed,
+    }
+
+
+def summarize_canary_artifact(*, artifact_root: Path, output: Path | None = None) -> dict[str, Any]:
+    """Compile a small machine-readable and Markdown receipt for a paid or shadow Artifact."""
+    artifact_root = artifact_root.resolve()
+    source = next((artifact_root / name for name in ("paid-canary-summary.json", "shadow-canary-summary.json") if (artifact_root / name).is_file()), None)
+    if source is None:
+        raise ValueError("Canary Artifact has no paid or shadow summary")
+    source_summary = json.loads(source.read_text(encoding="utf-8"))
+    results = list(source_summary.get("results", []))
+    for item in results:
+        task_path = artifact_root / "tasks" / str(item["instance_id"]) / "task-result.json"
+        if task_path.is_file():
+            item.update({"evidence_path": str(task_path.relative_to(artifact_root)), **json.loads(task_path.read_text(encoding="utf-8"))})
+    ledger_path = artifact_root / "ledger.json"
+    ledger = BudgetLedger.model_validate_json(ledger_path.read_text(encoding="utf-8")) if ledger_path.is_file() else None
+    closed = ledger is not None and ledger.active_reservation is None
+    gate = v2_2_gate(results, ledger_closed=closed)
+    summary = {
+        "schema_version": SCHEMA_VERSION, "source_summary": source.name,
+        "tasks": results, "total_provider_requests": source_summary.get("provider_requests", 0),
+        "total_usage": source_summary.get("usage", 0), "total_charge_cny": source_summary.get("charge_cny", "0"),
+        "hard_cap_cny": str(RECOMMENDED_HARD_CAP_CNY),
+        "hard_cap_respected": Decimal(str(source_summary.get("charge_cny", "0"))) <= RECOMMENDED_HARD_CAP_CNY,
+        "active_reservation": None if ledger is None or ledger.active_reservation is None else ledger.active_reservation.model_dump(mode="json"),
+        "ledger_closed": closed, "candidate_count": sum(item.get("candidate_status") == "exported_nonempty" for item in results),
+        "scorable_count": sum(item.get("evaluator_status") == "completed" for item in results),
+        "infrastructure_failure_count": gate["infrastructure_failure_count"], "v2_2_gate": gate,
+        "go_no_go": "GO" if source_summary.get("completed") else "NO_GO",
+    }
+    destination = output.resolve() if output is not None else artifact_root / "canary-result-summary.json"
+    _write_json(destination, summary)
+    markdown = "# Evaluation V2 Control Canary Summary\n\n" + "\n".join(
+        [f"- Overall: {summary['go_no_go']}", f"- V2.2 Gate: {gate['status']}",
+         f"- Candidate / scorable: {summary['candidate_count']} / {summary['scorable_count']}",
+         f"- Provider requests / usage / charge: {summary['total_provider_requests']} / {summary['total_usage']} / {summary['total_charge_cny']}",
+         f"- Ledger closed: {summary['ledger_closed']}"]
+    ) + "\n"
+    (destination.with_suffix(".md")).write_text(markdown, encoding="utf-8")
+    return summary
+
+
+def run_shadow_canary(*, root: Path, freeze: Path, preflight_summary: Path, artifact_root: Path, run_id: str) -> dict[str, Any]:
+    """Exercise the paid data path with deterministic simulated Provider usage only."""
+    root, freeze, artifact_root = root.resolve(), freeze.resolve(), artifact_root.resolve()
+    validate_freeze(root=root, freeze=freeze)
+    if not json.loads(preflight_summary.read_text(encoding="utf-8")).get("passed"):
+        raise ValueError("shadow Canary requires both task environment preflights")
+    if not run_id or Path(run_id).name != run_id or artifact_root.exists():
+        raise ValueError("shadow Canary requires a fresh safe Run ID and artifact root")
+    artifact_root.mkdir(parents=True)
+    frozen = json.loads((freeze / "control-canary-freeze.json").read_text(encoding="utf-8"))
+    gate = _fresh_paid_gate(root=root, freeze=freeze, artifact_root=artifact_root, acknowledgement="zero-provider-shadow-deterministic-replay")
+    outcomes = {TASKS[0]["instance_id"]: False, TASKS[1]["instance_id"]: True}
+
+    def executor(task: dict[str, str]) -> PaidTaskResult:
+        instance_id = task["instance_id"]
+        task_root = artifact_root / "tasks" / instance_id
+        task_root.mkdir(parents=True)
+        reservation = gate.reserve(f"swe/v2-control-shadow/{run_id}/{instance_id}", maximum_requests=1, maximum_input_tokens_per_request=MAX_INPUT_TOKENS, maximum_output_tokens_per_request=MAX_OUTPUT_TOKENS)
+        settlement = gate.settle(reservation, request_usages=[(100_000, 2_000)])
+        patch = f"diff --git a/shadow/{instance_id}.txt b/shadow/{instance_id}.txt\n+shadow deterministic candidate\n"
+        patch_path = task_root / "candidate.patch"; patch_path.write_text(patch, encoding="utf-8")
+        candidate_sha = _sha256(patch_path)
+        evaluator_run_id, model_id = f"{run_id}-{instance_id}", "evaluation-v2-shadow"
+        report = task_root / "logs" / "run_evaluation" / evaluator_run_id / model_id / instance_id / "report.json"
+        _write_json(report, {instance_id: {"patch_is_None": False, "patch_exists": True, "patch_successfully_applied": True, "resolved": outcomes[instance_id], "tests_status": {}}})
+        selected = official_evaluator_report_path(cwd=task_root, run_id=evaluator_run_id, model_id=model_id, instance_id=instance_id)
+        resolved = collect_goal3_official_outcome(selected, instance_id)
+        evidence = {
+            "instance_id": instance_id, "provider_executor": "deterministic_replay_no_transport",
+            "provider_requests": 0, "simulated_provider_requests": 1,
+            "pre_edit_test": {"command": ["deterministic-shadow", instance_id, "pre"], "exit_code": 1},
+            "post_edit_test": {"command": ["deterministic-shadow", instance_id, "post"], "exit_code": 0},
+            "candidate_sha256": candidate_sha, "workspace_diff_sha256": candidate_sha,
+            "candidate_diff_identity": True, "official_report_sha256": _sha256(selected), "resolved": resolved,
+            "settlement": settlement.model_dump(mode="json"), "environment_blocker": None,
+        }
+        _write_json(task_root / "task-result.json", evidence)
+        return PaidTaskResult(instance_id=instance_id, agent_status="completed", candidate_status="exported_nonempty", validation_status="executed", evaluator_status="completed", runner_status="completed", provider_status="simulated_settled", terminal_status="resolved" if resolved else "unresolved", provider_requests=1, usage={"input_tokens": 100_000, "output_tokens": 2_000}, charge_cny=str(settlement.actual_cny), candidate_sha256=candidate_sha, workspace_diff_sha256=candidate_sha, candidate_diff_identity=True, evaluator_report_sha256=_sha256(selected), resolved=resolved)
+
+    results = execute_paid_canary(root=root, freeze=freeze, paid_execution=True, executor=executor)
+    ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
+    if len(results) != len(TASKS) or ledger.active_reservation is not None:
+        raise RuntimeError("shadow Canary did not complete the serial paid-path contract")
+    simulated_usage = sum(charge.input_tokens + charge.output_tokens for charge in ledger.request_charges)
+    summary = {
+        "schema_version": SCHEMA_VERSION, "run_id": run_id, "paid_execution": False,
+        "provider_transport": "deterministic_replay_no_transport", "provider_secret_read": False,
+        "provider_requests": 0, "usage": 0, "charge_cny": "0",
+        "simulated_provider_requests": len(ledger.request_charges), "simulated_usage": simulated_usage,
+        "simulated_charge_cny": str(ledger.spent_cny), "freeze_sha256": _sha256(freeze / "control-canary-freeze.json"),
+        "runtime_contract_hash": frozen["runtime_contract_hash"], "payload_manifest_sha256": frozen["payload_contract"]["manifest_sha256"],
+        "results": [item.__dict__ for item in results], "active_reservation": None,
+        "ledger_closed": True, "completed": all(_healthy_paid_result(item) for item in results),
+    }
+    _write_json(artifact_root / "shadow-canary-summary.json", summary)
+    summarize_canary_artifact(artifact_root=artifact_root)
+    return summary
+
+
+def release_check(*, root: Path, freeze: Path, preflight_summary: Path, ledger_path: Path | None = None) -> dict[str, Any]:
+    """Return the exact paid-ready state and dispatch inputs without dispatching."""
+    root = root.resolve()
+    head = current_git_commit(root)
+    remote = subprocess.run(["git", "-C", str(root), "rev-parse", "origin/main"], text=True, capture_output=True, check=False).stdout.strip()
+    status = subprocess.run(["git", "-C", str(root), "status", "--porcelain"], text=True, capture_output=True, check=False).stdout
+    blockers: list[str] = []
+    try: validated = validate_freeze(root=root, freeze=freeze)
+    except ValueError as exc: validated = {"valid": False}; blockers.append(str(exc))
+    payload = json.loads((freeze / "control-canary-freeze.json").read_text(encoding="utf-8"))
+    preflight = json.loads(preflight_summary.read_text(encoding="utf-8"))
+    if head != remote: blockers.append("head_is_not_origin_main")
+    if status: blockers.append("worktree_not_clean")
+    if not preflight.get("passed"): blockers.append("environment_preflight_not_passed")
+    active = None
+    if ledger_path is not None and ledger_path.is_file(): active = BudgetLedger.model_validate_json(ledger_path.read_text(encoding="utf-8")).active_reservation
+    if active is not None: blockers.append("active_reservation_exists")
+    runtime = payload["runtime_contract"]
+    return {
+        "status": "READY_FOR_PAID_CANARY" if not blockers else blockers[0], "blockers": blockers,
+        "head": head, "origin_main": remote, "git_status": status, "freeze_valid": validated.get("valid", False),
+        "system_instruction_sha256": runtime["system_instruction_sha256"], "freeze_sha256": _sha256(freeze / "control-canary-freeze.json"),
+        "runtime_contract_sha256": payload["runtime_contract_hash"], "pricing_sha256": payload["budget_contract"]["pricing_snapshot_hash"],
+        "payload_manifest_sha256": payload["payload_contract"]["manifest_sha256"], "tasks": [item["instance_id"] for item in payload["tasks"]],
+        "preflight_passed": preflight.get("passed"), "hard_cap_cny": str(RECOMMENDED_HARD_CAP_CNY),
+        "request_ceiling_per_task": MAX_REQUESTS_PER_TASK, "strict_serial": True, "fallback": False, "retry": 0,
+        "workflow_inputs": {"paid_execution": "true", "expected_freeze_sha256": _sha256(freeze / "control-canary-freeze.json"), "approved_hard_cap_cny": str(RECOMMENDED_HARD_CAP_CNY), "authorization_acknowledgement": "REPLACE_WITH_USER_AUTHORIZATION_ACKNOWLEDGEMENT", "run_id": "REPLACE_WITH_FRESH_RUN_ID"},
+        "paid_job_explicit_authorization_required": True, "active_reservation": None if active is None else active.model_dump(mode="json"),
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Evaluation V2 Control Canary zero-provider controls")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -747,12 +905,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     validate = sub.add_parser("validate"); validate.add_argument("--root", type=Path, required=True); validate.add_argument("--freeze", type=Path, required=True)
     preflight = sub.add_parser("preflight"); preflight.add_argument("--freeze", type=Path, required=True); preflight.add_argument("--artifact-root", type=Path, required=True)
     rehearsal = sub.add_parser("rehearse"); rehearsal.add_argument("--root", type=Path, required=True); rehearsal.add_argument("--freeze", type=Path, required=True); rehearsal.add_argument("--preflight-summary", type=Path, required=True); rehearsal.add_argument("--artifact-root", type=Path, required=True)
+    shadow = sub.add_parser("shadow"); shadow.add_argument("--root", type=Path, required=True); shadow.add_argument("--freeze", type=Path, required=True); shadow.add_argument("--preflight-summary", type=Path, required=True); shadow.add_argument("--artifact-root", type=Path, required=True); shadow.add_argument("--run-id", required=True)
+    summary = sub.add_parser("summary"); summary.add_argument("--artifact-root", type=Path, required=True); summary.add_argument("--output", type=Path)
+    release = sub.add_parser("release-check"); release.add_argument("--root", type=Path, required=True); release.add_argument("--freeze", type=Path, required=True); release.add_argument("--preflight-summary", type=Path, required=True); release.add_argument("--ledger", type=Path); release.add_argument("--output", type=Path)
     paid = sub.add_parser("paid-run"); paid.add_argument("--root", type=Path, required=True); paid.add_argument("--freeze", type=Path, required=True); paid.add_argument("--artifact-root", type=Path, required=True); paid.add_argument("--expected-freeze-sha256", required=True); paid.add_argument("--approved-hard-cap-cny", required=True); paid.add_argument("--authorization-acknowledgement", required=True); paid.add_argument("--run-id", required=True); paid.add_argument("--confirm-paid-execution", action="store_true")
     args = parser.parse_args(argv)
     if args.command == "freeze": result = write_freeze(root=args.root, output=args.output)
     elif args.command == "validate": result = validate_freeze(root=args.root, freeze=args.freeze)
     elif args.command == "preflight": result = run_environment_preflight(freeze=args.freeze, artifact_root=args.artifact_root)
     elif args.command == "rehearse": result = rehearse_paid_path(root=args.root, freeze=args.freeze, preflight_summary=args.preflight_summary, artifact_root=args.artifact_root)
+    elif args.command == "shadow": result = run_shadow_canary(root=args.root, freeze=args.freeze, preflight_summary=args.preflight_summary, artifact_root=args.artifact_root, run_id=args.run_id)
+    elif args.command == "summary": result = summarize_canary_artifact(artifact_root=args.artifact_root, output=args.output)
+    elif args.command == "release-check":
+        result = release_check(root=args.root, freeze=args.freeze, preflight_summary=args.preflight_summary, ledger_path=args.ledger)
+        if args.output is not None: _write_json(args.output, result)
     else:
         if not args.confirm_paid_execution:
             raise ValueError("paid execution requires --confirm-paid-execution")
