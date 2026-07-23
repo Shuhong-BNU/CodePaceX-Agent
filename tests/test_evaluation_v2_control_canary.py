@@ -11,6 +11,10 @@ from evals.evaluation_v2 import control_canary as canary
 
 def test_control_task_order_and_budget_contract_are_fixed(tmp_path: Path) -> None:
     assert [task["instance_id"] for task in canary.TASKS] == ["beetbox__beets-5495", "beancount__beancount-931"]
+    assert canary.TASKS[0]["test_target"] == "test/test_importer.py::ImportSingletonTest::test_set_fields"
+    assert canary.TASKS[0]["preflight_dependencies"] == ["responses>=0.3.0"]
+    assert canary.TASKS[1]["test_target"] == "beancount/plugins/leafonly_test.py"
+    assert canary.TASKS[1]["preflight_dependencies"] == []
     pricing = tmp_path / "evals" / "goal2"
     pricing.mkdir(parents=True)
     source = Path(__file__).resolve().parents[1] / canary.PRICING_PATH
@@ -41,6 +45,8 @@ def test_environment_blockers_are_precise() -> None:
     assert canary._environment_blocker(missing) == "missing_python_dependency"
     collect = canary.subprocess.CompletedProcess([], 4, "ERROR collecting", "")
     assert canary._environment_blocker(collect) == "pytest_collection_error"
+    selector = canary.subprocess.CompletedProcess([], 4, "ERROR: not found: target", "")
+    assert canary._environment_blocker(selector) == "pytest_selector_not_found"
     baseline_failure = canary.subprocess.CompletedProcess([], 1, "collected 1 items", "")
     assert canary._environment_blocker(baseline_failure) is None
 
@@ -48,15 +54,18 @@ def test_environment_blockers_are_precise() -> None:
 def test_preflight_persists_test_evidence_and_accepts_a_project_baseline_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def materialize(task: dict[str, str], workspace: Path) -> None:
+    def materialize(task: dict[str, object], workspace: Path) -> None:
         workspace.mkdir(parents=True)
 
-    def bootstrap(workspace: Path) -> tuple[Path, list[dict[str, object]]]:
+    def bootstrap(workspace: Path, dependencies: list[str]) -> tuple[Path, list[dict[str, object]]]:
         python = workspace / "python"
-        return python, [{"command": [str(python), "-m", "pip", "install", "-e", ".", "pytest"], "exit_code": 0, "stdout": "installed", "stderr": ""}]
+        assert dependencies == ["responses>=0.3.0"]
+        return python, [{"command": [str(python), "-m", "pip", "install", "-e", ".", "pytest", *dependencies], "exit_code": 0, "stdout": "installed", "stderr": ""}]
 
     def run(command: list[str], *, cwd: Path, timeout: int = 1200) -> canary.subprocess.CompletedProcess[str]:
-        return canary.subprocess.CompletedProcess(command, 1, "collected 1 item\n1 failed", "")
+        if "--collect-only" in command:
+            return canary.subprocess.CompletedProcess(command, 0, "test/test_importer.py::ImportSingletonTest::test_set_fields\n\n1 test collected", "")
+        return canary.subprocess.CompletedProcess(command, 1, "1 failed", "")
 
     monkeypatch.setattr(canary, "_goal3_materialize_instance", materialize)
     monkeypatch.setattr(canary, "_bootstrap", bootstrap)
@@ -69,13 +78,48 @@ def test_preflight_persists_test_evidence_and_accepts_a_project_baseline_failure
     assert result["test_collection_completed"] is True
     assert result["meaningful_test_executed"] is True
     assert result["environment_blocker"] is None
-    assert json.loads((evidence / "test-command.json").read_text())["command"][-1] == task["test_command"]
+    assert result["collected_test_count"] == 1
+    assert result["collection_exit_code"] == 0
+    assert result["execution_exit_code"] == result["exit_code"] == 1
+    assert json.loads((evidence / "collection-command.json").read_text())["command"][-1] == task["test_target"]
+    assert json.loads((evidence / "execution-command.json").read_text())["command"][-1] == task["test_target"]
     assert (evidence / "dependency-bootstrap.json").is_file()
-    assert (evidence / "test.stdout.txt").read_text() == "collected 1 item\n1 failed"
+    assert (evidence / "collection.stdout.txt").read_text().endswith("1 test collected")
+    assert (evidence / "execution.stdout.txt").read_text() == "1 failed"
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "returncode", "expected"),
+    [
+        ("", "ModuleNotFoundError: No module named 'responses'", 2, "missing_python_dependency"),
+        ("no tests collected", "", 0, "pytest_collected_zero_tests"),
+    ],
+)
+def test_preflight_rejects_missing_dependency_or_empty_collection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: str, stderr: str,
+    returncode: int, expected: str,
+) -> None:
+    def materialize(task: dict[str, object], workspace: Path) -> None:
+        workspace.mkdir(parents=True)
+
+    def bootstrap(workspace: Path, dependencies: list[str]) -> tuple[Path, list[dict[str, object]]]:
+        return workspace / "python", [{"command": [], "exit_code": 0, "stdout": "installed", "stderr": ""}]
+
+    def run(command: list[str], *, cwd: Path, timeout: int = 1200) -> canary.subprocess.CompletedProcess[str]:
+        assert "--collect-only" in command
+        return canary.subprocess.CompletedProcess(command, returncode, stdout, stderr)
+
+    monkeypatch.setattr(canary, "_goal3_materialize_instance", materialize)
+    monkeypatch.setattr(canary, "_bootstrap", bootstrap)
+    monkeypatch.setattr(canary, "_run", run)
+    result = canary.preflight_task(dict(canary.TASKS[0]), work_root=tmp_path)
+    assert result["test_collection_completed"] is False
+    assert result["meaningful_test_executed"] is False
+    assert result["environment_blocker"] == expected
 
 
 def test_preflight_reports_the_phase_of_a_materialization_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def reject(task: dict[str, str], workspace: Path) -> None:
+    def reject(task: dict[str, object], workspace: Path) -> None:
         raise ValueError("git transport error")
 
     monkeypatch.setattr(canary, "_goal3_materialize_instance", reject)
@@ -155,6 +199,9 @@ def test_rehearsal_allocation_fails_closed_when_missing_or_not_bound(
 def test_workflow_owns_output_directories_and_redirect_parents(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     repository_root = Path(__file__).resolve().parents[1]
     workflow = (repository_root / ".github" / "workflows" / "evaluation-v2-control-canary.yml").read_text(encoding="utf-8")
+    assert "pull_request:" in workflow
+    assert "github.event_name == 'pull_request'" in workflow
+    assert "github.event_name == 'workflow_dispatch' && inputs.paid_execution == true" in workflow
     assert 'mkdir -p "$root"' in workflow
     for child in ("freeze", "preflight", "rehearsal"):
         assert f'mkdir -p "$root/{child}"' not in workflow
@@ -175,16 +222,18 @@ def test_workflow_owns_output_directories_and_redirect_parents(tmp_path: Path, m
     canary.main(["freeze", "--root", str(repository_root), "--output", str(freeze)])
     canary.main(["validate", "--root", str(repository_root), "--freeze", str(freeze)])
 
-    def materialize(task: dict[str, str], workspace: Path) -> None:
+    def materialize(task: dict[str, object], workspace: Path) -> None:
         workspace.mkdir(parents=True)
 
-    def bootstrap(workspace: Path) -> tuple[Path, list[dict[str, object]]]:
+    def bootstrap(workspace: Path, dependencies: list[str]) -> tuple[Path, list[dict[str, object]]]:
         python = workspace / "fake-python"
         return python, [{"command": [str(python), "-m", "pip", "install", "-e", ".", "pytest"], "exit_code": 0, "stdout": "installed", "stderr": ""}]
 
     def run(command: list[str], *, cwd: Path, timeout: int = 1200) -> canary.subprocess.CompletedProcess[str]:
         if "pytest" in command:
-            return canary.subprocess.CompletedProcess(command, 0, "collected 1 item\n1 passed", "")
+            if "--collect-only" in command:
+                return canary.subprocess.CompletedProcess(command, 0, "1 test collected", "")
+            return canary.subprocess.CompletedProcess(command, 0, "1 passed", "")
         return canary.subprocess.CompletedProcess(command, 0, "installed", "")
 
     monkeypatch.setattr(canary, "_goal3_materialize_instance", materialize)
@@ -200,6 +249,7 @@ def test_workflow_owns_output_directories_and_redirect_parents(tmp_path: Path, m
     ledger = canary.BudgetLedger.model_validate_json((rehearsal / "rehearsal-ledger.json").read_text(encoding="utf-8"))
     assert summary["passed"] is True
     assert all(item["task_workspace_materialized"] and item["dependencies_installed"] and item["test_collection_completed"] and item["meaningful_test_executed"] and item["environment_blocker"] is None for item in summary["tasks"])
+    assert all(item["collected_test_count"] >= 1 for item in summary["tasks"])
     assert rehearsal_result["provider_requests"] == rehearsal_result["usage"] == 0
     assert rehearsal_result["charge_cny"] == "0"
     assert rehearsal_result["active_reservation"] is None
