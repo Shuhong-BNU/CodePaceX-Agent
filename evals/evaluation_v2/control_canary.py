@@ -24,7 +24,7 @@ from typing import Any, Callable, Sequence
 
 import yaml
 from codepacex.experiments import ExperimentProfile
-from codepacex.prompts import build_system_prompt
+from codepacex.prompts import build_static_system_instruction
 from codepacex.tools import create_default_registry
 from evals.benchmark import canonical_hash, current_git_commit
 from evals.costing import load_pricing, pricing_snapshot_hash
@@ -178,7 +178,7 @@ def _runtime_contract(root: Path) -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "runtime_source_sha256": sources,
         "agent_entrypoint": "Agent.run_to_completion",
-        "system_instruction_sha256": hashlib.sha256(build_system_prompt().encode()).hexdigest(),
+        "system_instruction_sha256": hashlib.sha256(build_static_system_instruction().encode()).hexdigest(),
         "tool_schemas_sha256": canonical_hash(tools),
         "permission_profile": "session_allow_workspace_boundary",
         "candidate_export_contract": "git-diff-binary-sha256-bound-v1",
@@ -629,7 +629,7 @@ def _live_task_executor(*, root: Path, freeze_payload: dict[str, Any], task: dic
         "instance_id": task["instance_id"], "payload_sha256": _sha256(root / PAYLOAD_DIRECTORY / f"{task['instance_id']}.json"),
         "problem_statement_sha256": hashlib.sha256(task["problem_statement"].encode()).hexdigest(),
         "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
-        "system_prompt_sha256": hashlib.sha256(build_system_prompt().encode()).hexdigest(),
+        "system_prompt_sha256": hashlib.sha256(build_static_system_instruction().encode()).hexdigest(),
         "pre_edit_test": None, "post_edit_test": None,
     }
     try:

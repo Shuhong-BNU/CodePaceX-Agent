@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import subprocess
+import sys
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
+from codepacex import prompts
 from evals.evaluation_v2 import control_canary as canary
 
 
@@ -39,6 +43,61 @@ def test_freeze_validator_detects_contract_drift(tmp_path: Path, monkeypatch: py
     with pytest.raises(ValueError, match="Freeze differs"):
         canary.validate_freeze(root=root, freeze=output)
     assert written["freeze_sha256"]
+
+
+def test_freeze_contract_is_reproducible_across_processes_and_paths(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = """
+import json
+import os
+from pathlib import Path
+from evals.evaluation_v2 import control_canary
+output = Path(os.environ["V2_FREEZE_OUTPUT"])
+written = control_canary.write_freeze(root=Path(os.environ["V2_FREEZE_ROOT"]), output=output)
+print(json.dumps({
+    "freeze_sha256": written["freeze_sha256"],
+    "runtime_contract_hash": written["runtime_contract_hash"],
+    "system_instruction_sha256": control_canary._runtime_contract(
+        Path(os.environ["V2_FREEZE_ROOT"])
+    )["system_instruction_sha256"],
+}))
+"""
+    identities = []
+    for name, shell in (("first", "/bin/first-shell"), ("second", "/bin/second-shell")):
+        cwd = tmp_path / name / "different" / "absolute" / "path"
+        cwd.mkdir(parents=True)
+        environment = dict(os.environ)
+        environment.update({
+            "PYTHONPATH": str(root), "SHELL": shell, "V2_FREEZE_ROOT": str(root),
+            "V2_FREEZE_OUTPUT": str(tmp_path / f"{name}-freeze"),
+        })
+        result = subprocess.run(
+            [sys.executable, "-c", script], cwd=cwd, env=environment,
+            text=True, capture_output=True, check=True,
+        )
+        identities.append(json.loads(result.stdout))
+    assert identities[0] == identities[1]
+    assert identities[0]["system_instruction_sha256"] == hashlib.sha256(
+        prompts.build_static_system_instruction().encode()
+    ).hexdigest()
+
+
+def test_static_system_instruction_changes_all_contract_identities(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    before = hashlib.sha256(prompts.build_static_system_instruction().encode()).hexdigest()
+    before_contract = canary.freeze_payload(root)
+    before_freeze = canary.write_freeze(root=root, output=tmp_path / "before")
+    monkeypatch.setattr(prompts, "IDENTITY_SECTION", prompts.PromptSection(
+        name="Identity", priority=0, content=prompts.IDENTITY_SECTION.content + "\nstatic contract change",
+    ))
+    after = hashlib.sha256(prompts.build_static_system_instruction().encode()).hexdigest()
+    after_contract = canary.freeze_payload(root)
+    after_freeze = canary.write_freeze(root=root, output=tmp_path / "after")
+    assert before != after
+    assert before_contract["runtime_contract_hash"] != after_contract["runtime_contract_hash"]
+    assert before_freeze["freeze_sha256"] != after_freeze["freeze_sha256"]
 
 
 def test_environment_blockers_are_precise() -> None:
