@@ -1,0 +1,65 @@
+name: Evaluation V2 zero-provider Golden Path
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  golden-path:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    env:
+      EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare artifact directories
+        run: |
+          set -euo pipefail
+          artifact_root="$RUNNER_TEMP/evaluation-v2/$GITHUB_RUN_ID"
+          workspace="$RUNNER_TEMP/evaluation-v2-workspace/$GITHUB_RUN_ID"
+          mkdir -p "$artifact_root" "$workspace"
+          rmdir "$workspace"
+          printf 'ARTIFACT_ROOT=%s\n' "$artifact_root" >> "$GITHUB_ENV"
+          printf 'WORKSPACE=%s\n' "$workspace" >> "$GITHUB_ENV"
+      - name: Install project and frozen official evaluator
+        run: |
+          set -euo pipefail
+          docker info >/dev/null
+          python -m pip install -e . pytest pytest-asyncio
+          evaluator_root="$RUNNER_TEMP/swe-bench-live"
+          git clone --filter=blob:none https://github.com/microsoft/SWE-bench-Live.git "$evaluator_root"
+          git -C "$evaluator_root" checkout --detach "$EVALUATOR_COMMIT"
+          test "$(git -C "$evaluator_root" rev-parse HEAD)" = "$EVALUATOR_COMMIT"
+          python -m pip install -e "$evaluator_root"
+      - name: Materialize real task workspace
+        run: |
+          set -euo pipefail
+          python -m evals.evaluation_v2.golden_path materialize --workspace "$WORKSPACE" > "$ARTIFACT_ROOT/materialize.json"
+      - name: Run native zero-provider Golden Path
+        run: |
+          set -euo pipefail
+          python -m evals.evaluation_v2.golden_path run --workspace "$WORKSPACE" --artifact-root "$ARTIFACT_ROOT/run" --run-id "evaluation-v2-${GITHUB_RUN_ID}" --evaluator-commit "$EVALUATOR_COMMIT" > "$ARTIFACT_ROOT/runner.json"
+          python - "$ARTIFACT_ROOT/run/structured-summary.json" <<'PY'
+          import json, sys
+          result = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert result['provider_requests'] == result['usage'] == result['settlement_added'] == 0
+          assert result['charge_cny'] == '0' and result['active_reservation'] is None
+          assert result['real_agent_loop'] is True and result['real_edit_or_write'] >= 1
+          assert result['pre_edit_test_executed'] and result['post_edit_test_executed']
+          assert result['candidate_nonempty'] and result['candidate_matches_workspace_diff']
+          assert result['official_evaluator_executed'] and result['official_report_generated']
+          assert result['official_outcome'] in {'resolved', 'unresolved'}
+          assert result['historical_evidence_modified'] is False
+          PY
+      - name: Upload Golden Path artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaluation-v2-golden-path-${{ github.run_id }}
+          path: ${{ runner.temp }}/evaluation-v2/${{ github.run_id }}
+          if-no-files-found: warn
