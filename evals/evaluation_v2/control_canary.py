@@ -871,14 +871,22 @@ def release_check(*, root: Path, freeze: Path, preflight_summary: Path, ledger_p
     """Return the exact paid-ready state and dispatch inputs without dispatching."""
     root = root.resolve()
     head = current_git_commit(root)
-    remote = subprocess.run(["git", "-C", str(root), "rev-parse", "origin/main"], text=True, capture_output=True, check=False).stdout.strip()
+    remote_result = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--verify", "refs/remotes/origin/main^{commit}"],
+        text=True, capture_output=True, check=False,
+    )
+    remote = remote_result.stdout.strip()
     status = subprocess.run(["git", "-C", str(root), "status", "--porcelain"], text=True, capture_output=True, check=False).stdout
     blockers: list[str] = []
     try: validated = validate_freeze(root=root, freeze=freeze)
     except ValueError as exc: validated = {"valid": False}; blockers.append(str(exc))
     payload = json.loads((freeze / "control-canary-freeze.json").read_text(encoding="utf-8"))
     preflight = json.loads(preflight_summary.read_text(encoding="utf-8"))
-    if head != remote: blockers.append("head_is_not_origin_main")
+    if remote_result.returncode or not re.fullmatch(r"[0-9a-f]{40}", remote):
+        remote = None
+        blockers.append("origin_main_ref_unavailable")
+    elif head != remote:
+        blockers.append("head_is_not_origin_main")
     if status: blockers.append("worktree_not_clean")
     if not preflight.get("passed"): blockers.append("environment_preflight_not_passed")
     active = None
@@ -887,7 +895,7 @@ def release_check(*, root: Path, freeze: Path, preflight_summary: Path, ledger_p
     runtime = payload["runtime_contract"]
     return {
         "status": "READY_FOR_PAID_CANARY" if not blockers else blockers[0], "blockers": blockers,
-        "head": head, "origin_main": remote, "git_status": status, "freeze_valid": validated.get("valid", False),
+        "head": head, "origin_main": remote, "head_is_origin_main": head == remote, "git_status": status, "freeze_valid": validated.get("valid", False),
         "system_instruction_sha256": runtime["system_instruction_sha256"], "freeze_sha256": _sha256(freeze / "control-canary-freeze.json"),
         "runtime_contract_sha256": payload["runtime_contract_hash"], "pricing_sha256": payload["budget_contract"]["pricing_snapshot_hash"],
         "payload_manifest_sha256": payload["payload_contract"]["manifest_sha256"], "tasks": [item["instance_id"] for item in payload["tasks"]],
