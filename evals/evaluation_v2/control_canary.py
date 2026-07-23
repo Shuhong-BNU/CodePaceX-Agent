@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 import yaml
+from codepacex.config import load_config as load_codepacex_config
 from codepacex.experiments import ExperimentProfile
 from codepacex.prompts import build_static_system_instruction
 from codepacex.tools import create_default_registry
@@ -584,13 +585,26 @@ def _paid_pilot_config(freeze_payload: dict[str, Any]) -> PilotConfig:
         "api_key_env": provider["provider_secret_name"], "model_id": provider["model_id"],
         "fallback_enabled": False, "retry_budget": 0, "task_ids": [], "repetitions": 1,
         "feature_flags": {}, "experiment_profile": profile.canonical_payload(),
-        "max_iterations": MAX_REQUESTS_PER_TASK,
+        # PilotConfig keeps this schema-compatibility field at 50. The separate
+        # Provider request bridge below remains the frozen 40-request limit.
+        "max_iterations": 50,
         "model_parameters": {
             "temperature": None, "top_p": None, "max_output_tokens": None,
             "max_completion_tokens": MAX_OUTPUT_TOKENS, "enable_thinking": True,
             "thinking_budget": MAX_REASONING_TOKENS,
         },
     })
+
+
+def _initialize_paid_agent_config(*, pilot: PilotConfig, home: Path) -> None:
+    """Write and validate the same child configuration consumed by the Agent CLI."""
+    _goal3_child_config(pilot=pilot, home=home)
+    config = load_codepacex_config(home / ".codepacex" / "config.yaml")
+    primary = config.providers[0]
+    if (primary.name, primary.protocol, primary.base_url, primary.model) != (
+        pilot.provider, pilot.protocol, pilot.base_url, pilot.model_id,
+    ):
+        raise ValueError("generated paid Agent configuration changed frozen identity")
 
 
 def _fresh_paid_gate(*, root: Path, freeze: Path, artifact_root: Path, acknowledgement: str) -> PaidRunGate:
@@ -650,7 +664,7 @@ def _live_task_executor(*, root: Path, freeze_payload: dict[str, Any], task: dic
         raise ValueError("paid execution requires the configured Provider secret")
     with tempfile.TemporaryDirectory(prefix="codepacex-v2-control-home-") as home_text:
         home = Path(home_text)
-        _goal3_child_config(pilot=pilot, home=home)
+        _initialize_paid_agent_config(pilot=pilot, home=home)
         profile_path = home / "profile.yaml"
         profile_path.write_text(yaml.safe_dump(pilot.experiment_profile.canonical_payload(), sort_keys=True), encoding="utf-8")
         environment = _child_environment(pilot, home_text, root=root)
@@ -661,7 +675,7 @@ def _live_task_executor(*, root: Path, freeze_payload: dict[str, Any], task: dic
             maximum_provider_requests_per_trial=MAX_REQUESTS_PER_TASK,
         ))
         process = subprocess.run(
-            [sys.executable, "-m", "codepacex", "-p", prompt, "--output-format", "stream-json", "--experiment-profile", str(profile_path)],
+            [sys.executable, "-m", "codepacex", "-p", prompt, "--output-format", "stream-json", "--experiment-profile", str(profile_path), "--max-iterations", str(pilot.max_iterations)],
             cwd=workspace, env=environment, text=True, capture_output=True, timeout=1800, check=False,
         )
     (task_root / "agent.stdout.ndjson").write_text(process.stdout or "", encoding="utf-8")
@@ -819,6 +833,9 @@ def run_shadow_canary(*, root: Path, freeze: Path, preflight_summary: Path, arti
     artifact_root.mkdir(parents=True)
     frozen = json.loads((freeze / "control-canary-freeze.json").read_text(encoding="utf-8"))
     gate = _fresh_paid_gate(root=root, freeze=freeze, artifact_root=artifact_root, acknowledgement="zero-provider-shadow-deterministic-replay")
+    pilot = _paid_pilot_config(frozen)
+    with tempfile.TemporaryDirectory(prefix="codepacex-v2-control-shadow-home-") as home_text:
+        _initialize_paid_agent_config(pilot=pilot, home=Path(home_text))
     outcomes = {TASKS[0]["instance_id"]: False, TASKS[1]["instance_id"]: True}
 
     def executor(task: dict[str, str]) -> PaidTaskResult:
@@ -842,6 +859,8 @@ def run_shadow_canary(*, root: Path, freeze: Path, preflight_summary: Path, arti
             "post_edit_test": {"command": ["deterministic-shadow", instance_id, "post"], "exit_code": 0},
             "candidate_sha256": candidate_sha, "workspace_diff_sha256": candidate_sha,
             "candidate_diff_identity": True, "official_report_sha256": _sha256(selected), "resolved": resolved,
+            "pilot_max_iterations": pilot.max_iterations,
+            "provider_request_ceiling_per_task": MAX_REQUESTS_PER_TASK,
             "settlement": settlement.model_dump(mode="json"), "environment_blocker": None,
         }
         _write_json(task_root / "task-result.json", evidence)
@@ -859,6 +878,7 @@ def run_shadow_canary(*, root: Path, freeze: Path, preflight_summary: Path, arti
         "simulated_provider_requests": len(ledger.request_charges), "simulated_usage": simulated_usage,
         "simulated_charge_cny": str(ledger.spent_cny), "freeze_sha256": _sha256(freeze / "control-canary-freeze.json"),
         "runtime_contract_hash": frozen["runtime_contract_hash"], "payload_manifest_sha256": frozen["payload_contract"]["manifest_sha256"],
+        "pilot_max_iterations": pilot.max_iterations, "provider_request_ceiling_per_task": MAX_REQUESTS_PER_TASK,
         "results": [item.__dict__ for item in results], "active_reservation": None,
         "ledger_closed": True, "completed": all(_healthy_paid_result(item) for item in results),
     }

@@ -12,6 +12,7 @@ import pytest
 
 from codepacex import prompts
 from evals.evaluation_v2 import control_canary as canary
+from evals.paid_gate import ProviderRequestBudget, ProviderRequestCeilingExceeded
 
 
 def test_control_task_order_and_budget_contract_are_fixed(tmp_path: Path) -> None:
@@ -257,6 +258,50 @@ def test_fake_paid_path_validates_authorization_and_serial_health(
     assert (tmp_path / "paid" / "stage-c-compatibility-allocation.json").is_file()
 
 
+def test_paid_config_separates_agent_iterations_from_provider_request_ceiling(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    freeze = tmp_path / "freeze"
+    canary.write_freeze(root=root, output=freeze)
+    frozen = json.loads((freeze / "control-canary-freeze.json").read_text(encoding="utf-8"))
+
+    pilot = canary._paid_pilot_config(frozen)
+    assert pilot.max_iterations == 50
+    assert canary.MAX_REQUESTS_PER_TASK == 40
+
+    home = tmp_path / "agent-home"
+    canary._initialize_paid_agent_config(pilot=pilot, home=home)
+
+
+def test_paid_request_ceiling_blocks_the_41st_request_before_transport(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    freeze = tmp_path / "freeze"
+    artifact_root = tmp_path / "paid"
+    canary.write_freeze(root=root, output=freeze)
+    monkeypatch.setattr("evals.paid_gate._git_is_clean", lambda _root: True)
+    gate = canary._fresh_paid_gate(
+        root=root, freeze=freeze, artifact_root=artifact_root, acknowledgement="test-only",
+    )
+    budget = ProviderRequestBudget(
+        gate, trial_id="swe/v2-control/test-request-ceiling",
+        maximum_input_tokens_per_request=canary.MAX_INPUT_TOKENS,
+        maximum_output_tokens_per_request=canary.MAX_OUTPUT_TOKENS,
+        maximum_reasoning_tokens_per_request=canary.MAX_REASONING_TOKENS,
+        maximum_provider_requests_per_trial=canary.MAX_REQUESTS_PER_TASK,
+    )
+    for _ in range(canary.MAX_REQUESTS_PER_TASK):
+        reservation = budget.reserve_before_request()
+        budget.settle_after_usage(reservation, {"prompt_tokens": 1, "completion_tokens": 1})
+    with pytest.raises(ProviderRequestCeilingExceeded, match="attempted_request_index=41"):
+        budget.reserve_before_request()
+
+    ledger = canary.BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
+    assert len(ledger.request_charges) == len(ledger.settlements) == canary.MAX_REQUESTS_PER_TASK
+    assert ledger.active_reservation is None
+    assert ledger.provider_request_ceiling_blocks[0].attempted_request_index == 41
+
+
 def test_shadow_canary_exercises_two_serial_tasks_and_compiles_summary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -273,6 +318,8 @@ def test_shadow_canary_exercises_two_serial_tasks_and_compiles_summary(
     assert result["paid_execution"] is False
     assert result["provider_requests"] == result["usage"] == 0
     assert result["charge_cny"] == "0"
+    assert result["pilot_max_iterations"] == 50
+    assert result["provider_request_ceiling_per_task"] == 40
     assert result["simulated_provider_requests"] == 2
     assert [item["terminal_status"] for item in result["results"]] == ["unresolved", "resolved"]
     ledger = canary.BudgetLedger.model_validate_json((tmp_path / "shadow" / "ledger.json").read_text())
