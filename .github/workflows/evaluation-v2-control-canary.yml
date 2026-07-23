@@ -28,7 +28,7 @@ jobs:
         run: |
           set -euo pipefail
           root="$RUNNER_TEMP/evaluation-v2-control-canary/$GITHUB_RUN_ID"
-          mkdir -p "$root/freeze" "$root/preflight" "$root/rehearsal"
+          mkdir -p "$root"
           printf 'CANARY_ROOT=%s\n' "$root" >> "$GITHUB_ENV"
       - name: Install project and frozen official evaluator
         run: |
