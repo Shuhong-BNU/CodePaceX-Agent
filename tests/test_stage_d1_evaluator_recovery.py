@@ -146,3 +146,9 @@ def test_recovery_workflow_is_manual_zero_provider_and_single_use_guarded() -> N
     assert "BAILIAN_API_KEY" not in workflow
     assert "Refuse a second evaluator-only recovery" in workflow
     assert "stage_d1_freeze validate" in workflow
+    mkdir_preflight = 'mkdir -p "$RUNNER_TEMP/stage-d1-evaluator-preflight"'
+    audit_redirect = ' > "$RUNNER_TEMP/stage-d1-evaluator-preflight/candidate-audit.json"'
+    smoke_redirect = ' > "$RUNNER_TEMP/stage-d1-evaluator-preflight/smoke.json"'
+    assert mkdir_preflight in workflow
+    assert workflow.index(mkdir_preflight) < workflow.index(audit_redirect)
+    assert workflow.index(mkdir_preflight) < workflow.index(smoke_redirect)

@@ -56,6 +56,7 @@ jobs:
           ledger="$(find "$RUNNER_TEMP/stage-d1-source" -type f -name terminal-ledger.json -print -quit)"
           test -n "$ledger"
           source_root="$(dirname "$ledger")"
+          mkdir -p "$RUNNER_TEMP/stage-d1-evaluator-preflight"
           python -m evals.stage_d1_evaluator_recovery audit --source-root "$source_root" > "$RUNNER_TEMP/stage-d1-evaluator-preflight/candidate-audit.json"
           python -m evals.stage_d1_evaluator_recovery smoke --evidence-root "$RUNNER_TEMP/stage-d1-evaluator-preflight/smoke" --run-id "stage-d1-evaluator-smoke-${{ github.run_id }}" > "$RUNNER_TEMP/stage-d1-evaluator-preflight/smoke.json"
           python - "$RUNNER_TEMP/stage-d1-evaluator-preflight/smoke.json" <<'PY'
