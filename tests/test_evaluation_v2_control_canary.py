@@ -321,7 +321,7 @@ def test_release_check_emits_frozen_dispatch_inputs(tmp_path: Path, monkeypatch:
     original_run = canary.subprocess.run
 
     def git(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if command[-2:] == ["rev-parse", "origin/main"]:
+        if command[-2:] == ["--verify", "refs/remotes/origin/main^{commit}"]:
             return subprocess.CompletedProcess(command, 0, "a" * 40 + "\n", "")
         if command[-2:] == ["status", "--porcelain"]:
             return subprocess.CompletedProcess(command, 0, "", "")
@@ -330,8 +330,29 @@ def test_release_check_emits_frozen_dispatch_inputs(tmp_path: Path, monkeypatch:
     monkeypatch.setattr(canary.subprocess, "run", git)
     result = canary.release_check(root=root, freeze=freeze, preflight_summary=preflight)
     assert result["status"] == "READY_FOR_PAID_CANARY"
+    assert result["head_is_origin_main"] is True
     assert result["workflow_inputs"]["paid_execution"] == "true"
     assert result["workflow_inputs"]["expected_freeze_sha256"] == result["freeze_sha256"]
+
+
+def test_release_check_fails_closed_without_origin_main_ref(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = Path(__file__).resolve().parents[1]
+    monkeypatch.setattr(canary, "current_git_commit", lambda _root: "a" * 40)
+    freeze = tmp_path / "freeze"; canary.write_freeze(root=root, output=freeze)
+    preflight = tmp_path / "preflight.json"; preflight.write_text(json.dumps({"passed": True}), encoding="utf-8")
+    original_run = canary.subprocess.run
+
+    def git(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if command[-2:] == ["--verify", "refs/remotes/origin/main^{commit}"]:
+            return subprocess.CompletedProcess(command, 128, "", "unknown revision")
+        if command[-2:] == ["status", "--porcelain"]:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(canary.subprocess, "run", git)
+    result = canary.release_check(root=root, freeze=freeze, preflight_summary=preflight)
+    assert result["status"] == "origin_main_ref_unavailable"
+    assert result["origin_main"] is None and result["head_is_origin_main"] is False
 
 
 def test_rehearsal_allocation_fails_closed_when_missing_or_not_bound(
