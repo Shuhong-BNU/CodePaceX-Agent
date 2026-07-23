@@ -284,12 +284,18 @@ def official_evaluator_report_path(
     summary = root / f"{model_id}.{run_id}.json"
     detailed_candidates = sorted(report_dir.glob("report*.json")) if report_dir.is_dir() else []
     if detailed_candidates:
-        if detailed_candidates != [detailed] or summary.is_file():
-            raise ValueError(f"official evaluator produced multiple report candidates: {detailed_candidates}")
+        if detailed_candidates != [detailed]:
+            raise ValueError(
+                "official evaluator produced multiple report candidates: "
+                f"expected {[detailed]}, found {detailed_candidates}"
+            )
         return detailed
     if summary.is_file():
         return summary
-    raise ValueError(f"official evaluator report is missing: {detailed}")
+    raise ValueError(
+        "official evaluator report is missing: "
+        f"detailed {detailed}; summary {summary}"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
