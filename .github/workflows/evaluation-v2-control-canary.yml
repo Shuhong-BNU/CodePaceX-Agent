@@ -1,0 +1,82 @@
+name: Evaluation V2 Control Canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      paid_execution:
+        description: Reserved for a separately authorized future runner; this phase only permits false.
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  zero-provider-preflight:
+    if: ${{ inputs.paid_execution == false }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    env:
+      EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare fresh V2 artifact directories
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/evaluation-v2-control-canary/$GITHUB_RUN_ID"
+          mkdir -p "$root/freeze" "$root/preflight" "$root/rehearsal"
+          printf 'CANARY_ROOT=%s\n' "$root" >> "$GITHUB_ENV"
+      - name: Install project and frozen official evaluator
+        run: |
+          set -euo pipefail
+          docker info >/dev/null
+          python -m pip install -e . pytest pytest-asyncio
+          evaluator_root="$RUNNER_TEMP/swe-bench-live"
+          git clone --filter=blob:none https://github.com/microsoft/SWE-bench-Live.git "$evaluator_root"
+          git -C "$evaluator_root" checkout --detach "$EVALUATOR_COMMIT"
+          test "$(git -C "$evaluator_root" rev-parse HEAD)" = "$EVALUATOR_COMMIT"
+          python -m pip install -e "$evaluator_root"
+      - name: Freeze and validate V2 Control Canary
+        run: |
+          set -euo pipefail
+          python -m evals.evaluation_v2.control_canary freeze --root . --output "$CANARY_ROOT/freeze" > "$CANARY_ROOT/freeze-result.json"
+          python -m evals.evaluation_v2.control_canary validate --root . --freeze "$CANARY_ROOT/freeze" > "$CANARY_ROOT/freeze-validation.json"
+      - name: Run two-task environment preflight without Provider transport
+        run: |
+          set -euo pipefail
+          python -m evals.evaluation_v2.control_canary preflight --freeze "$CANARY_ROOT/freeze" --artifact-root "$CANARY_ROOT/preflight" > "$CANARY_ROOT/preflight-result.json"
+      - name: Rehearse rolling reservations without Provider transport
+        run: |
+          set -euo pipefail
+          python -m evals.evaluation_v2.control_canary rehearse --root . --freeze "$CANARY_ROOT/freeze" --preflight-summary "$CANARY_ROOT/preflight/preflight-summary.json" --artifact-root "$CANARY_ROOT/rehearsal" > "$CANARY_ROOT/rehearsal-result.json"
+          python - "$CANARY_ROOT/preflight/preflight-summary.json" "$CANARY_ROOT/rehearsal/paid-path-rehearsal.json" <<'PY'
+          import json, sys
+          preflight = json.load(open(sys.argv[1], encoding='utf-8'))
+          rehearsal = json.load(open(sys.argv[2], encoding='utf-8'))
+          assert preflight['passed'] is True
+          assert all(item['environment_blocker'] is None and item['meaningful_test_executed'] for item in preflight['tasks'])
+          assert rehearsal['provider_requests'] == rehearsal['usage'] == 0
+          assert rehearsal['charge_cny'] == '0'
+          assert rehearsal['settlements'] == 2 and rehearsal['active_reservation'] is None
+          assert rehearsal['provider_secret_read'] is False
+          PY
+      - name: Upload Control Canary evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaluation-v2-control-canary-preflight-${{ github.run_id }}
+          path: ${{ runner.temp }}/evaluation-v2-control-canary/${{ github.run_id }}
+          if-no-files-found: warn
+
+  paid-execution-disabled:
+    if: ${{ inputs.paid_execution == true }}
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Refuse paid execution in the zero-provider phase
+        run: |
+          echo 'PAID_EXECUTION_NOT_STARTED: this workflow revision only permits zero-provider preflight.'
+          exit 1
