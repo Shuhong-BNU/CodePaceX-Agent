@@ -1,0 +1,130 @@
+name: Stage D.1 evaluator-only recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      perform_recovery:
+        description: Explicitly authorize the one preserved-Candidate evaluator-only recovery
+        required: true
+        default: false
+        type: boolean
+      recovery_run_id:
+        description: New, unused evaluator-only recovery Run ID
+        required: true
+        default: ''
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  evaluator-preflight:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install the frozen official evaluator
+        run: |
+          set -euo pipefail
+          docker info >/dev/null
+          python -m pip install -e . pytest pytest-asyncio
+          evaluator_root="$RUNNER_TEMP/swe-bench-live"
+          git clone --filter=blob:none https://github.com/microsoft/SWE-bench-Live.git "$evaluator_root"
+          git -C "$evaluator_root" checkout --detach ad79b850f15e33992e96f03f6e97f05ddf9aa0be
+          test "$(git -C "$evaluator_root" rev-parse HEAD)" = ad79b850f15e33992e96f03f6e97f05ddf9aa0be
+          python -m pip install -e "$evaluator_root"
+          python -m evals.stage_d1_freeze validate --root . --freeze evals/stage_d1/stage_d1_freeze.json
+          python -m evals.stage_d1_freeze validate --root . --freeze evals/stage_d1/stage_d1_freeze.json
+      - name: Download and bind the preserved Candidate Artifact
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: '8538459144'
+          run-id: '29941188060'
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/stage-d1-source
+      - name: Validate source and run zero-provider evaluator smoke
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          digest="$(gh api repos/${{ github.repository }}/actions/artifacts/8538459144 --jq .digest)"
+          test "$digest" = 'sha256:73632767fb4d2f2ceb37b88466ca9d8d632b288d04b460d0c7f7eb981e75fbb2'
+          ledger="$(find "$RUNNER_TEMP/stage-d1-source" -type f -name terminal-ledger.json -print -quit)"
+          test -n "$ledger"
+          source_root="$(dirname "$ledger")"
+          python -m evals.stage_d1_evaluator_recovery audit --source-root "$source_root" > "$RUNNER_TEMP/stage-d1-evaluator-preflight/candidate-audit.json"
+          python -m evals.stage_d1_evaluator_recovery smoke --evidence-root "$RUNNER_TEMP/stage-d1-evaluator-preflight/smoke" --run-id "stage-d1-evaluator-smoke-${{ github.run_id }}" > "$RUNNER_TEMP/stage-d1-evaluator-preflight/smoke.json"
+          python - "$RUNNER_TEMP/stage-d1-evaluator-preflight/smoke.json" <<'PY'
+          import json, sys
+          result = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert result['provider_requests'] == result['usage'] == 0
+          assert result['charge'] == result['settlement'] == '0'
+          assert result['active_reservation'] is None
+          assert result['evaluator_commit_matches'] is True
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage-d1-evaluator-preflight-${{ github.run_id }}
+          path: ${{ runner.temp }}/stage-d1-evaluator-preflight
+          if-no-files-found: error
+
+  evaluator-recovery:
+    needs: evaluator-preflight
+    if: ${{ inputs.perform_recovery }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install the frozen official evaluator
+        run: |
+          set -euo pipefail
+          docker info >/dev/null
+          python -m pip install -e . pytest pytest-asyncio
+          evaluator_root="$RUNNER_TEMP/swe-bench-live"
+          git clone --filter=blob:none https://github.com/microsoft/SWE-bench-Live.git "$evaluator_root"
+          git -C "$evaluator_root" checkout --detach ad79b850f15e33992e96f03f6e97f05ddf9aa0be
+          test "$(git -C "$evaluator_root" rev-parse HEAD)" = ad79b850f15e33992e96f03f6e97f05ddf9aa0be
+          python -m pip install -e "$evaluator_root"
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: '8538459144'
+          run-id: '29941188060'
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/stage-d1-source
+      - name: Refuse a second evaluator-only recovery
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          digest="$(gh api repos/${{ github.repository }}/actions/artifacts/8538459144 --jq .digest)"
+          test "$digest" = 'sha256:73632767fb4d2f2ceb37b88466ca9d8d632b288d04b460d0c7f7eb981e75fbb2'
+          prior="$(gh api "repos/${{ github.repository }}/actions/artifacts?per_page=100" --jq '[.artifacts[] | select(.name | startswith("stage-d1-evaluator-recovery-"))] | length')"
+          test "$prior" = 0
+      - name: Recover the one preserved Candidate without Provider access
+        run: |
+          set -euo pipefail
+          test -n '${{ inputs.recovery_run_id }}'
+          ledger="$(find "$RUNNER_TEMP/stage-d1-source" -type f -name terminal-ledger.json -print -quit)"
+          test -n "$ledger"
+          source_root="$(dirname "$ledger")"
+          evidence="$RUNNER_TEMP/stage-d1-evaluator-recovery"
+          python -m evals.stage_d1_evaluator_recovery recover --source-root "$source_root" --evidence-root "$evidence" --run-id '${{ inputs.recovery_run_id }}' > "$evidence/recovery.json"
+          python - "$evidence/recovery.json" <<'PY'
+          import json, sys
+          result = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert result['provider_requests_added'] == result['usage_added'] == result['settlement_added'] == 0
+          assert result['charge_added'] == '0'
+          assert result['active_reservation'] is None
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage-d1-evaluator-recovery-${{ github.run_id }}
+          path: ${{ runner.temp }}/stage-d1-evaluator-recovery
+          if-no-files-found: error
