@@ -321,6 +321,23 @@ def build_plan_mode_reminder(
 # 对外接口
 # ---------------------------------------------------------------------------
 
+def _static_system_prompt_builder() -> PromptBuilder:
+    builder = PromptBuilder()
+    builder.add(IDENTITY_SECTION)
+    builder.add(SYSTEM_SECTION)
+    builder.add(DOING_TASKS_SECTION)
+    builder.add(EXECUTING_ACTIONS_SECTION)
+    builder.add(USING_TOOLS_SECTION)
+    builder.add(TONE_STYLE_SECTION)
+    builder.add(TEXT_OUTPUT_SECTION)
+    return builder
+
+
+def build_static_system_instruction() -> str:
+    """Return the version-controlled instruction that can be frozen in an evaluation contract."""
+    return _static_system_prompt_builder().build()
+
+
 def build_system_prompt(
     hook_prompts: list[str] | None = None,
     coordinator_mode: bool = False,
@@ -334,14 +351,7 @@ def build_system_prompt(
         from codepacex.teams.coordinator import get_coordinator_system_prompt
         return get_coordinator_system_prompt(agent_catalog=agent_catalog)
 
-    b = PromptBuilder()
-    b.add(IDENTITY_SECTION)
-    b.add(SYSTEM_SECTION)
-    b.add(DOING_TASKS_SECTION)
-    b.add(EXECUTING_ACTIONS_SECTION)
-    b.add(USING_TOOLS_SECTION)
-    b.add(TONE_STYLE_SECTION)
-    b.add(TEXT_OUTPUT_SECTION)
+    b = _static_system_prompt_builder()
     b.add(environment_section(work_dir))
 
     if custom_instructions:
