@@ -197,7 +197,14 @@ def test_future_paid_runner_stops_before_second_task_when_first_is_unhealthy(tmp
 
     def executor(task: dict[str, str]) -> canary.PaidTaskResult:
         calls.append(task["instance_id"])
-        return canary.PaidTaskResult(task["instance_id"], "completed", "exported_nonempty", "executed", "evaluator_execution_error", "error", "zero_provider")
+        return canary.PaidTaskResult(
+            task["instance_id"], "completed_with_candidate", "exported_nonempty",
+            "executed", "evaluator_execution_error", "error", "completed",
+            terminal_status="evaluator_execution_error", provider_requests=1,
+            live_executor_invoked=True, agent_dispatch_started=True,
+            provider_client_initialized=True, model_response_observed=True,
+            settlement_count=1,
+        )
 
     results = canary.execute_paid_canary(root=root, freeze=freeze, paid_execution=True, executor=executor)
     assert len(results) == len(calls) == 1
@@ -240,9 +247,13 @@ def test_fake_paid_path_validates_authorization_and_serial_health(
 
     def replay(task: dict[str, str]) -> canary.PaidTaskResult:
         return canary.PaidTaskResult(
-            task["instance_id"], "completed", "exported_nonempty", "executed", "completed",
-            "completed", "replay", terminal_status="unresolved", candidate_sha256="a" * 64,
+            task["instance_id"], "completed_with_candidate", "exported_nonempty",
+            "executed", "completed", "completed", "completed",
+            terminal_status="unresolved", provider_requests=1, candidate_sha256="a" * 64,
             workspace_diff_sha256="a" * 64, candidate_diff_identity=True,
+            live_executor_invoked=True, agent_dispatch_started=True,
+            provider_client_initialized=True, model_response_observed=True,
+            settlement_count=1,
         )
 
     summary = canary.run_paid_canary(
@@ -340,16 +351,163 @@ def test_unhealthy_paid_results_stop_before_task_two(terminal_status: str, tmp_p
 
     def executor(task: dict[str, str]) -> canary.PaidTaskResult:
         calls.append(task["instance_id"])
+        if terminal_status == "agent_no_candidate":
+            return canary.PaidTaskResult(
+                instance_id=task["instance_id"], agent_status="completed_without_candidate",
+                candidate_status="not_exported", validation_status="executed",
+                evaluator_status="not_run", runner_status="completed", provider_status="completed",
+                terminal_status=terminal_status, provider_requests=1,
+                live_executor_invoked=True, agent_dispatch_started=True,
+                provider_client_initialized=True, model_response_observed=True,
+                settlement_count=1, failure_classification=terminal_status,
+            )
+        provider_status = "transport_failed" if terminal_status == "provider_transport_error" else "pre_transport_blocked"
         return canary.PaidTaskResult(
-            instance_id=task["instance_id"], agent_status="completed", candidate_status="not_exported",
+            instance_id=task["instance_id"], agent_status="failed", candidate_status="not_exported",
             validation_status="not_run", evaluator_status="not_run", runner_status="error",
-            provider_status=terminal_status, terminal_status=terminal_status,
+            provider_status=provider_status, terminal_status=terminal_status,
             active_reservation=None, failure_classification=terminal_status,
         )
 
     results = canary.execute_paid_canary(root=root, freeze=freeze, paid_execution=True, executor=executor)
     assert len(results) == len(calls) == 1
     assert calls == ["beetbox__beets-5495"]
+
+
+def test_task_agent_environment_isolates_tool_python_and_pip(tmp_path: Path) -> None:
+    python = tmp_path / ".evaluation-v2-preflight-venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    for executable in ("python", "python3", "pip", "pip3"):
+        path = python.parent / executable
+        path.write_text("#!/bin/sh\n", encoding="utf-8")
+        path.chmod(0o755)
+    environment = canary._task_agent_environment({"PATH": "/usr/bin"}, python)
+    assert environment["PATH"].split(os.pathsep)[0] == str(python.parent)
+    assert environment["VIRTUAL_ENV"] == str(python.parent.parent)
+    assert environment["PYTHONNOUSERSITE"] == "1"
+    assert environment["PIP_REQUIRE_VIRTUALENV"] == "1"
+    assert set(canary._task_tool_resolution(environment, python)) == {"python", "python3", "pip", "pip3"}
+
+
+def test_fake_secret_child_environment_does_not_mutate_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    freeze = tmp_path / "freeze"
+    canary.write_freeze(root=root, output=freeze)
+    frozen = json.loads((freeze / "control-canary-freeze.json").read_text(encoding="utf-8"))
+    pilot = canary._paid_pilot_config(frozen).model_copy(update={"api_key_env": "V2_FAKE_KEY"})
+    monkeypatch.delenv("V2_FAKE_KEY", raising=False)
+    before = dict(os.environ)
+    child = canary._child_environment_with_secret(
+        pilot, str(tmp_path / "home"), root=root, secret_override="fake-only",
+    )
+    assert dict(os.environ) == before
+    assert "V2_FAKE_KEY" not in os.environ
+    assert child["V2_FAKE_KEY"] == "fake-only"
+
+
+def test_host_runtime_fingerprint_captures_interpreter_modules_and_dependencies() -> None:
+    fingerprint = canary._host_runtime_fingerprint()
+    assert fingerprint["sys_executable"] == str(Path(sys.executable).resolve())
+    assert fingerprint["modules"]["openai"]["version"]
+    assert fingerprint["modules"]["openai"]["file"]
+    assert fingerprint["modules"]["codepacex"]["file"]
+    assert fingerprint["dependency_versions"]["openai"]
+    assert len(fingerprint["fingerprint_sha256"]) == 64
+
+
+def test_zero_request_capability_result_becomes_dispatch_missing() -> None:
+    result = canary.enforce_dispatch_invariant(canary.PaidTaskResult(
+        instance_id="task", agent_status="completed_without_candidate",
+        candidate_status="not_exported", validation_status="executed",
+        evaluator_status="not_run", runner_status="completed", provider_status="completed",
+        terminal_status="agent_no_candidate", live_executor_invoked=True,
+        agent_dispatch_started=True, provider_client_initialized=False,
+    ))
+    assert result.terminal_status == "agent_dispatch_missing"
+    assert result.agent_status == "failed"
+    assert result.provider_status == "not_started"
+    assert result.runner_status == "error"
+
+
+def test_completed_without_candidate_requires_a_settled_model_response() -> None:
+    result = canary.enforce_dispatch_invariant(canary.PaidTaskResult(
+        instance_id="task", agent_status="completed_without_candidate",
+        candidate_status="not_exported", validation_status="executed",
+        evaluator_status="not_run", runner_status="completed", provider_status="completed",
+        terminal_status="agent_no_candidate", provider_requests=1,
+        live_executor_invoked=True, agent_dispatch_started=True,
+        provider_client_initialized=True, model_response_observed=True, settlement_count=1,
+    ))
+    assert result.terminal_status == "agent_no_candidate"
+
+
+def test_live_executor_classifies_agent_import_crash_as_dispatch_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    freeze = tmp_path / "freeze"
+    canary.write_freeze(root=root, output=freeze)
+    frozen = json.loads((freeze / "control-canary-freeze.json").read_text(encoding="utf-8"))
+    artifact = tmp_path / "paid"
+    monkeypatch.setattr("evals.paid_gate._git_is_clean", lambda _root: True)
+    gate = canary._fresh_paid_gate(root=root, freeze=freeze, artifact_root=artifact, acknowledgement="test")
+    task = canary.load_frozen_payloads(root)[0]
+    metadata = dict(canary.TASKS[0])
+    monkeypatch.setattr(canary, "_goal3_materialize_instance", lambda _task, workspace: workspace.mkdir(parents=True))
+    monkeypatch.setattr(canary, "_bootstrap", lambda workspace, *_args, **_kwargs: (
+        workspace / ".evaluation-v2-preflight-venv" / "bin" / "python",
+        [{"exit_code": 0}],
+    ))
+    monkeypatch.setattr(canary, "_run", lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "", ""))
+    monkeypatch.setattr(canary, "_agent_runtime_probe", lambda **_kwargs: subprocess.CompletedProcess([], 0, "", ""))
+    monkeypatch.setattr(canary, "_initialize_paid_agent_config", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        canary, "_task_tool_resolution",
+        lambda _environment, _python: {name: f"/isolated/{name}" for name in ("python", "python3", "pip", "pip3")},
+    )
+    monkeypatch.setattr(canary, "_goal3_extract_patch", lambda _workspace: "")
+    monkeypatch.setattr(canary.subprocess, "run", lambda command, **_kwargs: subprocess.CompletedProcess(
+        command, 1, "", "ImportError: cannot import name 'AsyncOpenAI' from 'openai'",
+    ))
+    monkeypatch.setenv("BAILIAN_API_KEY", "offline-test-key")
+    result = canary._live_task_executor(
+        root=root, freeze_payload=frozen, task=task, metadata=metadata, gate=gate,
+        artifact_root=artifact, run_id="dispatch-missing",
+    )
+    assert result.terminal_status == "agent_dispatch_missing"
+    assert result.provider_requests == 0
+    assert result.agent_exit_code == 1
+    assert result.provider_client_initialized is False
+
+
+def test_host_runtime_fingerprint_drift_is_fail_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = Path(__file__).resolve().parents[1]
+    freeze = tmp_path / "freeze"
+    canary.write_freeze(root=root, output=freeze)
+    frozen = json.loads((freeze / "control-canary-freeze.json").read_text(encoding="utf-8"))
+    artifact = tmp_path / "paid"
+    monkeypatch.setattr("evals.paid_gate._git_is_clean", lambda _root: True)
+    gate = canary._fresh_paid_gate(root=root, freeze=freeze, artifact_root=artifact, acknowledgement="test")
+    fingerprints = iter((
+        {"fingerprint_sha256": "a" * 64, "sys_executable": "/host/python"},
+        {"fingerprint_sha256": "b" * 64, "sys_executable": "/host/python"},
+    ))
+    monkeypatch.setattr(canary, "_host_runtime_fingerprint", lambda: next(fingerprints))
+    monkeypatch.setattr(
+        canary, "_goal3_materialize_instance",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("bootstrap sentinel")),
+    )
+    result = canary._live_task_executor(
+        root=root, freeze_payload=frozen, task=canary.load_frozen_payloads(root)[0],
+        metadata=dict(canary.TASKS[0]), gate=gate, artifact_root=artifact, run_id="host-runtime-drift",
+    )
+    assert result.terminal_status == "host_runtime_contaminated"
+    assert result.runner_status == "error"
+    task_root = artifact / "tasks" / result.instance_id
+    assert json.loads((task_root / "host-runtime-before.json").read_text())["fingerprint_sha256"] == "a" * 64
+    assert json.loads((task_root / "host-runtime-after.json").read_text())["fingerprint_sha256"] == "b" * 64
 
 
 def test_v2_2_gate_reports_precise_no_go_reasons() -> None:

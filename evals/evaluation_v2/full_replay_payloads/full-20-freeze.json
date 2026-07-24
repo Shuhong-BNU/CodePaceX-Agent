@@ -148,27 +148,31 @@
     "strict_serial": true
   },
   "runtime_contract": {
+    "agent_dispatch_coverage_contract": "every-capability-terminal-requires-live-executor-provider-request-and-settlement-v1",
     "agent_entrypoint": "Agent.run_to_completion",
     "candidate_export_contract": "git-diff-binary-sha256-bound-v1",
-    "phase_transition_contract": "capability-terminals-continue-infrastructure-accounting-terminals-stop-v1",
+    "host_runtime_integrity_contract": "before-after-runtime-fingerprint-equality-fail-closed-v1",
+    "phase_transition_contract": "dispatch-evidenced-capability-terminals-continue-infrastructure-stop-v2",
     "pilot_config_max_iterations": 50,
     "provider_request_budget_bridge_ceiling": 40,
     "runtime_source_sha256": {
-      ".github/workflows/evaluation-v2-full-20-replay.yml": "6ad88b1955eb49aae579994e5bca16ae5a972d5ed27c3a417da7840395bfc98a",
+      ".github/workflows/evaluation-v2-full-20-replay.yml": "8a85041d02cbbc405f1253b0cc83b30a3b81dbc45cb64d33b8c442954e00b7ec",
       "codepacex/agent.py": "cb8ab5ae16c2e41382c6a603c6f60be988db3c4e73100a3f08efb5bb2426050f",
       "codepacex/client.py": "205e40cf5629fdc9fca0b58edc43505bd5ac3ae8bfb69ebcd4dd73eed46fce0f",
       "codepacex/permissions/checker.py": "bab12d8cde66fac86bdb6df8e63c8540e0dba43dd8b2ae461047144afa380cd2",
       "codepacex/tools/edit_file.py": "495231404680b588a7ac14b2d2807aa156e832136c14459f923ac3276dab750f",
       "codepacex/tools/run_test.py": "19335d85dbd43ea6062e419bfcc089eb98da15c928bb1fcb6280705bc27b52fe",
-      "evals/evaluation_v2/control_canary.py": "e0b718d7711be6874bd42ea03c21a556f1e3eb3b144af6f705324df5db4da07e",
-      "evals/evaluation_v2/full_replay.py": "50c2be979a2be9a65e0cfde864204d9d9c00a8868c1c8ebbefea12c637994bf7",
-      "evals/paid_gate.py": "0cc8c119346cf64f29254f9737ca45f5081780c26d0a7740fe8e3c91157b21df"
+      "evals/evaluation_v2/control_canary.py": "d411a4b6a94fc83688212dc283adeb292b6b97d4998c0f85231d8d6b738cb335",
+      "evals/evaluation_v2/full_replay.py": "6a9a0635bc382fdc6b05096fb5f64d7ed5755c34656013d33e3e7f36b07346b8",
+      "evals/paid_gate.py": "0cc8c119346cf64f29254f9737ca45f5081780c26d0a7740fe8e3c91157b21df",
+      "evals/pilot.py": "24bf24f8ad4b1783ae6160a6fb9781f42fde1bbbe0560689ea2a19330aacc24c"
     },
     "schema_version": 1,
     "system_instruction_sha256": "f43af3f8b81f58b2970571afb86f69641caf0da49c191cffe4026cf732abd36c",
+    "task_python_isolation_contract": "fresh-no-system-site-packages-venv-path-bound-python-python3-pip-pip3-v1",
     "tool_schemas_sha256": "72ae1262c5acd1a8b21c3f0964cdcb210508f1b780590b79b0ec2cc2eba07aea"
   },
-  "runtime_contract_sha256": "3d77584fa9730e92a1fb0cce0ee7f23e4dd99d29173d2d6ea3621c1cafd32a0e",
+  "runtime_contract_sha256": "b22f2de3617a84321524ad0ddc20324cc7e0426d3890a1860970b39fa0f34434",
   "schema_version": 1,
   "selection_manifest_sha256": "3efa2694627f699324c78b3c8dd09f208330eebb77fecd9d807bfd509529935e",
   "status": "frozen_pending_single_full_20_authorization"
