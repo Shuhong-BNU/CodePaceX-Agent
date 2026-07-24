@@ -171,6 +171,10 @@ def test_full_shadow_exercises_6_plus_14_and_closes_zero_provider_ledger(tmp_pat
     assert result["charge_cny"] == "0"
     assert result["phase_a_completed"] and result["phase_b_admitted"] and result["phase_b_completed"]
     assert len(result["results"]) == 20
+    ceiling = result["results"][0]
+    assert ceiling["terminal_status"] == "request_ceiling_reached"
+    assert ceiling["candidate_status"] == "exported_nonempty"
+    assert ceiling["evaluator_status"] == "completed"
     assert result["ledger_closed"] and result["active_reservation"] is None
     ledger = BudgetLedger.model_validate_json((tmp_path / "shadow" / "ledger.json").read_text(encoding="utf-8"))
     assert ledger.active_reservation is None

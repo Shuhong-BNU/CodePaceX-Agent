@@ -109,6 +109,7 @@ PHASE_A_IDS = (
 PHASE_B_IDS = tuple(item for item in GOAL4_ORDER if item not in PHASE_A_IDS)
 CAPABILITY_TERMINALS = frozenset({
     "resolved", "unresolved", "agent_no_candidate", "validation_failed",
+    "request_ceiling_reached",
 })
 INFRASTRUCTURE_TERMINALS = frozenset({
     "protocol_blocked", "provider_transport_error", "evaluator_unavailable",
@@ -687,7 +688,7 @@ def _write_task_shadow(
     gate.cancel(reservation, reason="provider_confirmed_not_submitted")
     candidate = status != "agent_no_candidate"
     candidate_sha = hashlib.sha256(f"shadow:{instance_id}".encode()).hexdigest() if candidate else None
-    evaluator = status in {"resolved", "unresolved", "validation_failed"}
+    evaluator = status in {"resolved", "unresolved", "validation_failed", "request_ceiling_reached"}
     result = control_canary.PaidTaskResult(
         instance_id=instance_id,
         agent_status="completed",
@@ -766,7 +767,7 @@ def run_shadow(root: Path, preflight_summary: Path, artifact_root: Path, run_id:
     with tempfile.TemporaryDirectory(prefix="codepacex-v2-full-shadow-home-") as home_text:
         control_canary._initialize_paid_agent_config(pilot=pilot, home=Path(home_text))
     gate = _fresh_gate(root, artifact_root, acknowledgement="zero-provider-full-20-shadow")
-    statuses = ["unresolved", "resolved", "agent_no_candidate", "validation_failed", "unresolved", "resolved"]
+    statuses = ["request_ceiling_reached", "resolved", "agent_no_candidate", "validation_failed", "unresolved", "resolved"]
     phase_a = [
         _write_task_shadow(gate, artifact_root, run_id, instance_id, status)
         for instance_id, status in zip(PHASE_A_IDS, statuses, strict=True)

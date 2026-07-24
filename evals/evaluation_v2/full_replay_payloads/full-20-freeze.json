@@ -160,15 +160,15 @@
       "codepacex/permissions/checker.py": "bab12d8cde66fac86bdb6df8e63c8540e0dba43dd8b2ae461047144afa380cd2",
       "codepacex/tools/edit_file.py": "495231404680b588a7ac14b2d2807aa156e832136c14459f923ac3276dab750f",
       "codepacex/tools/run_test.py": "19335d85dbd43ea6062e419bfcc089eb98da15c928bb1fcb6280705bc27b52fe",
-      "evals/evaluation_v2/control_canary.py": "59babab080c9ecbf2953ffb09a5becba8ec8f822eea1e4fcee54cc6752aef0fb",
-      "evals/evaluation_v2/full_replay.py": "c3cd2c7ef541b130c08198c4e9ac0623dff167a1cb61b1d4d896bfdbebea1ed8",
+      "evals/evaluation_v2/control_canary.py": "e0b718d7711be6874bd42ea03c21a556f1e3eb3b144af6f705324df5db4da07e",
+      "evals/evaluation_v2/full_replay.py": "50c2be979a2be9a65e0cfde864204d9d9c00a8868c1c8ebbefea12c637994bf7",
       "evals/paid_gate.py": "0cc8c119346cf64f29254f9737ca45f5081780c26d0a7740fe8e3c91157b21df"
     },
     "schema_version": 1,
     "system_instruction_sha256": "f43af3f8b81f58b2970571afb86f69641caf0da49c191cffe4026cf732abd36c",
     "tool_schemas_sha256": "72ae1262c5acd1a8b21c3f0964cdcb210508f1b780590b79b0ec2cc2eba07aea"
   },
-  "runtime_contract_sha256": "81fb818a8f52557d9e1c501a67109788a5b061d77c63a9dfb25024fc8efdb06b",
+  "runtime_contract_sha256": "3d77584fa9730e92a1fb0cce0ee7f23e4dd99d29173d2d6ea3621c1cafd32a0e",
   "schema_version": 1,
   "selection_manifest_sha256": "3efa2694627f699324c78b3c8dd09f208330eebb77fecd9d807bfd509529935e",
   "status": "frozen_pending_single_full_20_authorization"
