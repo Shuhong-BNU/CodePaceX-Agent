@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -71,6 +72,16 @@ def test_environment_normalization_covers_ci_specific_bootstrap_and_selector_req
     ]
     assert contracts["delgan__loguru-1306"]["dependencies"] == ["freezegun==1.5.0"]
     assert contracts["deepset-ai__haystack-8525"]["dependencies"] == []
+    assert contracts["instructlab__instructlab-2540"]["editable_target"] == ".[cpu]"
+    assert contracts["instructlab__instructlab-2540"]["bootstrap_environment"] == {
+        "PIP_EXTRA_INDEX_URL": "https://download.pytorch.org/whl/cpu",
+        "CMAKE_ARGS": "-DLLAMA_NATIVE=off",
+        "ILAB_MAX_STABLE_VRAM_WAIT": "0",
+    }
+    assert contracts["instructlab__instructlab-2540"]["disk_budget"] == {
+        "minimum_available_bytes": 4 * 1024**3,
+        "minimum_available_inodes": 100_000,
+    }
 
 
 def test_paid_and_preflight_use_identical_canonical_environment_plans() -> None:
@@ -83,6 +94,11 @@ def test_paid_and_preflight_use_identical_canonical_environment_plans() -> None:
         "editable_target": ".[test]",
         "dependencies": [],
         "test_target": "test/unit/module/template/transforms/test_language_extensions.py",
+        "bootstrap_environment": {},
+        "disk_budget": {
+            "minimum_available_bytes": 4 * 1024**3,
+            "minimum_available_inodes": 100_000,
+        },
     }
 
 
@@ -106,7 +122,72 @@ def test_full_paid_executor_passes_the_canonical_plan_to_the_shared_runner(tmp_p
         "preflight_dependencies": [],
         "editable_target": ".[test]",
         "test_target": "test/unit/module/template/transforms/test_language_extensions.py",
+        "bootstrap_environment": {},
+        "disk_budget": {
+            "minimum_available_bytes": 4 * 1024**3,
+            "minimum_available_inodes": 100_000,
+        },
     }
+
+
+def test_bootstrap_disk_budget_fails_before_venv_or_pip(tmp_path: Path, monkeypatch) -> None:
+    snapshot = {"available_bytes": 1024, "available_inodes": 99_999}
+    monkeypatch.setattr(
+        full_replay.control_canary, "_disk_usage_evidence",
+        lambda *_args, **_kwargs: snapshot,
+    )
+    created: list[Path] = []
+    monkeypatch.setattr(
+        full_replay.control_canary.venv.EnvBuilder, "create",
+        lambda _self, path: created.append(Path(path)),
+    )
+    python, records = full_replay.control_canary._bootstrap(
+        tmp_path, [], disk_budget={
+            "minimum_available_bytes": 4 * 1024**3,
+            "minimum_available_inodes": 100_000,
+        },
+    )
+    assert python.name == "python"
+    assert created == []
+    assert records[0]["exit_code"] == 1
+    assert records[0]["disk_budget_blocker"] == "disk_budget_bytes_insufficient"
+    assert full_replay.control_canary._disk_budget_blocker(
+        {"available_bytes": 8 * 1024**3, "available_inodes": 99_999},
+        {"minimum_available_bytes": 4 * 1024**3, "minimum_available_inodes": 100_000},
+    ) == "disk_budget_inodes_insufficient"
+
+
+def test_bootstrap_uses_environment_copy_and_no_pip_cache(tmp_path: Path, monkeypatch) -> None:
+    snapshot = {"available_bytes": 8 * 1024**3, "available_inodes": 200_000}
+    monkeypatch.setattr(
+        full_replay.control_canary, "_disk_usage_evidence",
+        lambda *_args, **_kwargs: snapshot,
+    )
+
+    def create(_self, path) -> None:
+        (Path(path) / "bin").mkdir(parents=True)
+        (Path(path) / "bin" / "python").touch()
+
+    captured: dict[str, object] = {}
+
+    def run(command, *, cwd, env, text, capture_output, timeout, check):
+        captured.update({"command": command, "cwd": cwd, "env": env})
+        return subprocess.CompletedProcess(command, 0, "installed", "")
+
+    monkeypatch.setattr(full_replay.control_canary.venv.EnvBuilder, "create", create)
+    monkeypatch.setattr(full_replay.control_canary.subprocess, "run", run)
+    parent_before = dict(os.environ)
+    _python, records = full_replay.control_canary._bootstrap(
+        tmp_path, ["pytest-mock"], editable_target=".[cpu]",
+        environment={"PIP_EXTRA_INDEX_URL": "https://download.pytorch.org/whl/cpu"},
+        disk_budget={"minimum_available_bytes": 1, "minimum_available_inodes": 1},
+    )
+    assert os.environ == parent_before
+    assert captured["env"] is not os.environ
+    assert captured["env"]["PIP_EXTRA_INDEX_URL"].endswith("/whl/cpu")
+    assert captured["env"]["PIP_NO_CACHE_DIR"] == "1"
+    assert "--no-cache-dir" in captured["command"]
+    assert records[0]["exit_code"] == 0
 
 
 def test_preflight_persists_collection_execution_and_artifact_evidence(
@@ -119,7 +200,9 @@ def test_preflight_persists_collection_execution_and_artifact_evidence(
         (workspace / ".git").mkdir(parents=True)
 
     def bootstrap(workspace: Path, _contract: dict[str, object]):
-        python = workspace / "python"
+        venv = workspace / ".evaluation-v2-preflight-venv"
+        (venv / "bin").mkdir(parents=True)
+        python = venv / "bin" / "python"
         return python, [{"command": ["pip"], "exit_code": 0, "stdout": "", "stderr": ""}]
 
     calls: list[list[str]] = []
@@ -137,8 +220,12 @@ def test_preflight_persists_collection_execution_and_artifact_evidence(
     assert result["test_collection_completed"] is True
     assert result["meaningful_test_executed"] is True
     assert result["environment_blocker"] is None
+    assert result["disk_usage"]["before_cleanup"]["venv_bytes"] >= 0
+    assert result["disk_usage"]["after_cleanup"]["venv_bytes"] == 0
     assert any("--collect-only" in command for command in calls)
     assert (tmp_path / task["instance_id"] / "evidence" / "pre-edit.stdout.txt").is_file()
+    assert (tmp_path / task["instance_id"] / "evidence" / "disk-usage.json").is_file()
+    assert not (tmp_path / task["instance_id"] / "workspace" / ".evaluation-v2-preflight-venv").exists()
 
 
 def test_phase_b_admission_continues_capability_outcomes_and_stops_infrastructure(tmp_path: Path) -> None:

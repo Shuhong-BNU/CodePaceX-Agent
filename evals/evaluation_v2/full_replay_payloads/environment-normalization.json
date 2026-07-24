@@ -1,6 +1,10 @@
 {
   "schema_version": 1,
-  "contract": "isolated-venv-editable-install-project-test-selector-v1",
+  "contract": "isolated-venv-disk-budgeted-official-test-bootstrap-v2",
+  "disk_budget": {
+    "minimum_available_bytes": 4294967296,
+    "minimum_available_inodes": 100000
+  },
   "official_evaluator": {
     "commit": "ad79b850f15e33992e96f03f6e97f05ddf9aa0be",
     "architecture": "native-linux-x86_64",
@@ -123,8 +127,13 @@
     },
     {
       "instance_id": "instructlab__instructlab-2540",
-      "editable_target": ".",
+      "editable_target": ".[cpu]",
       "dependencies": ["pytest-mock"],
+      "bootstrap_environment": {
+        "PIP_EXTRA_INDEX_URL": "https://download.pytorch.org/whl/cpu",
+        "CMAKE_ARGS": "-DLLAMA_NATIVE=off",
+        "ILAB_MAX_STABLE_VRAM_WAIT": "0"
+      },
       "test_target": "tests/test_config.py"
     }
   ]

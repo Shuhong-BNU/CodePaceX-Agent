@@ -32,6 +32,7 @@ Units in this ledger are intentionally not additive. In particular, MCP Trials, 
 | G4-INFRA-RECOVERY | Goal 4 | Infrastructure recovery Attempts | Attempt | not planned as Instances | 0 additional | 5 | 0 additional | Bailian | `qwen3.7-max-2026-06-08` | CNY 34.158732 historical failed-attempt verified Provider cost | recovered and closed | Final 20 Instances all became scorable | This row is a decomposition of the 25 Attempts and its cost is already included in Goal 4 accounting; do not add it again. |
 | V2.1-CONTROL-CANARY | Evaluation V2.1 | Two historical resolved Goal 4 controls | Instance | 2 | 2 | 2 | 2 | Bailian | `qwen3.7-max-2026-06-08` | CNY 7.412724 actual | complete control canary | 2/2 Candidate, scorable, and resolved | This validates the corrected V2 real execution chain on historical resolved controls only. It is not a 20-task result and must not be generalized to the full Goal 4 matrix. |
 | V2-FULL20-DISPATCH-REGRESSION | Evaluation V2 | Full-20 paid replay dispatch coverage failure | Attempt | 20 planned | 20 rows | 1 aborted system run | 3 diagnostic rows only | Bailian | `qwen3.7-max-2026-06-08` | CNY 21.910536 actual | historical engineering evidence | 3/20 Agent/Provider execution coverage; 17 post-dispatch host-runtime import failures misclassified as `agent_no_candidate` | `FULL_20_SYSTEM_RUN_COMPLETE`; `MODEL_EXECUTION_COVERAGE_3_OF_20`; `INVALID_FOR_FULL_20_MODEL_SCORE_COMPARISON`; `PAID_DISPATCH_COVERAGE_REGRESSION`. It is excluded from every formal V2 20-task score. |
+| V2-FULL20-DISK-PREFLIGHT | Evaluation V2 | Full-20 pre-transport disk exhaustion | Attempt | 20 planned | 0 paid task rows | 1 preflight-only run | 0 | none sent | `qwen3.7-max-2026-06-08` not started | CNY 0 | historical engineering evidence | 19/20 environments ready; InstructLab editable install exhausted runner disk before Agent startup | Actions `30095930961`, Artifact `8597955317`; Provider requests/usage/charge `0/0/0`; excluded from every formal V2 score. |
 | G5-LONG-CANDIDATE | Goal 5 candidate | Formal long-session follow-up | Session | 3 candidate Sessions | 3 planned | 0 | 0 | not authorized | not selected | CNY 0 | planned/deferred | No result | Candidate only. No Stage B/C, Provider comparison, or eight-hour Session is authorized by this ledger. |
 
 Success/task-failure pairs in the Permission row are terminal Trial outcomes, not pytest counts. Goal 4 selected terminal cost (CNY `130.885692`), historical failed-attempt cost (CNY `34.158732`), uncertain exposure (CNY `5.492736`), and verified actual Provider cost (CNY `165.044424`) remain separate accounting measures.
@@ -96,3 +97,14 @@ is retained as `FULL_20_SYSTEM_RUN_COMPLETE`, `MODEL_EXECUTION_COVERAGE_3_OF_20`
 `INVALID_FOR_FULL_20_MODEL_SCORE_COMPARISON`, and
 `PAID_DISPATCH_COVERAGE_REGRESSION`; its cost is isolated historical debugging
 cost and cannot be combined with a future Runtime's results.
+
+Actions run `30095930961` is a separate pre-transport engineering failure. Its
+full-20 preflight reached 19/20 ready, then the InstructLab task's bare editable
+install selected the complete PyTorch CUDA dependency stack and failed with
+`Errno 28` before the Agent or paid runner started. Artifact `8597955317` has
+digest `sha256:d521dcc1596ce9cd2883c1dbe52f1d6d0f4399f352b8f115dae865acc5594c20`.
+It contains preflight evidence only: Provider requests, usage, and charge are
+all zero, and there are no paid task results. The repository's own InstructLab
+`tox.ini` defines the semantically equivalent unit-test environment as the CPU
+extra plus the official PyTorch CPU index; the next Runtime uses that canonical
+bootstrap and a fail-closed disk budget.
