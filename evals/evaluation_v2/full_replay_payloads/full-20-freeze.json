@@ -22,7 +22,7 @@
     "recommendation_basis": "retains the reviewed Stage C 80/250 envelope over Goal 4 selected costs; rolling reservations fail closed and completion is not guaranteed",
     "rolling_reservation": "one_provider_request"
   },
-  "environment_contract_sha256": "47cee7fe9ea950489c82fc23ae27560744dadf7b5f066634e6a24fc0ef327148",
+  "environment_contract_sha256": "d81e0a4b207ba9e0e3a459c579fbfd133ecb64f0b5e4c109105bb4695f1fb0c7",
   "experiment_name": "evaluation-v2-goal4-full-20-replay",
   "fresh_workspace_authorization_allocation_ledger_required": true,
   "goal4_source": {
@@ -154,7 +154,7 @@
     "pilot_config_max_iterations": 50,
     "provider_request_budget_bridge_ceiling": 40,
     "runtime_source_sha256": {
-      ".github/workflows/evaluation-v2-full-20-replay.yml": "a7f56fb86153cd1ab6a4ec71bd3be19d230e3bfc37871c2e59111442a3f28e79",
+      ".github/workflows/evaluation-v2-full-20-replay.yml": "6ad88b1955eb49aae579994e5bca16ae5a972d5ed27c3a417da7840395bfc98a",
       "codepacex/agent.py": "cb8ab5ae16c2e41382c6a603c6f60be988db3c4e73100a3f08efb5bb2426050f",
       "codepacex/client.py": "205e40cf5629fdc9fca0b58edc43505bd5ac3ae8bfb69ebcd4dd73eed46fce0f",
       "codepacex/permissions/checker.py": "bab12d8cde66fac86bdb6df8e63c8540e0dba43dd8b2ae461047144afa380cd2",
@@ -168,7 +168,7 @@
     "system_instruction_sha256": "f43af3f8b81f58b2970571afb86f69641caf0da49c191cffe4026cf732abd36c",
     "tool_schemas_sha256": "72ae1262c5acd1a8b21c3f0964cdcb210508f1b780590b79b0ec2cc2eba07aea"
   },
-  "runtime_contract_sha256": "eecd7068b9837807fc30fbebfb615a0d01ab3d7c3bc251cb991177787e5febdc",
+  "runtime_contract_sha256": "8e87d7a79ab1b66560ff9a90a7c57177f836dc375c5f721a924ee69c0801327e",
   "schema_version": 1,
   "selection_manifest_sha256": "3efa2694627f699324c78b3c8dd09f208330eebb77fecd9d807bfd509529935e",
   "status": "frozen_pending_single_full_20_authorization"

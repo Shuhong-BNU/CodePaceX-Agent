@@ -52,6 +52,23 @@ def test_committed_full_replay_contract_is_canonical_and_freezes_budget_semantic
     assert frozen["gold_patch_forbidden"] is True
 
 
+def test_environment_normalization_covers_ci_specific_bootstrap_and_selector_requirements() -> None:
+    contracts = full_replay._task_environment_contract(ROOT)
+    assert contracts["aws-cloudformation__cfn-lint-3749"]["test_target"].endswith(
+        "test_language_extensions.py"
+    )
+    assert contracts["cyclotruc__gitingest-134"]["test_target"].endswith(
+        "test_parse_patterns_valid"
+    )
+    assert contracts["deepset-ai__haystack-8489"]["dependencies"] == ["ddtrace==2.15.0rc2"]
+    assert contracts["bridgecrewio__checkov-6893"]["dependencies"] == [
+        "pytest-mock", "pytest-xdist",
+    ]
+    assert contracts["delgan__loguru-1297"]["dependencies"] == ["freezegun==1.5.0"]
+    assert contracts["delgan__loguru-1306"]["dependencies"] == ["freezegun==1.5.0"]
+    assert contracts["deepset-ai__haystack-8525"]["dependencies"] == []
+
+
 def test_preflight_persists_collection_execution_and_artifact_evidence(
     tmp_path: Path, monkeypatch,
 ) -> None:
@@ -130,3 +147,4 @@ def test_full_replay_workflow_keeps_paid_path_explicit_and_zero_provider_path_co
     assert "full_replay paid-run --confirm-paid-execution" in workflow
     assert "expected_freeze_sha256" in workflow
     assert "approved_total_hard_cap_cny" in workflow
+    assert workflow.count("python-version: '3.11'") == 2

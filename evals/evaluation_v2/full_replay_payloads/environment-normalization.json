@@ -11,13 +11,13 @@
       "instance_id": "aws-cloudformation__cfn-lint-3749",
       "editable_target": ".[test]",
       "dependencies": [],
-      "test_target": "test/unit/module/template/transforms/test_transform.py"
+      "test_target": "test/unit/module/template/transforms/test_language_extensions.py"
     },
     {
       "instance_id": "aws-cloudformation__cfn-lint-3764",
       "editable_target": ".[test]",
       "dependencies": [],
-      "test_target": "test/unit/module/template/transforms/test_transform.py"
+      "test_target": "test/unit/module/template/transforms/test_language_extensions.py"
     },
     {
       "instance_id": "beetbox__beets-5457",
@@ -34,7 +34,7 @@
     {
       "instance_id": "deepset-ai__haystack-8489",
       "editable_target": ".[test]",
-      "dependencies": [],
+      "dependencies": ["ddtrace==2.15.0rc2"],
       "test_target": "test/tracing/test_tracer.py"
     },
     {
@@ -58,13 +58,13 @@
     {
       "instance_id": "bridgecrewio__checkov-6893",
       "editable_target": ".",
-      "dependencies": ["pytest-mock"],
+      "dependencies": ["pytest-mock", "pytest-xdist"],
       "test_target": "tests/terraform/graph/runner/test_graph_builder.py"
     },
     {
       "instance_id": "bridgecrewio__checkov-6895",
       "editable_target": ".",
-      "dependencies": ["pytest-mock"],
+      "dependencies": ["pytest-mock", "pytest-xdist"],
       "test_target": "tests/terraform/graph/runner/test_graph_builder.py"
     },
     {
@@ -89,7 +89,7 @@
       "instance_id": "cyclotruc__gitingest-134",
       "editable_target": ".",
       "dependencies": ["pytest-mock"],
-      "test_target": "tests/test_parse_query.py"
+      "test_target": "tests/query_parser/test_query_parser.py::test_parse_patterns_valid"
     },
     {
       "instance_id": "deepset-ai__haystack-8525",
@@ -100,13 +100,13 @@
     {
       "instance_id": "delgan__loguru-1297",
       "editable_target": ".",
-      "dependencies": [],
+      "dependencies": ["freezegun==1.5.0"],
       "test_target": "tests/test_add_option_enqueue.py"
     },
     {
       "instance_id": "delgan__loguru-1306",
       "editable_target": ".",
-      "dependencies": [],
+      "dependencies": ["freezegun==1.5.0"],
       "test_target": "tests/test_add_option_format.py"
     },
     {

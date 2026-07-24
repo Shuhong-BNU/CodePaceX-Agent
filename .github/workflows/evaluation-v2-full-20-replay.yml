@@ -60,7 +60,7 @@ jobs:
           git rev-parse --verify refs/remotes/origin/main^{commit}
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.11'
       - name: Prepare fresh full-replay artifact directory
         run: |
           set -euo pipefail
@@ -141,7 +141,7 @@ jobs:
           ref: main
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.11'
       - name: Install project and frozen official evaluator
         run: |
           set -euo pipefail
