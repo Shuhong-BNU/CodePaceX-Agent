@@ -1,0 +1,90 @@
+{
+  "claim_boundary": "Phase A is diagnostic within the full twenty-task replay, not a standalone success-rate sample",
+  "phase_a_order": [
+    "aws-cloudformation__cfn-lint-3749",
+    "aws-cloudformation__cfn-lint-3764",
+    "bridgecrewio__checkov-6893",
+    "conan-io__conan-17092",
+    "dynaconf__dynaconf-1225",
+    "instructlab__instructlab-2540"
+  ],
+  "phase_b_order": [
+    "beetbox__beets-5457",
+    "beetbox__beets-5495",
+    "deepset-ai__haystack-8489",
+    "beancount__beancount-931",
+    "beeware__briefcase-2075",
+    "beeware__briefcase-2085",
+    "bridgecrewio__checkov-6895",
+    "conan-io__conan-17102",
+    "cyclotruc__gitingest-115",
+    "cyclotruc__gitingest-134",
+    "deepset-ai__haystack-8525",
+    "delgan__loguru-1297",
+    "delgan__loguru-1306",
+    "dynaconf__dynaconf-1249"
+  ],
+  "schema_version": 1,
+  "tasks": [
+    {
+      "diagnostic_target": "root_cause_localization_failure",
+      "goal4_cost_cny": "6.152004",
+      "goal4_failure_category": "root_cause_localization_failure",
+      "goal4_outcome": "unresolved",
+      "goal4_requests": 29,
+      "instance_id": "aws-cloudformation__cfn-lint-3749",
+      "selection_reason": "tests root-cause localization after a reproduced one-file failure",
+      "size_bucket": "one_file"
+    },
+    {
+      "diagnostic_target": "regression_introduced",
+      "goal4_cost_cny": "1.468248",
+      "goal4_failure_category": "regression_introduced",
+      "goal4_outcome": "unresolved",
+      "goal4_requests": 15,
+      "instance_id": "aws-cloudformation__cfn-lint-3764",
+      "selection_reason": "tests regression-aware validation for a one-file regression",
+      "size_bucket": "one_file"
+    },
+    {
+      "diagnostic_target": "incomplete_patch",
+      "goal4_cost_cny": "4.013244",
+      "goal4_failure_category": "incomplete_patch",
+      "goal4_outcome": "unresolved",
+      "goal4_requests": 23,
+      "instance_id": "bridgecrewio__checkov-6893",
+      "selection_reason": "tests incomplete graph-policy behavior and regression coverage",
+      "size_bucket": "one_file"
+    },
+    {
+      "diagnostic_target": "incomplete_patch",
+      "goal4_cost_cny": "22.084068",
+      "goal4_failure_category": "incomplete_patch",
+      "goal4_outcome": "unresolved",
+      "goal4_requests": 40,
+      "instance_id": "conan-io__conan-17092",
+      "selection_reason": "tests multi-surface completeness at the historical 40-request boundary",
+      "size_bucket": "two_to_four_files"
+    },
+    {
+      "diagnostic_target": "request_ceiling_exhausted",
+      "goal4_cost_cny": "15.279192",
+      "goal4_failure_category": "request_ceiling_exhausted",
+      "goal4_outcome": "unresolved",
+      "goal4_requests": 40,
+      "instance_id": "dynaconf__dynaconf-1225",
+      "selection_reason": "tests high-scope planning when the historical request ceiling interrupted work",
+      "size_bucket": "five_plus_files"
+    },
+    {
+      "diagnostic_target": "cross_file_propagation_missed",
+      "goal4_cost_cny": "11.794560",
+      "goal4_failure_category": "cross_file_propagation_missed",
+      "goal4_outcome": "unresolved",
+      "goal4_requests": 37,
+      "instance_id": "instructlab__instructlab-2540",
+      "selection_reason": "tests configuration propagation across a five-plus-file task",
+      "size_bucket": "five_plus_files"
+    }
+  ]
+}

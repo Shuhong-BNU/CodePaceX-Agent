@@ -4,6 +4,23 @@ The Control Canary is a new two-task Evaluation V2 experiment. Its fixed order
 is `beetbox__beets-5495`, then `beancount__beancount-931`. It neither reuses a
 historical Candidate nor changes historical ledger or Artifact evidence.
 
+## Final V2.1 Evidence
+
+The one paid Control Canary completed in Actions run `30031616048` with internal
+Run ID `v2-control-canary-fc5dbd1-20260723T172932Z`. Artifact `8573855537`
+(`sha256:d67537436c144129413048dbbf2ce5ac6f4b80ed25d3f8c492744ed98f33b71d`)
+records 46 requests, 571,320 input tokens, 15,469 output tokens, CNY `7.412724`,
+46 settlements, and a closed ledger with `active_reservation=null`.
+
+Both historical Goal 4 resolved controls again produced a non-empty Candidate,
+matching workspace diff SHA, one official evaluator report, and `resolved`:
+`beetbox__beets-5495` used 32 requests/CNY `5.498304`; `beancount__beancount-931`
+used 14/CNY `1.914420`. The V2.2 gate was `V2_2_DIAGNOSTIC_PILOT_GO`. This is
+evidence that the V2 chain reproduces those two controls, not a full-matrix
+success-rate estimate. The complete identities are indexed in
+[`EVALUATION_HISTORY.md`](../EVALUATION_HISTORY.md) and
+[`EVALUATION_ARTIFACT_INDEX.md`](../EVALUATION_ARTIFACT_INDEX.md).
+
 Each task is materialized at its pinned repository commit, bootstrapped in an
 isolated venv with the repository's own editable installation plus pytest, and
 then runs a bounded task-related pytest target. A failed project baseline is

@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "contract": "isolated-venv-editable-install-project-test-selector-v1",
+  "official_evaluator": {
+    "commit": "ad79b850f15e33992e96f03f6e97f05ddf9aa0be",
+    "architecture": "native-linux-x86_64",
+    "availability_check": "docker executable plus frozen evaluator checkout in workflow"
+  },
+  "tasks": [
+    {
+      "instance_id": "aws-cloudformation__cfn-lint-3749",
+      "editable_target": ".[test]",
+      "dependencies": [],
+      "test_target": "test/unit/module/template/transforms/test_language_extensions.py"
+    },
+    {
+      "instance_id": "aws-cloudformation__cfn-lint-3764",
+      "editable_target": ".[test]",
+      "dependencies": [],
+      "test_target": "test/unit/module/template/transforms/test_language_extensions.py"
+    },
+    {
+      "instance_id": "beetbox__beets-5457",
+      "editable_target": ".",
+      "dependencies": ["responses>=0.3.0"],
+      "test_target": "test/plugins/test_lyrics.py"
+    },
+    {
+      "instance_id": "beetbox__beets-5495",
+      "editable_target": ".",
+      "dependencies": ["responses>=0.3.0"],
+      "test_target": "test/test_importer.py::ImportSingletonTest::test_set_fields"
+    },
+    {
+      "instance_id": "deepset-ai__haystack-8489",
+      "editable_target": ".[test]",
+      "dependencies": ["ddtrace==2.15.0rc2", "opentelemetry-sdk"],
+      "test_target": "test/tracing/test_tracer.py"
+    },
+    {
+      "instance_id": "beancount__beancount-931",
+      "editable_target": ".",
+      "dependencies": [],
+      "test_target": "beancount/plugins/leafonly_test.py"
+    },
+    {
+      "instance_id": "beeware__briefcase-2075",
+      "editable_target": ".[dev]",
+      "dependencies": [],
+      "test_target": "tests/commands/create/test_create_app.py"
+    },
+    {
+      "instance_id": "beeware__briefcase-2085",
+      "editable_target": ".[dev]",
+      "dependencies": [],
+      "test_target": "tests/commands/create/test_create_app.py"
+    },
+    {
+      "instance_id": "bridgecrewio__checkov-6893",
+      "editable_target": ".",
+      "dependencies": ["pytest-mock", "pytest-xdist", "parameterized"],
+      "test_target": "tests/terraform/graph/runner/test_graph_builder.py"
+    },
+    {
+      "instance_id": "bridgecrewio__checkov-6895",
+      "editable_target": ".",
+      "dependencies": ["pytest-mock", "pytest-xdist", "parameterized"],
+      "test_target": "tests/terraform/graph/runner/test_graph_builder.py"
+    },
+    {
+      "instance_id": "conan-io__conan-17092",
+      "editable_target": ".",
+      "dependencies": [],
+      "test_target": "test/unittests/model/settings_test.py"
+    },
+    {
+      "instance_id": "conan-io__conan-17102",
+      "editable_target": ".",
+      "dependencies": [],
+      "test_target": "test/unittests/model/settings_test.py"
+    },
+    {
+      "instance_id": "cyclotruc__gitingest-115",
+      "editable_target": ".",
+      "dependencies": ["pytest-mock"],
+      "test_target": "tests/test_ingest.py"
+    },
+    {
+      "instance_id": "cyclotruc__gitingest-134",
+      "editable_target": ".",
+      "dependencies": ["pytest-mock"],
+      "test_target": "tests/query_parser/test_query_parser.py::test_parse_patterns_valid"
+    },
+    {
+      "instance_id": "deepset-ai__haystack-8525",
+      "editable_target": ".[test]",
+      "dependencies": [],
+      "test_target": "test/core/pipeline/test_tracing.py"
+    },
+    {
+      "instance_id": "delgan__loguru-1297",
+      "editable_target": ".",
+      "dependencies": ["freezegun==1.5.0", "pytest-mypy-plugins==3.2.0"],
+      "test_target": "tests/test_add_option_enqueue.py"
+    },
+    {
+      "instance_id": "delgan__loguru-1306",
+      "editable_target": ".",
+      "dependencies": ["freezegun==1.5.0"],
+      "test_target": "tests/test_add_option_format.py"
+    },
+    {
+      "instance_id": "dynaconf__dynaconf-1225",
+      "editable_target": ".[test]",
+      "dependencies": [],
+      "test_target": "tests/test_base.py"
+    },
+    {
+      "instance_id": "dynaconf__dynaconf-1249",
+      "editable_target": ".[test]",
+      "dependencies": [],
+      "test_target": "tests/test_env_loader.py"
+    },
+    {
+      "instance_id": "instructlab__instructlab-2540",
+      "editable_target": ".",
+      "dependencies": ["pytest-mock"],
+      "test_target": "tests/test_config.py"
+    }
+  ]
+}

@@ -633,14 +633,15 @@ def _fresh_paid_gate(*, root: Path, freeze: Path, artifact_root: Path, acknowled
     )
 
 
-def _live_task_executor(*, root: Path, freeze_payload: dict[str, Any], task: dict[str, str], metadata: dict[str, Any], gate: PaidRunGate, artifact_root: Path, run_id: str) -> PaidTaskResult:
+def _live_task_executor(*, root: Path, freeze_payload: dict[str, Any], task: dict[str, str], metadata: dict[str, Any], gate: PaidRunGate, artifact_root: Path, run_id: str, payload_path: Path | None = None, trial_namespace: str = "v2-control") -> PaidTaskResult:
     task_root = artifact_root / "tasks" / task["instance_id"]
     workspace = task_root / "workspace"
     task_root.mkdir(parents=True)
-    trial_id = f"swe/v2-control/{run_id}/{task['instance_id']}"
+    trial_id = f"swe/{trial_namespace}/{run_id}/{task['instance_id']}"
     prompt = _goal3_inference_prompt(task)
+    source_payload = payload_path or root / PAYLOAD_DIRECTORY / f"{task['instance_id']}.json"
     evidence: dict[str, Any] = {
-        "instance_id": task["instance_id"], "payload_sha256": _sha256(root / PAYLOAD_DIRECTORY / f"{task['instance_id']}.json"),
+        "instance_id": task["instance_id"], "payload_sha256": _sha256(source_payload),
         "problem_statement_sha256": hashlib.sha256(task["problem_statement"].encode()).hexdigest(),
         "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
         "system_prompt_sha256": hashlib.sha256(build_static_system_instruction().encode()).hexdigest(),

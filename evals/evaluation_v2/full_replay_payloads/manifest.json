@@ -1,0 +1,218 @@
+{
+  "payloads": [
+    {
+      "agent_visible_payload_sha256": "92aaec543cf5614e2cb7fc3b72cd4247b6616bbefbe072a700e27f9bbceb02b6",
+      "base_commit": "07652d4a4133e825aeeb09973398575b25713c82",
+      "goal4_execution_payload_sha256": "92aaec543cf5614e2cb7fc3b72cd4247b6616bbefbe072a700e27f9bbceb02b6",
+      "goal4_full_payload_sha256_hash_only": "98bb3abe612d495ca80d8f0e4f74ffa761da804473c5431330b07e62a3c00297",
+      "instance_id": "aws-cloudformation__cfn-lint-3749",
+      "problem_statement_sha256": "60a49f657049ef784de4ab3aa0253ede7a3619a1f0a852f998e458bf287e0b4f",
+      "repo": "aws-cloudformation/cfn-lint"
+    },
+    {
+      "agent_visible_payload_sha256": "067a1f40003c67f43834a480e5c39ad18b31a7574c7d5777d42f13d8947ce8ee",
+      "base_commit": "0d7df0385cfa566a29c2ba73188224fb15d93889",
+      "goal4_execution_payload_sha256": "067a1f40003c67f43834a480e5c39ad18b31a7574c7d5777d42f13d8947ce8ee",
+      "goal4_full_payload_sha256_hash_only": "cd7dce9b371a590fcff92a1f6976c8fe59531d0ea6027342bfd95da689be71eb",
+      "instance_id": "aws-cloudformation__cfn-lint-3764",
+      "problem_statement_sha256": "5a9c4b34ecc3bf297fa0f3db12dbecb303a2a142b85414d0bbff4af45281c15c",
+      "repo": "aws-cloudformation/cfn-lint"
+    },
+    {
+      "agent_visible_payload_sha256": "a67568f494ec4a076eda9daf4ca500b12c522f350cee9c6279600fca3dd67577",
+      "base_commit": "03f1205629ad17f123a190040361babc41c18afc",
+      "goal4_execution_payload_sha256": "a67568f494ec4a076eda9daf4ca500b12c522f350cee9c6279600fca3dd67577",
+      "goal4_full_payload_sha256_hash_only": "104fb9d5c577495246629717779b6ce93667333831451629501c6e73f21e9088",
+      "instance_id": "beetbox__beets-5457",
+      "problem_statement_sha256": "cd40853caf942eb05d178bc3ccbe2524673ed7ba38d35fe9c2f5fad8f333617e",
+      "repo": "beetbox/beets"
+    },
+    {
+      "agent_visible_payload_sha256": "bafee5f439276bdffb9c5aa97bbaf647379e5273cf406429c1c198b850fab1c4",
+      "base_commit": "fa10dcf11add0afd3b4b22af29f8d504e7ef8a0a",
+      "goal4_execution_payload_sha256": "bafee5f439276bdffb9c5aa97bbaf647379e5273cf406429c1c198b850fab1c4",
+      "goal4_full_payload_sha256_hash_only": "c0d50fe2cd032d73d620a45c8a7c9ec6b7372dc9c216283be43e5b07e862c733",
+      "instance_id": "beetbox__beets-5495",
+      "problem_statement_sha256": "34fc3d488e4b585ec0d850d6708b58a5d4277a82d75074a1585c148d1f46094d",
+      "repo": "beetbox/beets"
+    },
+    {
+      "agent_visible_payload_sha256": "0fdec283e3a10a06da22408245cca484ed5ebc0a3c239f306e6a0c9af6c89a07",
+      "base_commit": "906177329bcc54f6946af361fcd3d0e334e6ce5f",
+      "goal4_execution_payload_sha256": "0fdec283e3a10a06da22408245cca484ed5ebc0a3c239f306e6a0c9af6c89a07",
+      "goal4_full_payload_sha256_hash_only": "58ed7127d8370c5f9fa16fca5d1c20e7f988b1ad32b704be9592c9cfcec8d558",
+      "instance_id": "deepset-ai__haystack-8489",
+      "problem_statement_sha256": "bebd5d176bbc67a3682acf2e2886ae5410196e73943012ce4fdc72f316083463",
+      "repo": "deepset-ai/haystack"
+    },
+    {
+      "agent_visible_payload_sha256": "fee10262072e86664c1f57134bf98cb25ef36388de068d545049d843afdecc42",
+      "base_commit": "a0e6f445fbf0d101602a4b6d886d6320971587b6",
+      "goal4_execution_payload_sha256": "fee10262072e86664c1f57134bf98cb25ef36388de068d545049d843afdecc42",
+      "goal4_full_payload_sha256_hash_only": "fd9ba314942afae9ec089a774ae508fc890e22f355652f1c9aa36701bef90d34",
+      "instance_id": "beancount__beancount-931",
+      "problem_statement_sha256": "51268fc5326eefb57b052aeba817c2991e72e75a108ce59cdb8b4d3224d958a4",
+      "repo": "beancount/beancount"
+    },
+    {
+      "agent_visible_payload_sha256": "3865f1227ad844401cb818c8488f817845d048e061818ea3ea1d51ef684dc874",
+      "base_commit": "98b3cb01f6865550eb083646d3f9e4e5dfcfda82",
+      "goal4_execution_payload_sha256": "3865f1227ad844401cb818c8488f817845d048e061818ea3ea1d51ef684dc874",
+      "goal4_full_payload_sha256_hash_only": "8fdfce0f5f0a0346ed012cd14dd9de1fa877fe162528547b5ceed6840639d540",
+      "instance_id": "beeware__briefcase-2075",
+      "problem_statement_sha256": "bcf3ac5ad8df815360b141adfe0a727d57fd578ae2de0fe3a1d42076f63896b8",
+      "repo": "beeware/briefcase"
+    },
+    {
+      "agent_visible_payload_sha256": "8931c5c07ea407240ff45ea2a1e970a3220a44bfe31a66accbd87f30830b8873",
+      "base_commit": "4005202304fdef04a5e87de2e8b09c9de506dcae",
+      "goal4_execution_payload_sha256": "8931c5c07ea407240ff45ea2a1e970a3220a44bfe31a66accbd87f30830b8873",
+      "goal4_full_payload_sha256_hash_only": "0651fc270ea3629ca6e08fa1ae1aa03706ebb104cb38d43d974dba9c9c967647",
+      "instance_id": "beeware__briefcase-2085",
+      "problem_statement_sha256": "4c3a471115393550645268021a8ae08b9fcdbcc1ace79b5fe0b74d4d3341da29",
+      "repo": "beeware/briefcase"
+    },
+    {
+      "agent_visible_payload_sha256": "88f88cc1be37140555071d724b41a49e05201227519be93674f32c79323fe0ff",
+      "base_commit": "7741985fd08414d35f7aa75ec9e6ce65eee3b522",
+      "goal4_execution_payload_sha256": "88f88cc1be37140555071d724b41a49e05201227519be93674f32c79323fe0ff",
+      "goal4_full_payload_sha256_hash_only": "bb48a6a12d3d1ec152236de669867ed05914fdefc98041697df951e533cb9b4d",
+      "instance_id": "bridgecrewio__checkov-6893",
+      "problem_statement_sha256": "0cdf4294275fd8b57c11f909eb53da03bd240ea04c492cdf30b9714f42935937",
+      "repo": "bridgecrewio/checkov"
+    },
+    {
+      "agent_visible_payload_sha256": "9296bdd9f21634c70acdc30b7952b042640ed3be7807b0f441f1ca5146465895",
+      "base_commit": "a94c1682b275bbf755342c0164d2ac0c379c0c16",
+      "goal4_execution_payload_sha256": "9296bdd9f21634c70acdc30b7952b042640ed3be7807b0f441f1ca5146465895",
+      "goal4_full_payload_sha256_hash_only": "0fa316af119900321a9f455cd958d4961eb78c242313fec281e122f0536f7c7c",
+      "instance_id": "bridgecrewio__checkov-6895",
+      "problem_statement_sha256": "5397811ec2e305570a72f29e3a9c4a6445fd91673e8ec774bc1515f7ae386e56",
+      "repo": "bridgecrewio/checkov"
+    },
+    {
+      "agent_visible_payload_sha256": "98e22890f90e94a68851a2ea14d0e1501184f5c178df37c9c7f62a18ae1b07e4",
+      "base_commit": "f31647f3ef2feaabc91b2875d540ae48d2a4a4c8",
+      "goal4_execution_payload_sha256": "98e22890f90e94a68851a2ea14d0e1501184f5c178df37c9c7f62a18ae1b07e4",
+      "goal4_full_payload_sha256_hash_only": "0d0bb8320f83a446d4af1226b4b4c55997cda0f627f21834a112d8b66a6c4045",
+      "instance_id": "conan-io__conan-17092",
+      "problem_statement_sha256": "3032e81f7c40ddc1a79e9b0f9857698f36d142a18f94c0beed76b10c8d4ef76d",
+      "repo": "conan-io/conan"
+    },
+    {
+      "agent_visible_payload_sha256": "8e99da50e8d8333d494989ea5101e090c2431f9f70adf90facae720f044b6912",
+      "base_commit": "2e3f51782056b6665560f9af6166e30d7c2801ab",
+      "goal4_execution_payload_sha256": "8e99da50e8d8333d494989ea5101e090c2431f9f70adf90facae720f044b6912",
+      "goal4_full_payload_sha256_hash_only": "caafab2434419d2ebef946ed0de086f7f81e2d233630ff2a761a0381e211676a",
+      "instance_id": "conan-io__conan-17102",
+      "problem_statement_sha256": "192b363b39e802847d23650a8618ae3bd5a9904429eaa69db6891eb172f605e7",
+      "repo": "conan-io/conan"
+    },
+    {
+      "agent_visible_payload_sha256": "93e16b3f52010d2d6dff3eacce932dd86608b6f0ad8cbda1bd412f31d5344913",
+      "base_commit": "96bc3958a3b3409e009c80d7ac89a97c4c9520fa",
+      "goal4_execution_payload_sha256": "93e16b3f52010d2d6dff3eacce932dd86608b6f0ad8cbda1bd412f31d5344913",
+      "goal4_full_payload_sha256_hash_only": "f3656494ee2d1ec9f8984a75408526b8b0934d15067152aa5d4f9058892cd999",
+      "instance_id": "cyclotruc__gitingest-115",
+      "problem_statement_sha256": "0742c091a42d32c8a0a650b8b34a157608aa4b669d81a573614f6ac77a93d334",
+      "repo": "cyclotruc/gitingest"
+    },
+    {
+      "agent_visible_payload_sha256": "6ea8b216232e5ba50680f14e271359c1078681ce3562da80d6c70616424023a6",
+      "base_commit": "8137ce10649526820efe752ff81eefabbea8ee23",
+      "goal4_execution_payload_sha256": "6ea8b216232e5ba50680f14e271359c1078681ce3562da80d6c70616424023a6",
+      "goal4_full_payload_sha256_hash_only": "0bcb66e6b4dadc0f7aa94d78f654aa5b41efc64b741d25579d84d80a78b97520",
+      "instance_id": "cyclotruc__gitingest-134",
+      "problem_statement_sha256": "cfa695ac967ee06ed60d2f225d7c78cfa6a2e7eee9f22719bce75afa6fd638a9",
+      "repo": "cyclotruc/gitingest"
+    },
+    {
+      "agent_visible_payload_sha256": "b5d2bd15efbdca83f87b09906ad7b932692a75732622fcde1b594804889ba6fc",
+      "base_commit": "911f3523ab94472bd9a1f8ecbd2493437058daee",
+      "goal4_execution_payload_sha256": "b5d2bd15efbdca83f87b09906ad7b932692a75732622fcde1b594804889ba6fc",
+      "goal4_full_payload_sha256_hash_only": "e2a3ec1826aef3a12be2497dc69041545f62c5e36cdd54990b0ff2c045408a4b",
+      "instance_id": "deepset-ai__haystack-8525",
+      "problem_statement_sha256": "0a145500ff66b4d347c388975ebf84104603a5e0c6de4844dcdca24a9b542846",
+      "repo": "deepset-ai/haystack"
+    },
+    {
+      "agent_visible_payload_sha256": "a8d198412588896f59ec58cce317856bd52e869d0422d385a5237fa9f86bf1b6",
+      "base_commit": "e310e2029102b5d63a679a2b64501c045aa86336",
+      "goal4_execution_payload_sha256": "a8d198412588896f59ec58cce317856bd52e869d0422d385a5237fa9f86bf1b6",
+      "goal4_full_payload_sha256_hash_only": "d65d1aad5c30d54b6900520a871c885ae5fa6806ace0a6b38e9b15a608533622",
+      "instance_id": "delgan__loguru-1297",
+      "problem_statement_sha256": "0368432d5d613af17b313606c7f68dcfb831a4a8c5cfb8e5c8e1170593fa49cc",
+      "repo": "Delgan/loguru"
+    },
+    {
+      "agent_visible_payload_sha256": "329520f1fbb85de6fc2587963cf06c53bc5a851933c714589c5d526b989407c9",
+      "base_commit": "3cfd03fb6fd2176b90ad14223408f3c4ec803cb6",
+      "goal4_execution_payload_sha256": "329520f1fbb85de6fc2587963cf06c53bc5a851933c714589c5d526b989407c9",
+      "goal4_full_payload_sha256_hash_only": "af07961c95ed62f64e3543940f02dbe7966c93aa3ba288e82973c04664fa809f",
+      "instance_id": "delgan__loguru-1306",
+      "problem_statement_sha256": "c4ac3cab6b9547b8ebfd0a2ff35a3cfabc9e0e182ebf4f33f2a7a0e2be373a23",
+      "repo": "Delgan/loguru"
+    },
+    {
+      "agent_visible_payload_sha256": "fdf9f09a4edf9c763f01e5b974a233e977dd787ef5a04f40bd192fa335bb71e8",
+      "base_commit": "39acdeef6424bf7e336ff71cf3a04540b92e2fcd",
+      "goal4_execution_payload_sha256": "fdf9f09a4edf9c763f01e5b974a233e977dd787ef5a04f40bd192fa335bb71e8",
+      "goal4_full_payload_sha256_hash_only": "3fd1eb38a1905908f8fb6f4e1758c1af366614698a07e775fda2f119b6545bad",
+      "instance_id": "dynaconf__dynaconf-1225",
+      "problem_statement_sha256": "548a796c0f4a9de2382bce8d2458d0d0c69bd084082ee2c8ab28bf1f37cfab18",
+      "repo": "dynaconf/dynaconf"
+    },
+    {
+      "agent_visible_payload_sha256": "9bd8c12078bd24cdfcc62064668635a1a149e14dc3cd339ae56be09abee1fa14",
+      "base_commit": "71ea887ade58f57cbc5b37f311188bfb7cda8ca5",
+      "goal4_execution_payload_sha256": "9bd8c12078bd24cdfcc62064668635a1a149e14dc3cd339ae56be09abee1fa14",
+      "goal4_full_payload_sha256_hash_only": "547d3dc0337614d09b04144fb1b972776b655a8f1756c17c00354f45f9ac6bb2",
+      "instance_id": "dynaconf__dynaconf-1249",
+      "problem_statement_sha256": "038c14518f3117f0a31d3ecf566e55d7f13ecebd5a6e3eccf11cc9eb27ee1702",
+      "repo": "dynaconf/dynaconf"
+    },
+    {
+      "agent_visible_payload_sha256": "384da0d1f916bb18bc926dd78ebc6093624a2d7f39b6b7b95e93343c16157d90",
+      "base_commit": "bcf450d0eb712309fa22fd23073ddfba51d575e8",
+      "goal4_execution_payload_sha256": "384da0d1f916bb18bc926dd78ebc6093624a2d7f39b6b7b95e93343c16157d90",
+      "goal4_full_payload_sha256_hash_only": "6c7c13e2f2326168984f4fb4eec5ed706cff177a0391abde21ad2cb67965a121",
+      "instance_id": "instructlab__instructlab-2540",
+      "problem_statement_sha256": "407665cbbc62c5592a0881a5d54bdb458efbe836770fc11aae5440af00c271ee",
+      "repo": "instructlab/instructlab"
+    }
+  ],
+  "schema_version": 1,
+  "source": {
+    "agent_visible_dataset_file_sha256": "50cc5c3b9927a5f079c2ce117e3cc15bbd4f8ca63ee5d2b2afaac991314c02fa",
+    "dataset_revision": "a637bd46829f3132e12938c8a0ca93173a977b8e",
+    "dataset_source_sha256": "67f8459e41df193a9956f1ef450aaaa4788fabfb02977030ce72039ec8ec89d7",
+    "extraction_contract": "exact-seven-agent-visible-fields-no-gold-v1",
+    "goal4_artifact_digest": "8b9309a9ee03b068bf96e69afd50ecc2c18e4a70046dc1ae99359310dc70c6c8",
+    "goal4_artifact_id": "8496125148",
+    "goal4_freeze_commit": "75a1eca465913e1c5be81e58eba89bc4d1cd8853",
+    "goal4_matrix_sha256": "9ff16e850b92a6eb0bd1338cb85253a605fdfb0e0aa77180488382eca353972a",
+    "goal4_run_id": "29830820618"
+  },
+  "task_order": [
+    "aws-cloudformation__cfn-lint-3749",
+    "aws-cloudformation__cfn-lint-3764",
+    "beetbox__beets-5457",
+    "beetbox__beets-5495",
+    "deepset-ai__haystack-8489",
+    "beancount__beancount-931",
+    "beeware__briefcase-2075",
+    "beeware__briefcase-2085",
+    "bridgecrewio__checkov-6893",
+    "bridgecrewio__checkov-6895",
+    "conan-io__conan-17092",
+    "conan-io__conan-17102",
+    "cyclotruc__gitingest-115",
+    "cyclotruc__gitingest-134",
+    "deepset-ai__haystack-8525",
+    "delgan__loguru-1297",
+    "delgan__loguru-1306",
+    "dynaconf__dynaconf-1225",
+    "dynaconf__dynaconf-1249",
+    "instructlab__instructlab-2540"
+  ]
+}
