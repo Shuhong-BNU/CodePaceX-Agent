@@ -498,20 +498,25 @@ def _environment_blocker(result: subprocess.CompletedProcess[str]) -> str | None
     return next((reason for marker, reason in patterns.items() if marker in output), None)
 
 
+def canonical_task_environment_plan(task: Mapping[str, Any], contract: Mapping[str, Any]) -> dict[str, Any]:
+    """The single task bootstrap contract used by readiness and paid execution."""
+    plan = {
+        "instance_id": str(task["instance_id"]),
+        "editable_target": str(contract["editable_target"]),
+        "dependencies": [str(item) for item in contract["dependencies"]],
+        "test_target": str(contract["test_target"]),
+    }
+    if not plan["editable_target"] or not plan["test_target"]:
+        raise ValueError("canonical task environment plan is incomplete")
+    return plan
+
+
 def _bootstrap(workspace: Path, contract: Mapping[str, Any]) -> tuple[Path, list[dict[str, Any]]]:
-    venv_path = workspace / ".evaluation-v2-full-preflight-venv"
-    venv.EnvBuilder(with_pip=True, clear=True).create(venv_path)
-    python = venv_path / "bin" / "python"
-    commands = [
-        [str(python), "-m", "pip", "install", "--disable-pip-version-check", "-e", str(contract["editable_target"]), "pytest", *map(str, contract["dependencies"])],
-    ]
-    evidence = []
-    for command in commands:
-        result = _run(command, cwd=workspace)
-        evidence.append({"command": command, "exit_code": result.returncode, "stdout": result.stdout, "stderr": result.stderr})
-        if result.returncode:
-            break
-    return python, evidence
+    return control_canary._bootstrap(
+        workspace,
+        [str(item) for item in contract["dependencies"]],
+        editable_target=str(contract["editable_target"]),
+    )
 
 
 def preflight_task(
@@ -833,9 +838,14 @@ def _full_task_executor(
     """Run the shared paid executor with this replay's safe payload identity."""
     payload_path = artifact_root / "safe-payloads" / f"{task['instance_id']}.json"
     _write_json(payload_path, task)
+    plan = canonical_task_environment_plan(task, metadata[task["instance_id"]])
     return control_canary._live_task_executor(
         root=root, freeze_payload=dict(frozen), task=task,
-        metadata=dict(metadata[task["instance_id"]]), gate=gate,
+        metadata={
+            "preflight_dependencies": plan["dependencies"],
+            "editable_target": plan["editable_target"],
+            "test_target": plan["test_target"],
+        }, gate=gate,
         artifact_root=artifact_root, run_id=run_id, payload_path=payload_path,
         trial_namespace="v2-full-20",
     )
