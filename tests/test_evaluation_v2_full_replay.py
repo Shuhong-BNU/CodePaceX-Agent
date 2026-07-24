@@ -144,9 +144,11 @@ def test_preflight_persists_collection_execution_and_artifact_evidence(
 def test_phase_b_admission_continues_capability_outcomes_and_stops_infrastructure(tmp_path: Path) -> None:
     capability = [
         full_replay.control_canary.PaidTaskResult(
-            instance_id=instance_id, agent_status="completed", candidate_status="not_exported",
+            instance_id=instance_id, agent_status="completed_without_candidate", candidate_status="not_exported",
             validation_status="executed", evaluator_status="not_run", runner_status="completed",
-            provider_status="completed", terminal_status="agent_no_candidate",
+            provider_status="completed", terminal_status="agent_no_candidate", provider_requests=1,
+            live_executor_invoked=True, agent_dispatch_started=True,
+            provider_client_initialized=True, model_response_observed=True, settlement_count=1,
         ) for instance_id in full_replay.PHASE_A_IDS
     ]
     authorization = full_replay.BudgetAuthorization(
@@ -161,9 +163,43 @@ def test_phase_b_admission_continues_capability_outcomes_and_stops_infrastructur
     assert "phase_a_infrastructure_failure" in full_replay.phase_b_admission(capability, ledger, ROOT)["blockers"]
 
 
-def test_full_shadow_exercises_6_plus_14_and_closes_zero_provider_ledger(tmp_path: Path) -> None:
+def test_full_shadow_exercises_real_executor_seam_and_covers_all_tasks(
+    tmp_path: Path, monkeypatch,
+) -> None:
     preflight = tmp_path / "preflight.json"
     preflight.write_text(json.dumps({"passed": True, "ready_count": 20}), encoding="utf-8")
+
+    def shadow_task(root, frozen, metadata, gate, artifact_root, run_id, task, scenario):
+        requests = 40 if scenario.startswith("ceiling_") else 1
+        trial_id = f"swe/v2-full-20/{run_id}/{task['instance_id']}"
+        for _ in range(requests):
+            reservation = gate.reserve(
+                trial_id, maximum_requests=1,
+                maximum_input_tokens_per_request=full_replay.MAX_INPUT_TOKENS,
+                maximum_output_tokens_per_request=full_replay.MAX_OUTPUT_TOKENS,
+            )
+            gate.settle(reservation, request_usages=[(1, 1)])
+        candidate = scenario == "ceiling_with_candidate"
+        terminal = "request_ceiling_reached" if scenario.startswith("ceiling_") else "agent_no_candidate"
+        return full_replay.control_canary.PaidTaskResult(
+            instance_id=task["instance_id"],
+            agent_status="completed_with_candidate" if candidate else "completed_without_candidate",
+            candidate_status="exported_nonempty" if candidate else "not_exported",
+            validation_status="executed", evaluator_status="completed" if candidate else "not_run",
+            runner_status="completed",
+            provider_status="pre_transport_blocked" if scenario.startswith("ceiling_") else "completed",
+            terminal_status=terminal, provider_requests=requests,
+            candidate_sha256="a" * 64 if candidate else None,
+            workspace_diff_sha256="a" * 64 if candidate else None,
+            candidate_diff_identity=candidate,
+            evaluator_report_sha256="b" * 64 if candidate else None,
+            live_executor_invoked=True, agent_dispatch_started=True,
+            provider_client_initialized=True, model_response_observed=True,
+            agent_exit_code=1 if scenario.startswith("ceiling_") else 0,
+            settlement_count=requests, trial_id=trial_id,
+        ), requests
+
+    monkeypatch.setattr(full_replay, "_shadow_task", shadow_task)
     with patch("evals.paid_gate._git_is_clean", return_value=True):
         result = full_replay.run_shadow(ROOT, preflight, tmp_path / "shadow", "shadow-test")
     assert result["paid_execution"] is False
@@ -175,11 +211,31 @@ def test_full_shadow_exercises_6_plus_14_and_closes_zero_provider_ledger(tmp_pat
     assert ceiling["terminal_status"] == "request_ceiling_reached"
     assert ceiling["candidate_status"] == "exported_nonempty"
     assert ceiling["evaluator_status"] == "completed"
+    assert result["agent_dispatch_count"] == 20
+    assert result["provider_task_coverage"] == "20/20"
+    assert result["historical_control_dispatch_covered"] is True
+    assert all(item["simulated_provider_requests"] >= 1 for item in result["results"])
     assert result["ledger_closed"] and result["active_reservation"] is None
     ledger = BudgetLedger.model_validate_json((tmp_path / "shadow" / "ledger.json").read_text(encoding="utf-8"))
     assert ledger.active_reservation is None
-    assert ledger.request_charges == [] and ledger.spent_cny == 0
-    assert len(ledger.settlements) == 20
+    assert len(ledger.request_charges) == len(ledger.settlements) == 98
+
+
+def test_dispatch_missing_is_an_infrastructure_stop() -> None:
+    result = full_replay.control_canary.PaidTaskResult(
+        instance_id="task", agent_status="failed", candidate_status="not_exported",
+        validation_status="not_run", evaluator_status="not_run", runner_status="error",
+        provider_status="not_started", terminal_status="agent_dispatch_missing",
+        live_executor_invoked=True, agent_dispatch_started=True,
+    )
+    authorization = full_replay.BudgetAuthorization(
+        authorized_total_cny=full_replay.TOTAL_HARD_CAP_CNY,
+        stage_limits_cny={"A": full_replay.PHASE_A_HARD_CAP_CNY, "B": full_replay.TOTAL_HARD_CAP_CNY, "C": full_replay.TOTAL_HARD_CAP_CNY},
+        pricing_snapshot_hash=full_replay.budget_contract(ROOT)["pricing_snapshot_sha256"],
+        experiment_commit="a" * 40, authorized_at="test", authorized_by="user",
+    )
+    ledger = BudgetLedger(authorization_hash=full_replay.authorization_hash(authorization), updated_at="test")
+    assert full_replay._phase_is_healthy_for_continuation(result, ledger) is False
 
 
 def test_full_replay_workflow_keeps_paid_path_explicit_and_zero_provider_path_complete() -> None:

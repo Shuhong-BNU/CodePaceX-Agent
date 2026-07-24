@@ -106,6 +106,10 @@ jobs:
           assert summary['phase_a_completed'] and summary['phase_b_admitted'] and summary['phase_b_completed']
           assert summary['ledger_closed'] and summary['active_reservation'] is None
           assert len(summary['results']) == 20
+          assert summary['agent_dispatch_count'] == 20
+          assert summary['provider_task_coverage'] == '20/20'
+          assert summary['historical_control_dispatch_covered'] is True
+          assert all(item['simulated_provider_requests'] >= 1 for item in summary['results'])
           PY
       - name: Compile release readiness on main only
         if: ${{ github.event_name == 'workflow_dispatch' }}
@@ -115,7 +119,7 @@ jobs:
           python - "$FULL_REPLAY_ROOT/release-check.json" <<'PY'
           import json, sys
           result = json.load(open(sys.argv[1], encoding='utf-8'))
-          assert result['status'] == 'READY_FOR_SINGLE_FULL_20_PAID_REPLAY'
+          assert result['status'] == 'READY_FOR_NEW_UNIFIED_FULL_20_PAID_AUTHORIZATION'
           assert result['head'] == result['origin_main']
           assert result['provider_requests'] == result['usage'] == 0
           assert result['charge_cny'] == '0' and result['provider_secret_read'] is False

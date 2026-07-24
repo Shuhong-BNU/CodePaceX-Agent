@@ -13,15 +13,19 @@ import argparse
 import csv
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import venv
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import asdict
 from decimal import Decimal
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -107,16 +111,15 @@ PHASE_A_IDS = (
     "instructlab__instructlab-2540",
 )
 PHASE_B_IDS = tuple(item for item in GOAL4_ORDER if item not in PHASE_A_IDS)
-CAPABILITY_TERMINALS = frozenset({
-    "resolved", "unresolved", "agent_no_candidate", "validation_failed",
-    "request_ceiling_reached",
-})
+CAPABILITY_TERMINALS = control_canary.CAPABILITY_TERMINALS
 INFRASTRUCTURE_TERMINALS = frozenset({
     "protocol_blocked", "provider_transport_error", "evaluator_unavailable",
     "evaluator_execution_error", "evaluator_report_selection_error",
     "budget_blocked", "runner_error", "task_environment_blocked",
-    "preflight_wiring_blocked",
+    "preflight_wiring_blocked", "pre_agent_blocked", "agent_dispatch_missing",
+    "host_runtime_contaminated",
 })
+FAKE_PROVIDER_KEY_ENV = "EVALUATION_V2_FAKE_PROVIDER_KEY"
 EXPECTED_SELECTION = {
     "bridgecrewio__checkov-6893": ("incomplete_patch", "one_file"),
     "conan-io__conan-17092": ("incomplete_patch", "two_to_four_files"),
@@ -133,6 +136,7 @@ RUNTIME_SOURCES = (
     "codepacex/tools/run_test.py",
     "evals/evaluation_v2/control_canary.py",
     "evals/evaluation_v2/full_replay.py",
+    "evals/pilot.py",
     "evals/paid_gate.py",
     str(WORKFLOW_PATH),
 )
@@ -361,7 +365,10 @@ def runtime_contract(root: Path) -> dict[str, Any]:
         "pilot_config_max_iterations": AGENT_MAX_ITERATIONS,
         "provider_request_budget_bridge_ceiling": MAX_REQUESTS_PER_TASK,
         "candidate_export_contract": "git-diff-binary-sha256-bound-v1",
-        "phase_transition_contract": "capability-terminals-continue-infrastructure-accounting-terminals-stop-v1",
+        "phase_transition_contract": "dispatch-evidenced-capability-terminals-continue-infrastructure-stop-v2",
+        "agent_dispatch_coverage_contract": "every-capability-terminal-requires-live-executor-provider-request-and-settlement-v1",
+        "task_python_isolation_contract": "fresh-no-system-site-packages-venv-path-bound-python-python3-pip-pip3-v1",
+        "host_runtime_integrity_contract": "before-after-runtime-fingerprint-equality-fail-closed-v1",
     }
 
 
@@ -656,6 +663,7 @@ def _fresh_gate(root: Path, artifact_root: Path, *, acknowledgement: str) -> Pai
 
 def phase_b_admission(results: Sequence[control_canary.PaidTaskResult], ledger: BudgetLedger, root: Path) -> dict[str, Any]:
     blockers = []
+    results = [control_canary.enforce_dispatch_invariant(item) for item in results]
     if tuple(item.instance_id for item in results) != PHASE_A_IDS:
         blockers.append("phase_a_identity_or_duplicate_execution")
     if any(item.terminal_status in INFRASTRUCTURE_TERMINALS for item in results):
@@ -675,41 +683,136 @@ def phase_b_admission(results: Sequence[control_canary.PaidTaskResult], ledger: 
     }
 
 
-def _write_task_shadow(
-    gate: PaidRunGate, artifact_root: Path, run_id: str, instance_id: str, status: str,
-) -> control_canary.PaidTaskResult:
-    task_root = artifact_root / "tasks" / instance_id
-    task_root.mkdir(parents=True)
-    reservation = gate.reserve(
-        f"swe/v2-full-shadow/{run_id}/{instance_id}", maximum_requests=1,
-        maximum_input_tokens_per_request=MAX_INPUT_TOKENS,
-        maximum_output_tokens_per_request=MAX_OUTPUT_TOKENS,
-    )
-    gate.cancel(reservation, reason="provider_confirmed_not_submitted")
-    candidate = status != "agent_no_candidate"
-    candidate_sha = hashlib.sha256(f"shadow:{instance_id}".encode()).hexdigest() if candidate else None
-    evaluator = status in {"resolved", "unresolved", "validation_failed", "request_ceiling_reached"}
-    result = control_canary.PaidTaskResult(
-        instance_id=instance_id,
-        agent_status="completed",
-        candidate_status="exported_nonempty" if candidate else "not_exported",
-        validation_status="failed" if status == "validation_failed" else "executed",
-        evaluator_status="completed" if evaluator else "not_run",
-        runner_status="completed",
-        provider_status="deterministic_replay_no_transport",
-        terminal_status=status,
-        provider_requests=0,
-        usage={"input_tokens": 0, "output_tokens": 0},
-        charge_cny="0",
-        candidate_sha256=candidate_sha,
-        workspace_diff_sha256=candidate_sha,
-        candidate_diff_identity=candidate,
-        evaluator_report_sha256=hashlib.sha256(f"report:{instance_id}".encode()).hexdigest() if evaluator else None,
-        resolved=True if status == "resolved" else False if status == "unresolved" else None,
-        active_reservation=None,
-    )
-    _write_json(task_root / "task-result.json", asdict(result))
-    return result
+class _LoopbackProvider:
+    def __init__(self, scenario: str) -> None:
+        self.scenario = scenario
+        self.request_count = 0
+
+    def response(self, model: str) -> bytes:
+        self.request_count += 1
+        request_index = self.request_count
+        if self.scenario == "ceiling_with_candidate":
+            command = (
+                "target=$(git ls-files | head -n 1); "
+                "if [ -n \"$target\" ] && [ %d -eq 1 ]; then printf '\\n# evaluation-v2-shadow-dispatch\\n' >> \"$target\"; else true; fi"
+                % request_index
+            )
+            chunks = _fake_tool_chunks(model, request_index, command)
+        elif self.scenario == "ceiling_without_candidate":
+            chunks = _fake_tool_chunks(model, request_index, "true")
+        else:
+            chunks = _fake_text_chunks(model, request_index)
+        return "".join(f"data: {json.dumps(chunk, separators=(',', ':'))}\n\n" for chunk in chunks).encode() + b"data: [DONE]\n\n"
+
+
+def _fake_usage() -> dict[str, Any]:
+    return {
+        "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2,
+        "prompt_tokens_details": {"cached_tokens": 0},
+        "completion_tokens_details": {"reasoning_tokens": 0},
+    }
+
+
+def _fake_tool_chunks(model: str, request_index: int, command: str) -> list[dict[str, Any]]:
+    call_id = f"call_shadow_{request_index:02d}"
+    base = {"id": f"chatcmpl-shadow-{request_index}", "object": "chat.completion.chunk", "created": 0, "model": model}
+    return [
+        {**base, "choices": [{"index": 0, "delta": {
+            "role": "assistant", "tool_calls": [{
+                "index": 0, "id": call_id, "type": "function",
+                "function": {"name": "Bash", "arguments": json.dumps({"command": command, "timeout": 30})},
+            }],
+        }, "finish_reason": None}]},
+        {**base, "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        {**base, "choices": [], "usage": _fake_usage()},
+    ]
+
+
+def _fake_text_chunks(model: str, request_index: int) -> list[dict[str, Any]]:
+    base = {"id": f"chatcmpl-shadow-{request_index}", "object": "chat.completion.chunk", "created": 0, "model": model}
+    return [
+        {**base, "choices": [{"index": 0, "delta": {
+            "role": "assistant", "content": "Zero-provider dispatch coverage response."
+        }, "finish_reason": None}]},
+        {**base, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+        {**base, "choices": [], "usage": _fake_usage()},
+    ]
+
+
+@contextmanager
+def _loopback_fake_provider(scenario: str):
+    provider = _LoopbackProvider(scenario)
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self) -> None:
+            body = json.dumps({"id": "qwen3.7-max-2026-06-08", "max_model_len": 131072}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self) -> None:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length:
+                self.rfile.read(length)
+            body = provider.response("qwen3.7-max-2026-06-08")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, _format: str, *_args: Any) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield provider, f"http://127.0.0.1:{server.server_port}/v1"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def _shadow_evaluator_runner(**kwargs: Any) -> subprocess.CompletedProcess[str]:
+    predictions = json.loads(Path(kwargs["predictions_path"]).read_text(encoding="utf-8"))[0]
+    instance_id = str(kwargs["instance_ids"][0])
+    model_id = str(predictions.get("model_name_or_path", "evaluation-v2-shadow"))
+    report = Path(kwargs["cwd"]) / "logs" / "run_evaluation" / str(kwargs["run_id"]) / model_id / instance_id / "report.json"
+    _write_json(report, {instance_id: {
+        "patch_is_None": False, "patch_exists": True,
+        "patch_successfully_applied": True, "resolved": False, "tests_status": {},
+    }})
+    return subprocess.CompletedProcess([], 0, "deterministic shadow evaluator", "")
+
+
+def _shadow_task(
+    root: Path, frozen: Mapping[str, Any], metadata: Mapping[str, Mapping[str, Any]],
+    gate: PaidRunGate, artifact_root: Path, run_id: str, task: dict[str, Any], scenario: str,
+) -> tuple[control_canary.PaidTaskResult, int]:
+    with _loopback_fake_provider(scenario) as (provider, base_url):
+        pilot = control_canary._paid_pilot_config(dict(frozen)).model_copy(update={
+            "base_url": base_url, "api_key_env": FAKE_PROVIDER_KEY_ENV,
+        })
+        result = _full_task_executor(
+            root, frozen, metadata, gate, artifact_root, run_id, task,
+            live_executor_kwargs={
+                "pilot_override": pilot,
+                "provider_secret_override": "zero-provider-loopback-only",
+                "child_environment_overrides": {
+                    "NO_PROXY": "127.0.0.1,localhost",
+                    "no_proxy": "127.0.0.1,localhost",
+                },
+                "evaluator_runner": _shadow_evaluator_runner,
+            },
+        )
+    return result, provider.request_count
 
 
 def compile_paired_report(root: Path, results: Sequence[control_canary.PaidTaskResult]) -> dict[str, Any]:
@@ -764,59 +867,111 @@ def run_shadow(root: Path, preflight_summary: Path, artifact_root: Path, run_id:
     pilot = control_canary._paid_pilot_config(frozen)
     if pilot.max_iterations != AGENT_MAX_ITERATIONS:
         raise RuntimeError("full replay shadow generated an invalid Agent iteration limit")
-    with tempfile.TemporaryDirectory(prefix="codepacex-v2-full-shadow-home-") as home_text:
-        control_canary._initialize_paid_agent_config(pilot=pilot, home=Path(home_text))
     gate = _fresh_gate(root, artifact_root, acknowledgement="zero-provider-full-20-shadow")
-    statuses = ["request_ceiling_reached", "resolved", "agent_no_candidate", "validation_failed", "unresolved", "resolved"]
-    phase_a = [
-        _write_task_shadow(gate, artifact_root, run_id, instance_id, status)
-        for instance_id, status in zip(PHASE_A_IDS, statuses, strict=True)
-    ]
+    tasks = {item["instance_id"]: item for item in load_tasks(root)}
+    metadata = _task_environment_contract(root)
+    fake_requests: dict[str, int] = {}
+    phase_a: list[control_canary.PaidTaskResult] = []
+    for index, instance_id in enumerate(PHASE_A_IDS, start=1):
+        _task_progress(index=index, instance_id=instance_id, event="start")
+        scenario = (
+            "ceiling_with_candidate" if index == 1
+            else "ceiling_without_candidate" if index == 2
+            else "single_response"
+        )
+        result, request_count = _shadow_task(
+            root, frozen, metadata, gate, artifact_root, run_id, tasks[instance_id], scenario,
+        )
+        phase_a.append(result)
+        fake_requests[instance_id] = request_count
+        ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
+        healthy = _phase_is_healthy_for_continuation(result, ledger)
+        _task_progress(
+            index=index, instance_id=instance_id, event="end", result=result,
+            ledger=ledger, continued=healthy,
+        )
+        if not healthy:
+            break
     ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
-    admission = phase_b_admission(phase_a, ledger, root)
+    admission = phase_b_admission(phase_a, ledger, root) if len(phase_a) == len(PHASE_A_IDS) else {
+        "admitted": False, "blockers": ["phase_a_not_completed"],
+        "active_reservation": None if ledger.active_reservation is None else ledger.active_reservation.model_dump(mode="json"),
+    }
     _write_json(artifact_root / "phase-a-interim-summary.json", {
         "results": [asdict(item) for item in phase_a], "phase_b_admission": admission,
     })
-    phase_b = []
+    phase_b: list[control_canary.PaidTaskResult] = []
     if admission["admitted"]:
-        phase_b = [
-            _write_task_shadow(gate, artifact_root, run_id, instance_id, "resolved" if index % 3 == 0 else "unresolved")
-            for index, instance_id in enumerate(PHASE_B_IDS)
-        ]
+        for index, instance_id in enumerate(PHASE_B_IDS, start=7):
+            _task_progress(index=index, instance_id=instance_id, event="start")
+            result, request_count = _shadow_task(
+                root, frozen, metadata, gate, artifact_root, run_id,
+                tasks[instance_id], "single_response",
+            )
+            phase_b.append(result)
+            fake_requests[instance_id] = request_count
+            ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
+            healthy = _phase_is_healthy_for_continuation(result, ledger)
+            _task_progress(
+                index=index, instance_id=instance_id, event="end", result=result,
+                ledger=ledger, continued=healthy,
+            )
+            if not healthy:
+                break
     ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
     results = phase_a + phase_b
     paired = compile_paired_report(root, results)
     _write_json(artifact_root / "paired-report.json", paired)
+    result_rows = [{
+        **asdict(item),
+        "external_provider_requests": 0,
+        "simulated_provider_requests": fake_requests.get(item.instance_id, 0),
+    } for item in results]
+    dispatch_count = sum(item.agent_dispatch_started for item in results)
+    provider_coverage_count = sum(fake_requests.get(item.instance_id, 0) >= 1 for item in results)
+    controls = {"beetbox__beets-5495", "beancount__beancount-931"}
+    controls_covered = all(fake_requests.get(instance_id, 0) >= 1 for instance_id in controls)
     summary = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
         "paid_execution": False,
-        "provider_transport": "deterministic_replay_no_transport",
+        "provider_transport": "loopback_fake_openai_compatible",
+        "external_provider_transport": False,
         "provider_secret_read": False,
         "provider_requests": 0,
         "usage": 0,
         "charge_cny": "0",
-        "simulated_reservations": len(ledger.settlements),
+        "simulated_provider_requests": len(ledger.request_charges),
+        "simulated_usage": sum(item.input_tokens + item.output_tokens for item in ledger.request_charges),
+        "simulated_charge_cny": str(ledger.spent_cny),
+        "simulated_settlements": len(ledger.settlements),
+        "agent_dispatch_count": dispatch_count,
+        "provider_task_coverage_count": provider_coverage_count,
+        "provider_task_coverage": f"{provider_coverage_count}/20",
+        "historical_control_dispatch_covered": controls_covered,
         "phase_a_completed": len(phase_a) == 6,
         "phase_b_admitted": admission["admitted"],
         "phase_b_completed": len(phase_b) == 14,
         "pilot_max_iterations": pilot.max_iterations,
         "provider_request_ceiling_per_task": MAX_REQUESTS_PER_TASK,
-        "results": [asdict(item) for item in results],
+        "results": result_rows,
         "ledger_closed": ledger.active_reservation is None,
         "active_reservation": None,
         "paired_report_sha256": _sha256(artifact_root / "paired-report.json"),
         "freeze_sha256": _sha256(root / COMMITTED_FREEZE),
         "runtime_contract_sha256": _read_json(root / COMMITTED_FREEZE)["runtime_contract_sha256"],
-        "completed": len(results) == 20 and ledger.active_reservation is None,
+        "completed": (
+            len(results) == 20 and dispatch_count == 20 and provider_coverage_count == 20
+            and controls_covered and ledger.active_reservation is None
+        ),
     }
     _write_json(artifact_root / "full-20-shadow-summary.json", summary)
     _write_json(artifact_root / "zero-provider-ledger-summary.json", {
         "provider_requests": 0, "usage": 0, "charge_cny": "0",
         "provider_secret_read": False, "active_reservation": None,
-        "request_charges": len(ledger.request_charges),
-        "settlements": len(ledger.settlements),
-        "spent_cny": str(ledger.spent_cny),
+        "simulated_request_charges": len(ledger.request_charges),
+        "simulated_settlements": len(ledger.settlements),
+        "simulated_spent_cny": str(ledger.spent_cny),
     })
     return summary
 
@@ -835,6 +990,7 @@ def _task_environment_contract(root: Path) -> dict[str, dict[str, Any]]:
 def _full_task_executor(
     root: Path, frozen: Mapping[str, Any], metadata: Mapping[str, Mapping[str, Any]],
     gate: PaidRunGate, artifact_root: Path, run_id: str, task: dict[str, Any],
+    *, live_executor_kwargs: Mapping[str, Any] | None = None,
 ) -> control_canary.PaidTaskResult:
     """Run the shared paid executor with this replay's safe payload identity."""
     payload_path = artifact_root / "safe-payloads" / f"{task['instance_id']}.json"
@@ -849,16 +1005,53 @@ def _full_task_executor(
         }, gate=gate,
         artifact_root=artifact_root, run_id=run_id, payload_path=payload_path,
         trial_namespace="v2-full-20",
+        **dict(live_executor_kwargs or {}),
     )
 
 
 def _phase_is_healthy_for_continuation(result: control_canary.PaidTaskResult, ledger: BudgetLedger) -> bool:
     """Capability outcomes continue; accounting and infrastructure failures do not."""
+    result = control_canary.enforce_dispatch_invariant(result)
     return (
         result.terminal_status in CAPABILITY_TERMINALS
-        and result.provider_status != "provider_transport_error"
+        and result.provider_status in {"completed", "pre_transport_blocked"}
         and ledger.active_reservation is None
     )
+
+
+def _task_progress(
+    *, index: int, instance_id: str, event: str,
+    result: control_canary.PaidTaskResult | None = None,
+    ledger: BudgetLedger | None = None, continued: bool | None = None,
+) -> None:
+    if result is None:
+        message = f"[evaluation-v2] task {index}/20 {instance_id}: Agent dispatch started"
+    else:
+        closed = ledger is not None and ledger.active_reservation is None
+        message = (
+            f"[evaluation-v2] task {index}/20 {instance_id}: "
+            f"requests={result.provider_requests} terminal={result.terminal_status} "
+            f"ledger_closed={str(closed).lower()} continue={str(bool(continued)).lower()}"
+        )
+    print(message, file=sys.stderr, flush=True)
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_path or result is None:
+        return
+    path = Path(summary_path)
+    if not path.exists() or path.stat().st_size == 0:
+        path.write_text(
+            "## Evaluation V2 full-20 task progress\n\n"
+            "| Task | Instance | Agent | Requests | Terminal | Ledger closed | Continue |\n"
+            "| --- | --- | --- | ---: | --- | --- | --- |\n",
+            encoding="utf-8",
+        )
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            f"| {index}/20 | `{instance_id}` | `{result.agent_status}` | "
+            f"{result.provider_requests} | `{result.terminal_status}` | "
+            f"{str(ledger is not None and ledger.active_reservation is None).lower()} | "
+            f"{str(bool(continued)).lower()} |\n"
+        )
 
 
 def run_paid_replay(
@@ -879,11 +1072,17 @@ def run_paid_replay(
     tasks = {item["instance_id"]: item for item in load_tasks(root)}
     metadata = _task_environment_contract(root)
     results: list[control_canary.PaidTaskResult] = []
-    for instance_id in PHASE_A_IDS:
+    for index, instance_id in enumerate(PHASE_A_IDS, start=1):
+        _task_progress(index=index, instance_id=instance_id, event="start")
         result = _full_task_executor(root, frozen, metadata, gate, artifact_root, run_id, tasks[instance_id])
         results.append(result)
         ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
-        if not _phase_is_healthy_for_continuation(result, ledger):
+        healthy = _phase_is_healthy_for_continuation(result, ledger)
+        _task_progress(
+            index=index, instance_id=instance_id, event="end", result=result,
+            ledger=ledger, continued=healthy,
+        )
+        if not healthy:
             break
     ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
     admission = phase_b_admission(results, ledger, root) if len(results) == len(PHASE_A_IDS) else {
@@ -894,11 +1093,17 @@ def run_paid_replay(
         "results": [asdict(item) for item in results], "phase_b_admission": admission,
     })
     if admission["admitted"]:
-        for instance_id in PHASE_B_IDS:
+        for index, instance_id in enumerate(PHASE_B_IDS, start=7):
+            _task_progress(index=index, instance_id=instance_id, event="start")
             result = _full_task_executor(root, frozen, metadata, gate, artifact_root, run_id, tasks[instance_id])
             results.append(result)
             ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
-            if not _phase_is_healthy_for_continuation(result, ledger):
+            healthy = _phase_is_healthy_for_continuation(result, ledger)
+            _task_progress(
+                index=index, instance_id=instance_id, event="end", result=result,
+                ledger=ledger, continued=healthy,
+            )
+            if not healthy:
                 break
     ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
     paired = compile_paired_report(root, results)
@@ -950,12 +1155,18 @@ def release_check(root: Path, preflight_summary: Path, shadow_summary: Path) -> 
         blockers.append("full_20_environment_preflight_not_passed")
     if not shadow.get("completed") or not shadow.get("phase_b_completed"):
         blockers.append("full_20_shadow_not_completed")
+    if shadow.get("agent_dispatch_count") != 20:
+        blockers.append("full_20_agent_dispatch_coverage_not_passed")
+    if shadow.get("provider_task_coverage") != "20/20":
+        blockers.append("full_20_provider_task_coverage_not_passed")
+    if not shadow.get("historical_control_dispatch_covered"):
+        blockers.append("historical_control_dispatch_coverage_not_passed")
     if any((shadow.get("provider_requests"), shadow.get("usage"), Decimal(str(shadow.get("charge_cny", "0"))))):
         blockers.append("zero_provider_accounting_changed")
     if not shadow.get("ledger_closed") or shadow.get("active_reservation") is not None:
         blockers.append("shadow_ledger_not_closed")
     return {
-        "status": "READY_FOR_SINGLE_FULL_20_PAID_REPLAY" if not blockers else blockers[0],
+        "status": "READY_FOR_NEW_UNIFIED_FULL_20_PAID_AUTHORIZATION" if not blockers else blockers[0],
         "blockers": blockers,
         "head": head,
         "origin_main": remote,

@@ -31,6 +31,7 @@ Units in this ledger are intentionally not additive. In particular, MCP Trials, 
 | G4-SWE-FORMAL | Goal 4 | Formal 20-task SWE-bench-Live subset | Instance | 20 | 20 | 25 paid Attempts | 20 | Bailian | `qwen3.7-max-2026-06-08` | CNY 165.044424 verified actual; CNY 170.537160 conservative budget consumption | `GOAL4_ACCEPTED` | 4 resolved / 16 unresolved | Pre-registered Python-only Lite subset, not the full Lite leaderboard or pass@k. Five infrastructure retries are included in Attempts and are not additional Instances. |
 | G4-INFRA-RECOVERY | Goal 4 | Infrastructure recovery Attempts | Attempt | not planned as Instances | 0 additional | 5 | 0 additional | Bailian | `qwen3.7-max-2026-06-08` | CNY 34.158732 historical failed-attempt verified Provider cost | recovered and closed | Final 20 Instances all became scorable | This row is a decomposition of the 25 Attempts and its cost is already included in Goal 4 accounting; do not add it again. |
 | V2.1-CONTROL-CANARY | Evaluation V2.1 | Two historical resolved Goal 4 controls | Instance | 2 | 2 | 2 | 2 | Bailian | `qwen3.7-max-2026-06-08` | CNY 7.412724 actual | complete control canary | 2/2 Candidate, scorable, and resolved | This validates the corrected V2 real execution chain on historical resolved controls only. It is not a 20-task result and must not be generalized to the full Goal 4 matrix. |
+| V2-FULL20-DISPATCH-REGRESSION | Evaluation V2 | Full-20 paid replay dispatch coverage failure | Attempt | 20 planned | 20 rows | 1 aborted system run | 3 diagnostic rows only | Bailian | `qwen3.7-max-2026-06-08` | CNY 21.910536 actual | historical engineering evidence | 3/20 Agent/Provider execution coverage; 17 post-dispatch host-runtime import failures misclassified as `agent_no_candidate` | `FULL_20_SYSTEM_RUN_COMPLETE`; `MODEL_EXECUTION_COVERAGE_3_OF_20`; `INVALID_FOR_FULL_20_MODEL_SCORE_COMPARISON`; `PAID_DISPATCH_COVERAGE_REGRESSION`. It is excluded from every formal V2 20-task score. |
 | G5-LONG-CANDIDATE | Goal 5 candidate | Formal long-session follow-up | Session | 3 candidate Sessions | 3 planned | 0 | 0 | not authorized | not selected | CNY 0 | planned/deferred | No result | Candidate only. No Stage B/C, Provider comparison, or eight-hour Session is authorized by this ledger. |
 
 Success/task-failure pairs in the Permission row are terminal Trial outcomes, not pytest counts. Goal 4 selected terminal cost (CNY `130.885692`), historical failed-attempt cost (CNY `34.158732`), uncertain exposure (CNY `5.492736`), and verified actual Provider cost (CNY `165.044424`) remain separate accounting measures.
@@ -74,3 +75,24 @@ and official report SHA `ec42a2912a8b494a5aaf29952bd8eed82916fbdfa6b029726eac348
 Totals were 46 requests, 571,320 input tokens, 15,469 output tokens, CNY
 `7.412724`, 46 settlements, and `active_reservation=null`. The resulting V2.2
 gate was `V2_2_DIAGNOSTIC_PILOT_GO`; it did not start V2.2 automatically.
+
+## Evaluation V2 full-20 dispatch regression evidence
+
+Actions run `30076531565`, internal Run ID
+`v2-full20-paid-20260724t07441784879084z-44939c21`, and Artifact `8591549476`
+are immutable engineering evidence, not a formal Evaluation V2 score. Under
+Freeze `dc617a2b4a07f81f5548375cb548c2beb925fb3b5c31a212bb41002c58a78715`
+and Runtime `3d77584fa9730e92a1fb0cce0ee7f23e4dd99d29173d2d6ea3621c1cafd32a0e`,
+three tasks executed the Agent and Provider (95 requests, CNY `21.910536`). The
+third task's Agent Bash command ran `pip install -e .` against the host runtime,
+downgrading `openai`; the next 17 Agent subprocesses failed importing
+`AsyncOpenAI` before client construction. The shared stderr SHA was
+`a865771dba9a11e91af9d74d8a5b06e071a0ce263a10838652c5a50ec7bc2684`.
+
+The former empty-patch-first result path recorded those 17 dispatch failures as
+`Agent/Provider/Runner=completed` plus `agent_no_candidate`. Consequently,
+`0/20 scorable` and `0/20 resolved` are not model capability results. The run
+is retained as `FULL_20_SYSTEM_RUN_COMPLETE`, `MODEL_EXECUTION_COVERAGE_3_OF_20`,
+`INVALID_FOR_FULL_20_MODEL_SCORE_COMPARISON`, and
+`PAID_DISPATCH_COVERAGE_REGRESSION`; its cost is isolated historical debugging
+cost and cannot be combined with a future Runtime's results.

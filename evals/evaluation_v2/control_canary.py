@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
+import importlib.metadata
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -66,6 +69,18 @@ PAYLOAD_MANIFEST = PAYLOAD_DIRECTORY / "manifest.json"
 PAYLOAD_FIELDS = frozenset({"instance_id", "repo", "base_commit", "problem_statement"})
 FORBIDDEN_PAYLOAD_KEY = re.compile(r"(?:^|_)(?:patch|gold|test_patch|solution|reference_patch|expected_patch|answer)(?:_|$)", re.I)
 PROVIDER_BASE_URL = "https://llm-ipge9fy38w648m28.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+CAPABILITY_TERMINALS = frozenset({
+    "resolved", "unresolved", "agent_no_candidate", "validation_failed",
+    "request_ceiling_reached",
+})
+AGENT_STATES = frozenset({
+    "not_started", "running", "completed_with_candidate",
+    "completed_without_candidate", "failed",
+})
+PROVIDER_STATES = frozenset({
+    "not_started", "request_sent", "completed", "transport_failed",
+    "pre_transport_blocked",
+})
 TASKS: tuple[dict[str, Any], ...] = (
     {
         "instance_id": "beetbox__beets-5495",
@@ -92,6 +107,7 @@ RUNTIME_SOURCES = (
     "codepacex/tools/run_test.py",
     "evals/evaluation_v2/golden_path.py",
     "evals/evaluation_v2/control_canary.py",
+    "evals/pilot.py",
     "evals/paid_gate.py",
 )
 def _sha256(path: Path) -> str:
@@ -251,10 +267,10 @@ def freeze_payload(root: Path) -> dict[str, Any]:
             "report_selection": "detailed_then_summary_fail_closed-v1",
         },
         "workspace_materialization": "git-clone-filter-blob-none-detached-base-v1",
-        "dependency_bootstrap": "isolated-venv-pip-install-editable-pytest-and-frozen-preflight-dependencies-v2",
+        "dependency_bootstrap": "isolated-no-system-site-packages-task-venv-and-host-runtime-fingerprint-v3",
         "gold_patch_forbidden": True,
         "fresh_authorization_and_ledger_required": True,
-        "terminal_status_schema": ["resolved", "unresolved", "agent_no_candidate", "protocol_blocked", "provider_transport_error", "evaluator_unavailable", "evaluator_execution_error", "evaluator_report_selection_error", "runner_error", "budget_blocked", "task_environment_blocked", "preflight_wiring_blocked"],
+        "terminal_status_schema": ["resolved", "unresolved", "agent_no_candidate", "request_ceiling_reached", "pre_agent_blocked", "agent_dispatch_missing", "host_runtime_contaminated", "protocol_blocked", "provider_transport_error", "evaluator_unavailable", "evaluator_execution_error", "evaluator_report_selection_error", "runner_error", "budget_blocked", "task_environment_blocked", "preflight_wiring_blocked"],
         "budget_contract": budget,
         "go_no_go": {
             "go": "both task environment preflights pass and zero-provider paid-path rehearsal closes its ledger",
@@ -319,7 +335,7 @@ def _bootstrap(
     workspace: Path, preflight_dependencies: Sequence[str], *, editable_target: str = ".",
 ) -> tuple[Path, list[dict[str, Any]]]:
     venv_path = workspace / ".evaluation-v2-preflight-venv"
-    venv.EnvBuilder(with_pip=True, clear=True).create(venv_path)
+    venv.EnvBuilder(with_pip=True, clear=True, system_site_packages=False).create(venv_path)
     python = venv_path / "bin" / "python"
     command = [
         str(python), "-m", "pip", "install", "--disable-pip-version-check",
@@ -540,15 +556,162 @@ class PaidTaskResult:
     resolved: bool | None = None
     failure_classification: str | None = None
     active_reservation: Any = None
+    live_executor_invoked: bool = False
+    agent_dispatch_started: bool = False
+    provider_client_initialized: bool = False
+    model_response_observed: bool = False
+    agent_exit_code: int | None = None
+    settlement_count: int = 0
+    trial_id: str | None = None
+    pre_agent_blocker: str | None = None
+
+
+def enforce_dispatch_invariant(result: PaidTaskResult) -> PaidTaskResult:
+    """Reject capability outcomes that have no durable Agent/Provider evidence."""
+    if result.agent_status not in AGENT_STATES:
+        raise ValueError(f"invalid Agent state: {result.agent_status}")
+    if result.provider_status not in PROVIDER_STATES:
+        raise ValueError(f"invalid Provider state: {result.provider_status}")
+    explicit_zero_request_stop = (
+        result.terminal_status in {
+            "pre_agent_blocked", "budget_blocked", "provider_transport_error",
+            "protocol_blocked", "task_environment_blocked", "host_runtime_contaminated",
+        }
+        and result.provider_status in {"pre_transport_blocked", "transport_failed"}
+    )
+    if result.provider_requests == 0 and not explicit_zero_request_stop:
+        result.agent_status = "failed"
+        result.provider_status = "not_started"
+        result.runner_status = "error"
+        result.terminal_status = "agent_dispatch_missing"
+        result.failure_classification = "agent_dispatch_missing"
+        result.resolved = None
+    if result.terminal_status in CAPABILITY_TERMINALS:
+        if not (
+            result.live_executor_invoked
+            and result.agent_dispatch_started
+            and result.provider_client_initialized
+            and result.model_response_observed
+            and result.provider_requests >= 1
+            and result.settlement_count >= result.provider_requests
+        ):
+            result.agent_status = "failed"
+            result.provider_status = "not_started"
+            result.runner_status = "error"
+            result.terminal_status = "agent_dispatch_missing"
+            result.failure_classification = "agent_dispatch_missing"
+            result.resolved = None
+    if result.terminal_status == "request_ceiling_reached" and not (
+        result.provider_requests == MAX_REQUESTS_PER_TASK
+        and result.provider_status == "pre_transport_blocked"
+    ):
+        result.agent_status = "failed"
+        result.provider_status = "not_started"
+        result.runner_status = "error"
+        result.terminal_status = "agent_dispatch_missing"
+        result.failure_classification = "request_ceiling_evidence_invalid"
+        result.resolved = None
+    if result.agent_status == "completed_without_candidate" and result.candidate_status != "not_exported":
+        raise ValueError("completed_without_candidate cannot export a Candidate")
+    if result.agent_status == "completed_with_candidate" and result.candidate_status != "exported_nonempty":
+        raise ValueError("completed_with_candidate requires a non-empty Candidate")
+    return result
+
+
+def _trace_dispatch_evidence(stdout: str) -> tuple[bool, bool]:
+    provider_client_initialized = False
+    model_response_observed = False
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if event.get("type") == "runtime_manifest":
+            provider_client_initialized = True
+        elif event.get("type") == "usage":
+            model_response_observed = True
+    return provider_client_initialized, model_response_observed
+
+
+def _task_agent_environment(environment: dict[str, str], python: Path) -> dict[str, str]:
+    """Bind Agent tool subprocesses to this task's isolated dependency venv."""
+    child = dict(environment)
+    venv_root = python.parent.parent
+    inherited_path = child.get("PATH", "")
+    child["PATH"] = str(python.parent) + (os.pathsep + inherited_path if inherited_path else "")
+    child["VIRTUAL_ENV"] = str(venv_root)
+    child["PYTHONNOUSERSITE"] = "1"
+    child["PIP_REQUIRE_VIRTUALENV"] = "1"
+    return child
+
+
+def _task_tool_resolution(environment: dict[str, str], python: Path) -> dict[str, str]:
+    expected_bin = python.parent
+    resolved: dict[str, str] = {}
+    for executable in ("python", "python3", "pip", "pip3"):
+        location = shutil.which(executable, path=environment.get("PATH"))
+        if location is None or Path(location).parent != expected_bin:
+            raise ValueError(f"task venv executable resolution changed: {executable}={location}")
+        resolved[executable] = location
+    return resolved
+
+
+def _host_runtime_fingerprint() -> dict[str, Any]:
+    modules: dict[str, dict[str, str | None]] = {}
+    for name in ("openai", "codepacex"):
+        module = importlib.import_module(name)
+        module_file = Path(str(module.__file__)).resolve()
+        modules[name] = {
+            "version": str(getattr(module, "__version__", "unknown")),
+            "file": str(module_file),
+            "file_sha256": _sha256(module_file),
+        }
+    dependencies = {}
+    for distribution in ("openai", "httpx", "pydantic", "anthropic", "PyYAML"):
+        try:
+            dependencies[distribution] = importlib.metadata.version(distribution)
+        except importlib.metadata.PackageNotFoundError:
+            dependencies[distribution] = "not_installed"
+    payload = {
+        "sys_executable": str(Path(sys.executable).resolve()),
+        "python_version": platform.python_version(),
+        "modules": modules,
+        "dependency_versions": dependencies,
+    }
+    return {**payload, "fingerprint_sha256": canonical_hash(payload)}
+
+
+def _agent_runtime_probe(*, root: Path, task_root: Path) -> subprocess.CompletedProcess[str]:
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(root.resolve())
+    probe = subprocess.run(
+        [sys.executable, "-c", "from openai import AsyncOpenAI; import codepacex.agent"],
+        cwd=root, env=environment, text=True, capture_output=True, timeout=60, check=False,
+    )
+    (task_root / "agent-runtime-probe.stdout.txt").write_text(probe.stdout or "", encoding="utf-8")
+    (task_root / "agent-runtime-probe.stderr.txt").write_text(probe.stderr or "", encoding="utf-8")
+    return probe
+
+
+def _child_environment_with_secret(
+    pilot: PilotConfig, home: str, *, root: Path, secret_override: str | None,
+) -> dict[str, str]:
+    source_environment = dict(os.environ)
+    secret = source_environment.get(pilot.api_key_env) if secret_override is None else secret_override
+    return _child_environment(
+        pilot, home, root=root, source_environment=source_environment,
+        provider_secret=secret,
+    )
 
 
 def _healthy_paid_result(result: PaidTaskResult) -> bool:
+    result = enforce_dispatch_invariant(result)
     return (
         result.runner_status == "completed"
         and result.candidate_status == "exported_nonempty"
         and result.candidate_diff_identity
         and result.evaluator_status == "completed"
-        and result.provider_status != "provider_transport_error"
+        and result.provider_status in {"completed", "pre_transport_blocked"}
         and result.active_reservation is None
     )
 
@@ -566,7 +729,7 @@ def execute_paid_canary(*, root: Path, freeze: Path, paid_execution: bool, execu
     results: list[PaidTaskResult] = []
     for task in payload["tasks"]:
         task_payload = by_id[str(task["instance_id"])]
-        result = executor(task_payload)
+        result = enforce_dispatch_invariant(executor(task_payload))
         results.append(result)
         if not _healthy_paid_result(result):
             break
@@ -633,20 +796,70 @@ def _fresh_paid_gate(*, root: Path, freeze: Path, artifact_root: Path, acknowled
     )
 
 
-def _live_task_executor(*, root: Path, freeze_payload: dict[str, Any], task: dict[str, str], metadata: dict[str, Any], gate: PaidRunGate, artifact_root: Path, run_id: str, payload_path: Path | None = None, trial_namespace: str = "v2-control") -> PaidTaskResult:
+def _live_task_executor(
+    *, root: Path, freeze_payload: dict[str, Any], task: dict[str, str],
+    metadata: dict[str, Any], gate: PaidRunGate, artifact_root: Path, run_id: str,
+    payload_path: Path | None = None, trial_namespace: str = "v2-control",
+    pilot_override: PilotConfig | None = None, provider_secret_override: str | None = None,
+    child_environment_overrides: dict[str, str] | None = None,
+    evaluator_runner: Callable[..., subprocess.CompletedProcess[str]] = run_official_evaluator,
+    evaluator_report_locator: Callable[..., Path] = official_evaluator_report_path,
+    outcome_collector: Callable[[Path, str], bool] = collect_goal3_official_outcome,
+) -> PaidTaskResult:
     task_root = artifact_root / "tasks" / task["instance_id"]
     workspace = task_root / "workspace"
     task_root.mkdir(parents=True)
     trial_id = f"swe/{trial_namespace}/{run_id}/{task['instance_id']}"
     prompt = _goal3_inference_prompt(task)
     source_payload = payload_path or root / PAYLOAD_DIRECTORY / f"{task['instance_id']}.json"
+    try:
+        host_runtime_before = _host_runtime_fingerprint()
+    except Exception as exc:
+        host_runtime_before = {"fingerprint_error": str(exc)}
+    _write_json(task_root / "host-runtime-before.json", host_runtime_before)
     evidence: dict[str, Any] = {
         "instance_id": task["instance_id"], "payload_sha256": _sha256(source_payload),
         "problem_statement_sha256": hashlib.sha256(task["problem_statement"].encode()).hexdigest(),
         "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
         "system_prompt_sha256": hashlib.sha256(build_static_system_instruction().encode()).hexdigest(),
-        "pre_edit_test": None, "post_edit_test": None,
+        "pre_edit_test": None, "post_edit_test": None, "trial_id": trial_id,
+        "live_executor_invoked": True,
+        "authorization_hash": authorization_hash(gate.authorization),
+        "allocation_hash": allocation_hash(gate.allocation) if gate.allocation is not None else None,
+        "host_runtime_before_sha256": host_runtime_before.get("fingerprint_sha256"),
     }
+
+    def finish(result: PaidTaskResult) -> PaidTaskResult:
+        result.live_executor_invoked = True
+        result.trial_id = trial_id
+        try:
+            host_runtime_after = _host_runtime_fingerprint()
+        except Exception as exc:
+            host_runtime_after = {"fingerprint_error": str(exc)}
+        _write_json(task_root / "host-runtime-after.json", host_runtime_after)
+        evidence["host_runtime_after_sha256"] = host_runtime_after.get("fingerprint_sha256")
+        evidence["host_runtime_unchanged"] = host_runtime_before == host_runtime_after
+        if host_runtime_before != host_runtime_after:
+            result.agent_status = "failed"
+            if result.provider_requests == 0:
+                result.provider_status = "pre_transport_blocked"
+            result.runner_status = "error"
+            result.terminal_status = "host_runtime_contaminated"
+            result.failure_classification = "host_runtime_contaminated"
+            result.resolved = None
+        normalized = enforce_dispatch_invariant(result)
+        _write_json(task_root / "task-result.json", {**evidence, **normalized.__dict__})
+        return normalized
+
+    if "fingerprint_sha256" not in host_runtime_before:
+        evidence["failure"] = "host_runtime_fingerprint_unavailable"
+        return finish(PaidTaskResult(
+            task["instance_id"], "not_started", "not_exported", "not_run", "not_run",
+            "error", "pre_transport_blocked", terminal_status="pre_agent_blocked",
+            failure_classification="host_runtime_fingerprint_unavailable",
+            pre_agent_blocker="host_runtime_fingerprint_unavailable",
+        ))
+
     try:
         _goal3_materialize_instance(task, workspace)
         python, bootstrap = _bootstrap(
@@ -654,6 +867,8 @@ def _live_task_executor(*, root: Path, freeze_payload: dict[str, Any], task: dic
             editable_target=str(metadata.get("editable_target", ".")),
         )
         _write_json(task_root / "dependency-bootstrap.json", bootstrap)
+        if not bootstrap or any(item["exit_code"] for item in bootstrap):
+            raise RuntimeError("dependency_bootstrap_failed")
         test_command = [str(python), "-m", "pytest", str(metadata["test_target"])]
         pre_edit = _run(test_command, cwd=workspace)
         (task_root / "pre-edit.stdout.txt").write_text(pre_edit.stdout, encoding="utf-8")
@@ -661,17 +876,51 @@ def _live_task_executor(*, root: Path, freeze_payload: dict[str, Any], task: dic
         evidence["pre_edit_test"] = {"command": test_command, "exit_code": pre_edit.returncode}
     except Exception as exc:
         evidence["failure"] = str(exc)
-        _write_json(task_root / "task-result.json", evidence)
-        return PaidTaskResult(task["instance_id"], "not_started", "not_exported", "not_run", "not_run", "error", "not_started", failure_classification="task_environment_blocked")
-    pilot = _paid_pilot_config(freeze_payload)
-    if not os.environ.get(pilot.api_key_env):
-        raise ValueError("paid execution requires the configured Provider secret")
+        return finish(PaidTaskResult(
+            task["instance_id"], "not_started", "not_exported", "not_run", "not_run",
+            "error", "pre_transport_blocked", terminal_status="pre_agent_blocked",
+            failure_classification="task_environment_blocked",
+            pre_agent_blocker="task_environment_blocked",
+        ))
+    probe = _agent_runtime_probe(root=root, task_root=task_root)
+    evidence["agent_runtime_probe_exit_code"] = probe.returncode
+    if probe.returncode:
+        evidence["failure"] = "agent_runtime_dependency_invalid"
+        return finish(PaidTaskResult(
+            task["instance_id"], "not_started", "not_exported", "not_run", "not_run",
+            "error", "pre_transport_blocked", terminal_status="pre_agent_blocked",
+            failure_classification="agent_runtime_dependency_invalid",
+            pre_agent_blocker="agent_runtime_dependency_invalid",
+        ))
+    pilot = pilot_override or _paid_pilot_config(freeze_payload)
+    if provider_secret_override is None and not os.environ.get(pilot.api_key_env):
+        evidence["failure"] = "provider_secret_unavailable"
+        return finish(PaidTaskResult(
+            task["instance_id"], "not_started", "not_exported", "not_run", "not_run",
+            "error", "pre_transport_blocked", terminal_status="pre_agent_blocked",
+            failure_classification="provider_secret_unavailable",
+            pre_agent_blocker="provider_secret_unavailable",
+        ))
     with tempfile.TemporaryDirectory(prefix="codepacex-v2-control-home-") as home_text:
         home = Path(home_text)
         _initialize_paid_agent_config(pilot=pilot, home=home)
         profile_path = home / "profile.yaml"
         profile_path.write_text(yaml.safe_dump(pilot.experiment_profile.canonical_payload(), sort_keys=True), encoding="utf-8")
-        environment = _child_environment(pilot, home_text, root=root)
+        environment = _child_environment_with_secret(
+            pilot, home_text, root=root, secret_override=provider_secret_override,
+        )
+        environment = _task_agent_environment(environment, python)
+        environment.update(child_environment_overrides or {})
+        try:
+            evidence["task_tool_resolution"] = _task_tool_resolution(environment, python)
+        except ValueError as exc:
+            evidence["failure"] = str(exc)
+            return finish(PaidTaskResult(
+                task["instance_id"], "not_started", "not_exported", "not_run", "not_run",
+                "error", "pre_transport_blocked", terminal_status="pre_agent_blocked",
+                failure_classification="task_venv_resolution_invalid",
+                pre_agent_blocker="task_venv_resolution_invalid",
+            ))
         environment.update(provider_request_budget_environment(
             gate, trial_id=trial_id, maximum_input_tokens_per_request=MAX_INPUT_TOKENS,
             maximum_output_tokens_per_request=MAX_OUTPUT_TOKENS,
@@ -685,57 +934,122 @@ def _live_task_executor(*, root: Path, freeze_payload: dict[str, Any], task: dic
     (task_root / "agent.stdout.ndjson").write_text(process.stdout or "", encoding="utf-8")
     (task_root / "agent.stderr.txt").write_text(process.stderr or "", encoding="utf-8")
     accounting = gate.trial_accounting(trial_id)
+    provider_client_initialized, model_response_observed = _trace_dispatch_evidence(process.stdout or "")
+    common = {
+        "provider_requests": accounting["request_count"],
+        "charge_cny": accounting["actual_cny"],
+        "active_reservation": accounting["active_reservation"],
+        "agent_dispatch_started": True,
+        "provider_client_initialized": provider_client_initialized,
+        "model_response_observed": model_response_observed,
+        "agent_exit_code": process.returncode,
+        "settlement_count": accounting["settlement_count"],
+    }
+    evidence.update({
+        "agent_dispatch_started": True,
+        "provider_client_initialized": provider_client_initialized,
+        "model_response_observed": model_response_observed,
+        "agent_exit_code": process.returncode,
+        "provider_requests": accounting["request_count"],
+        "settlement_count": accounting["settlement_count"],
+        "charge_cny": accounting["actual_cny"],
+    })
     if accounting["budget_blocked"]:
-        return PaidTaskResult(task["instance_id"], "not_completed", "not_exported", "not_run", "not_run", "blocked", "budget_blocked", terminal_status="budget_blocked", charge_cny=accounting["actual_cny"], failure_classification="budget_blocked", active_reservation=accounting["active_reservation"])
+        return finish(PaidTaskResult(
+            task["instance_id"], "failed", "not_exported", "not_run", "not_run",
+            "blocked", "pre_transport_blocked", terminal_status="budget_blocked",
+            failure_classification="budget_blocked", **common,
+        ))
     if accounting["active_reservation"] is not None:
-        return PaidTaskResult(task["instance_id"], "error", "not_exported", "not_run", "not_run", "error", "provider_transport_error", failure_classification="provider_transport_error", active_reservation=accounting["active_reservation"])
+        return finish(PaidTaskResult(
+            task["instance_id"], "failed", "not_exported", "not_run", "not_run",
+            "error", "transport_failed", terminal_status="provider_transport_error",
+            failure_classification="provider_transport_error", **common,
+        ))
     patch = _goal3_extract_patch(workspace)
     patch_path = task_root / "candidate.patch"
     patch_path.write_text(patch, encoding="utf-8")
     candidate_sha = _sha256(patch_path)
     evidence.update({"agent_exit_code": process.returncode, "candidate_sha256": candidate_sha, "workspace_diff_sha256": hashlib.sha256(patch.encode()).hexdigest()})
+    request_ceiling_reached = (
+        accounting.get("provider_request_ceiling_blocked", False)
+        or "ProviderRequestCeilingExceeded" in (process.stderr or "")
+    )
+    if accounting["request_count"] == 0:
+        evidence["failure_classification"] = "agent_dispatch_missing"
+        return finish(PaidTaskResult(
+            task["instance_id"], "failed", "not_exported", "not_run", "not_run",
+            "error", "not_started", terminal_status="agent_dispatch_missing",
+            candidate_sha256=candidate_sha, workspace_diff_sha256=candidate_sha,
+            failure_classification="agent_dispatch_missing", **common,
+        ))
+    if process.returncode and not request_ceiling_reached:
+        evidence["failure_classification"] = "runner_error"
+        return finish(PaidTaskResult(
+            task["instance_id"], "failed",
+            "exported_nonempty" if patch.strip() else "not_exported", "not_run", "not_run",
+            "error", "completed", terminal_status="runner_error",
+            candidate_sha256=candidate_sha, workspace_diff_sha256=candidate_sha,
+            candidate_diff_identity=bool(patch.strip()), failure_classification="runner_error",
+            **common,
+        ))
     post_edit = _run(test_command, cwd=workspace)
     (task_root / "post-edit.stdout.txt").write_text(post_edit.stdout, encoding="utf-8")
     (task_root / "post-edit.stderr.txt").write_text(post_edit.stderr, encoding="utf-8")
     evidence["post_edit_test"] = {"command": test_command, "exit_code": post_edit.returncode}
-    request_ceiling_reached = "ProviderRequestCeilingExceeded" in (process.stderr or "")
     if not patch.strip():
         evidence["failure_classification"] = (
             "request_ceiling_reached" if request_ceiling_reached else "agent_no_candidate"
         )
-        _write_json(task_root / "task-result.json", evidence)
-        return PaidTaskResult(
-            task["instance_id"], "completed", "not_exported", "executed", "not_run",
-            "completed", "completed", terminal_status=evidence["failure_classification"],
-            provider_requests=accounting["request_count"], charge_cny=accounting["actual_cny"],
+        return finish(PaidTaskResult(
+            task["instance_id"], "completed_without_candidate", "not_exported", "executed", "not_run",
+            "completed", "pre_transport_blocked" if request_ceiling_reached else "completed",
+            terminal_status=evidence["failure_classification"],
             candidate_sha256=candidate_sha, workspace_diff_sha256=candidate_sha,
-            candidate_diff_identity=True, failure_classification=evidence["failure_classification"],
-        )
-    if process.returncode and not request_ceiling_reached:
-        evidence["failure_classification"] = "runner_error"
-        _write_json(task_root / "task-result.json", evidence)
-        return PaidTaskResult(task["instance_id"], "error", "exported_nonempty", "executed", "not_run", "error", "completed", terminal_status="runner_error", provider_requests=accounting["request_count"], charge_cny=accounting["actual_cny"], candidate_sha256=candidate_sha, workspace_diff_sha256=candidate_sha, candidate_diff_identity=True, failure_classification="runner_error")
+            candidate_diff_identity=False, failure_classification=evidence["failure_classification"],
+            **common,
+        ))
     prediction = task_root / "prediction.json"
     _write_json(prediction, [{"instance_id": task["instance_id"], "model_name_or_path": pilot.model_id, "model_patch": patch}])
     try:
         evaluator_run_id = f"{run_id}-{task['instance_id']}"
-        evaluated = run_official_evaluator(dataset_name=SWE_ENVIRONMENT["dataset"], split=SWE_ENVIRONMENT["split"], predictions_path=prediction, instance_ids=[task["instance_id"]], max_workers=1, run_id=evaluator_run_id, namespace=SWE_ENVIRONMENT["evaluator_namespace"], cwd=task_root, evaluator_architecture="native")
+        evaluated = evaluator_runner(dataset_name=SWE_ENVIRONMENT["dataset"], split=SWE_ENVIRONMENT["split"], predictions_path=prediction, instance_ids=[task["instance_id"]], max_workers=1, run_id=evaluator_run_id, namespace=SWE_ENVIRONMENT["evaluator_namespace"], cwd=task_root, evaluator_architecture="native")
         (task_root / "evaluator.stdout.txt").write_text((evaluated.stdout or "") + "\n" + (evaluated.stderr or ""), encoding="utf-8")
         if evaluated.returncode:
             raise RuntimeError(f"official evaluator exit {evaluated.returncode}")
-        report = official_evaluator_report_path(cwd=task_root, run_id=evaluator_run_id, model_id=pilot.model_id, instance_id=task["instance_id"])
-        resolved = collect_goal3_official_outcome(report, task["instance_id"])
+        report = evaluator_report_locator(cwd=task_root, run_id=evaluator_run_id, model_id=pilot.model_id, instance_id=task["instance_id"])
+        resolved = outcome_collector(report, task["instance_id"])
         report_copy = task_root / "official-report.json"
         shutil.copyfile(report, report_copy)
     except RuntimeError as exc:
         status = "evaluator_unavailable" if "not installed" in str(exc).lower() else "evaluator_execution_error"
-        return PaidTaskResult(task["instance_id"], "completed", "exported_nonempty", "executed", status, "error", "completed", provider_requests=accounting["request_count"], charge_cny=accounting["actual_cny"], candidate_sha256=candidate_sha, workspace_diff_sha256=candidate_sha, candidate_diff_identity=True, failure_classification=status)
+        return finish(PaidTaskResult(
+            task["instance_id"], "completed_with_candidate", "exported_nonempty", "executed",
+            status, "error", "pre_transport_blocked" if request_ceiling_reached else "completed",
+            terminal_status=status, candidate_sha256=candidate_sha,
+            workspace_diff_sha256=candidate_sha, candidate_diff_identity=True,
+            failure_classification=status, **common,
+        ))
     except (OSError, ValueError, subprocess.SubprocessError):
-        return PaidTaskResult(task["instance_id"], "completed", "exported_nonempty", "executed", "evaluator_report_selection_error", "error", "completed", provider_requests=accounting["request_count"], charge_cny=accounting["actual_cny"], candidate_sha256=candidate_sha, workspace_diff_sha256=candidate_sha, candidate_diff_identity=True, failure_classification="evaluator_report_selection_error")
+        return finish(PaidTaskResult(
+            task["instance_id"], "completed_with_candidate", "exported_nonempty", "executed",
+            "evaluator_report_selection_error", "error",
+            "pre_transport_blocked" if request_ceiling_reached else "completed",
+            terminal_status="evaluator_report_selection_error", candidate_sha256=candidate_sha,
+            workspace_diff_sha256=candidate_sha, candidate_diff_identity=True,
+            failure_classification="evaluator_report_selection_error", **common,
+        ))
     terminal_status = "request_ceiling_reached" if request_ceiling_reached else "resolved" if resolved else "unresolved"
     evidence.update({"resolved": resolved, "official_report_sha256": _sha256(report_copy), "provider_requests": accounting["request_count"], "charge_cny": accounting["actual_cny"], "terminal_status": terminal_status})
-    _write_json(task_root / "task-result.json", evidence)
-    return PaidTaskResult(task["instance_id"], "completed", "exported_nonempty", "executed", "completed", "completed", "completed", terminal_status=terminal_status, provider_requests=accounting["request_count"], charge_cny=accounting["actual_cny"], candidate_sha256=candidate_sha, workspace_diff_sha256=candidate_sha, candidate_diff_identity=True, evaluator_report_sha256=_sha256(report_copy), resolved=resolved, failure_classification="request_ceiling_reached" if request_ceiling_reached else None)
+    return finish(PaidTaskResult(
+        task["instance_id"], "completed_with_candidate", "exported_nonempty", "executed",
+        "completed", "completed", "pre_transport_blocked" if request_ceiling_reached else "completed",
+        terminal_status=terminal_status, candidate_sha256=candidate_sha,
+        workspace_diff_sha256=candidate_sha, candidate_diff_identity=True,
+        evaluator_report_sha256=_sha256(report_copy), resolved=resolved,
+        failure_classification="request_ceiling_reached" if request_ceiling_reached else None,
+        **common,
+    ))
 
 
 def run_paid_canary(*, root: Path, freeze: Path, artifact_root: Path, expected_freeze_sha256: str, approved_hard_cap_cny: str, authorization_acknowledgement: str, run_id: str, executor: Callable[[dict[str, str]], PaidTaskResult] | None = None) -> dict[str, Any]:
@@ -882,7 +1196,20 @@ def run_shadow_canary(*, root: Path, freeze: Path, preflight_summary: Path, arti
             "settlement": settlement.model_dump(mode="json"), "environment_blocker": None,
         }
         _write_json(task_root / "task-result.json", evidence)
-        return PaidTaskResult(instance_id=instance_id, agent_status="completed", candidate_status="exported_nonempty", validation_status="executed", evaluator_status="completed", runner_status="completed", provider_status="simulated_settled", terminal_status="resolved" if resolved else "unresolved", provider_requests=1, usage={"input_tokens": 100_000, "output_tokens": 2_000}, charge_cny=str(settlement.actual_cny), candidate_sha256=candidate_sha, workspace_diff_sha256=candidate_sha, candidate_diff_identity=True, evaluator_report_sha256=_sha256(selected), resolved=resolved)
+        return PaidTaskResult(
+            instance_id=instance_id, agent_status="completed_with_candidate",
+            candidate_status="exported_nonempty", validation_status="executed",
+            evaluator_status="completed", runner_status="completed", provider_status="completed",
+            terminal_status="resolved" if resolved else "unresolved", provider_requests=1,
+            usage={"input_tokens": 100_000, "output_tokens": 2_000},
+            charge_cny=str(settlement.actual_cny), candidate_sha256=candidate_sha,
+            workspace_diff_sha256=candidate_sha, candidate_diff_identity=True,
+            evaluator_report_sha256=_sha256(selected), resolved=resolved,
+            live_executor_invoked=True, agent_dispatch_started=True,
+            provider_client_initialized=True, model_response_observed=True,
+            agent_exit_code=0, settlement_count=1,
+            trial_id=f"swe/v2-control-shadow/{run_id}/{instance_id}",
+        )
 
     results = execute_paid_canary(root=root, freeze=freeze, paid_execution=True, executor=executor)
     ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))

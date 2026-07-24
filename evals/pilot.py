@@ -13,7 +13,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -224,15 +224,21 @@ def _configuration_error(
 
 def _child_environment(
     config: PilotConfig, home: str, *, root: Path,
+    source_environment: Mapping[str, str] | None = None,
+    provider_secret: str | None = None,
 ) -> dict[str, str]:
     """Bind the isolated eval child to the frozen checkout and credential."""
+    source = dict(os.environ) if source_environment is None else dict(source_environment)
     environment = {
-        key: value for key, value in os.environ.items()
+        key: value for key, value in source.items()
         if key in _ENV_NAMES or key.startswith("LC_")
     }
     environment["HOME"] = home
     environment["PYTHONPATH"] = str(root.resolve())
-    environment[config.api_key_env] = os.environ[config.api_key_env]
+    secret = source.get(config.api_key_env) if provider_secret is None else provider_secret
+    if secret is None:
+        raise KeyError(config.api_key_env)
+    environment[config.api_key_env] = secret
     return environment
 
 
