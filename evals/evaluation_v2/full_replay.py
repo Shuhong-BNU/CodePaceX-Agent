@@ -513,6 +513,14 @@ def canonical_task_environment_plan(task: Mapping[str, Any], contract: Mapping[s
         "editable_target": str(contract["editable_target"]),
         "dependencies": [str(item) for item in contract["dependencies"]],
         "test_target": str(contract["test_target"]),
+        "bootstrap_environment": {
+            str(key): str(value)
+            for key, value in contract.get("bootstrap_environment", {}).items()
+        },
+        "disk_budget": {
+            "minimum_available_bytes": int(contract["disk_budget"]["minimum_available_bytes"]),
+            "minimum_available_inodes": int(contract["disk_budget"]["minimum_available_inodes"]),
+        },
     }
     if not plan["editable_target"] or not plan["test_target"]:
         raise ValueError("canonical task environment plan is incomplete")
@@ -524,6 +532,8 @@ def _bootstrap(workspace: Path, contract: Mapping[str, Any]) -> tuple[Path, list
         workspace,
         [str(item) for item in contract["dependencies"]],
         editable_target=str(contract["editable_target"]),
+        environment=contract.get("bootstrap_environment", {}),
+        disk_budget=contract.get("disk_budget", {}),
     )
 
 
@@ -601,6 +611,19 @@ def preflight_task(
             else "task_environment_blocked" if result["task_workspace_materialized"]
             else "runner_wiring_blocked"
         )
+    venv_path = workspace / ".evaluation-v2-preflight-venv"
+    disk_before_cleanup = control_canary._disk_usage_evidence(
+        workspace, venv_path, sys.executable,
+    )
+    control_canary._cleanup_task_environment(workspace)
+    disk_after_cleanup = control_canary._disk_usage_evidence(
+        workspace, venv_path, sys.executable,
+    )
+    result["disk_usage"] = {
+        "before_cleanup": disk_before_cleanup,
+        "after_cleanup": disk_after_cleanup,
+    }
+    _write_json(evidence_root / "disk-usage.json", result["disk_usage"])
     _write_json(evidence_root / "preflight-result.json", result)
     return result
 
@@ -611,8 +634,7 @@ def run_preflight(root: Path, artifact_root: Path) -> dict[str, Any]:
         raise ValueError("refusing to overwrite full replay preflight evidence")
     artifact_root.mkdir(parents=True)
     tasks = load_tasks(root)
-    environment = _read_json(root / ENVIRONMENT_CONTRACT)
-    contracts = {item["instance_id"]: item for item in environment["tasks"]}
+    contracts = _task_environment_contract(root)
     results = [
         preflight_task(task, contracts[task["instance_id"]], work_root=artifact_root / "tasks")
         for task in tasks
@@ -981,7 +1003,13 @@ def _task_environment_contract(root: Path) -> dict[str, dict[str, Any]]:
     contracts = environment.get("tasks")
     if not isinstance(contracts, list):
         raise ValueError("full replay environment contract has no task list")
-    by_id = {str(item.get("instance_id")): item for item in contracts if isinstance(item, dict)}
+    disk_budget = environment.get("disk_budget")
+    if not isinstance(disk_budget, dict):
+        raise ValueError("full replay environment contract has no disk budget")
+    by_id = {
+        str(item.get("instance_id")): {**item, "disk_budget": dict(disk_budget)}
+        for item in contracts if isinstance(item, dict)
+    }
     if tuple(by_id) != GOAL4_ORDER:
         raise ValueError("full replay environment contract order changed")
     return by_id
@@ -1002,6 +1030,8 @@ def _full_task_executor(
             "preflight_dependencies": plan["dependencies"],
             "editable_target": plan["editable_target"],
             "test_target": plan["test_target"],
+            "bootstrap_environment": plan["bootstrap_environment"],
+            "disk_budget": plan["disk_budget"],
         }, gate=gate,
         artifact_root=artifact_root, run_id=run_id, payload_path=payload_path,
         trial_namespace="v2-full-20",

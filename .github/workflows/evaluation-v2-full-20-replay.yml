@@ -86,12 +86,19 @@ jobs:
           set -euo pipefail
           python -m evals.evaluation_v2.full_replay preflight --root . --artifact-root "$FULL_REPLAY_ROOT/preflight" > "$FULL_REPLAY_ROOT/preflight-result.json"
           python - "$FULL_REPLAY_ROOT/preflight/preflight-summary.json" <<'PY'
-          import json, sys
+          import json, pathlib, sys
           summary = json.load(open(sys.argv[1], encoding='utf-8'))
           assert summary['passed'] is True
           assert summary['ready_count'] == 20
           assert summary['provider_requests'] == summary['usage'] == 0
           assert summary['charge_cny'] == '0' and summary['provider_secret_read'] is False
+          assert all(item['disk_usage']['before_cleanup']['df_h']['exit_code'] == 0 for item in summary['tasks'])
+          assert all(item['disk_usage']['before_cleanup']['df_i']['exit_code'] == 0 for item in summary['tasks'])
+          assert all(item['disk_usage']['after_cleanup']['venv_bytes'] == 0 for item in summary['tasks'])
+          instructlab = next(item for item in summary['tasks'] if item['instance_id'] == 'instructlab__instructlab-2540')
+          bootstrap = json.load(open(pathlib.Path(sys.argv[1]).parent / 'tasks' / instructlab['instance_id'] / 'evidence' / 'dependency-bootstrap.json', encoding='utf-8'))
+          assert bootstrap[0]['environment']['PIP_EXTRA_INDEX_URL'] == 'https://download.pytorch.org/whl/cpu'
+          assert bootstrap[0]['environment']['CMAKE_ARGS'] == '-DLLAMA_NATIVE=off'
           PY
       - name: Run the complete 6 plus 14 shadow without Provider transport
         run: |

@@ -23,7 +23,7 @@ import venv
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import yaml
 from codepacex.config import load_config as load_codepacex_config
@@ -333,23 +333,108 @@ def _environment_blocker(result: subprocess.CompletedProcess[str]) -> str | None
 
 def _bootstrap(
     workspace: Path, preflight_dependencies: Sequence[str], *, editable_target: str = ".",
+    environment: Mapping[str, str] | None = None,
+    disk_budget: Mapping[str, int] | None = None,
 ) -> tuple[Path, list[dict[str, Any]]]:
     venv_path = workspace / ".evaluation-v2-preflight-venv"
-    venv.EnvBuilder(with_pip=True, clear=True, system_site_packages=False).create(venv_path)
     python = venv_path / "bin" / "python"
+    before = _disk_usage_evidence(workspace, venv_path, sys.executable)
+    blocker = _disk_budget_blocker(before, disk_budget or {})
+    if blocker:
+        return python, [{
+            "command": [], "exit_code": 1, "stdout": "", "stderr": blocker,
+            "preflight_dependencies": list(preflight_dependencies),
+            "disk_budget_blocker": blocker, "disk_before": before,
+            "disk_after": before,
+        }]
+    venv.EnvBuilder(with_pip=True, clear=True, system_site_packages=False).create(venv_path)
     command = [
         str(python), "-m", "pip", "install", "--disable-pip-version-check",
-        "-e", editable_target, "pytest", *preflight_dependencies,
+        "--no-cache-dir", "-e", editable_target, "pytest", *preflight_dependencies,
     ]
-    install = _run(command, cwd=workspace)
+    child_environment = os.environ.copy()
+    child_environment.update({str(key): str(value) for key, value in (environment or {}).items()})
+    child_environment["PIP_NO_CACHE_DIR"] = "1"
+    install = subprocess.run(
+        command, cwd=workspace, env=child_environment, text=True,
+        capture_output=True, timeout=1200, check=False,
+    )
+    after = _disk_usage_evidence(workspace, venv_path, python)
     logs = [{
         "command": command,
         "exit_code": install.returncode,
         "stdout": install.stdout,
         "stderr": install.stderr,
         "preflight_dependencies": list(preflight_dependencies),
+        "environment": {str(key): str(value) for key, value in (environment or {}).items()},
+        "disk_budget": dict(disk_budget or {}),
+        "disk_budget_blocker": None,
+        "disk_before": before,
+        "disk_after": after,
     }]
     return python, logs
+
+
+def _measurement(command: Sequence[str], *, cwd: Path) -> dict[str, Any]:
+    result = subprocess.run(
+        list(command), cwd=cwd, text=True, capture_output=True,
+        timeout=60, check=False,
+    )
+    return {
+        "command": list(command), "exit_code": result.returncode,
+        "stdout": result.stdout, "stderr": result.stderr,
+    }
+
+
+def _directory_size_bytes(path: Path) -> int:
+    if not path.exists():
+        return 0
+    result = subprocess.run(
+        ["du", "-sk", str(path)], text=True, capture_output=True,
+        timeout=60, check=False,
+    )
+    if result.returncode or not result.stdout.strip():
+        return 0
+    return int(result.stdout.split()[0]) * 1024
+
+
+def _disk_usage_evidence(workspace: Path, venv_path: Path, python: str | Path) -> dict[str, Any]:
+    workspace.mkdir(parents=True, exist_ok=True)
+    stats = os.statvfs(workspace)
+    cache = subprocess.run(
+        [str(python), "-m", "pip", "cache", "dir"], cwd=workspace,
+        text=True, capture_output=True, timeout=60, check=False,
+    )
+    cache_path = Path(cache.stdout.strip()) if cache.returncode == 0 and cache.stdout.strip() else None
+    return {
+        "df_h": _measurement(["df", "-h", str(workspace)], cwd=workspace),
+        "df_i": _measurement(["df", "-i", str(workspace)], cwd=workspace),
+        "available_bytes": stats.f_bavail * stats.f_frsize,
+        "available_inodes": stats.f_favail,
+        "workspace_bytes": _directory_size_bytes(workspace),
+        "venv_bytes": _directory_size_bytes(venv_path),
+        "pip_cache_path": None if cache_path is None else str(cache_path),
+        "pip_cache_bytes": 0 if cache_path is None else _directory_size_bytes(cache_path),
+    }
+
+
+def _disk_budget_blocker(snapshot: Mapping[str, Any], budget: Mapping[str, int]) -> str | None:
+    minimum_bytes = int(budget.get("minimum_available_bytes", 0))
+    minimum_inodes = int(budget.get("minimum_available_inodes", 0))
+    if int(snapshot.get("available_bytes", 0)) < minimum_bytes:
+        return "disk_budget_bytes_insufficient"
+    if int(snapshot.get("available_inodes", 0)) < minimum_inodes:
+        return "disk_budget_inodes_insufficient"
+    return None
+
+
+def _cleanup_task_environment(workspace: Path) -> None:
+    for path in (
+        workspace / ".evaluation-v2-preflight-venv",
+        workspace / ".evaluation-v2-pip-cache",
+    ):
+        if path.exists():
+            shutil.rmtree(path)
 
 
 def _collected_test_count(result: subprocess.CompletedProcess[str]) -> int:
@@ -847,6 +932,16 @@ def _live_task_executor(
             result.terminal_status = "host_runtime_contaminated"
             result.failure_classification = "host_runtime_contaminated"
             result.resolved = None
+        venv_path = workspace / ".evaluation-v2-preflight-venv"
+        disk_before_cleanup = _disk_usage_evidence(workspace, venv_path, sys.executable)
+        _cleanup_task_environment(workspace)
+        disk_after_cleanup = _disk_usage_evidence(workspace, venv_path, sys.executable)
+        disk_evidence = {
+            "before_cleanup": disk_before_cleanup,
+            "after_cleanup": disk_after_cleanup,
+        }
+        _write_json(task_root / "disk-usage.json", disk_evidence)
+        evidence["disk_usage"] = disk_evidence
         normalized = enforce_dispatch_invariant(result)
         _write_json(task_root / "task-result.json", {**evidence, **normalized.__dict__})
         return normalized
@@ -865,22 +960,32 @@ def _live_task_executor(
         python, bootstrap = _bootstrap(
             workspace, metadata["preflight_dependencies"],
             editable_target=str(metadata.get("editable_target", ".")),
+            environment=metadata.get("bootstrap_environment", {}),
+            disk_budget=metadata.get("disk_budget", {}),
         )
         _write_json(task_root / "dependency-bootstrap.json", bootstrap)
         if not bootstrap or any(item["exit_code"] for item in bootstrap):
-            raise RuntimeError("dependency_bootstrap_failed")
+            blocker = next(
+                (item.get("disk_budget_blocker") for item in bootstrap if item.get("disk_budget_blocker")),
+                None,
+            )
+            raise RuntimeError(blocker or "dependency_bootstrap_failed")
         test_command = [str(python), "-m", "pytest", str(metadata["test_target"])]
         pre_edit = _run(test_command, cwd=workspace)
         (task_root / "pre-edit.stdout.txt").write_text(pre_edit.stdout, encoding="utf-8")
         (task_root / "pre-edit.stderr.txt").write_text(pre_edit.stderr, encoding="utf-8")
         evidence["pre_edit_test"] = {"command": test_command, "exit_code": pre_edit.returncode}
     except Exception as exc:
-        evidence["failure"] = str(exc)
+        blocker = str(exc)
+        evidence["failure"] = blocker
         return finish(PaidTaskResult(
             task["instance_id"], "not_started", "not_exported", "not_run", "not_run",
             "error", "pre_transport_blocked", terminal_status="pre_agent_blocked",
-            failure_classification="task_environment_blocked",
-            pre_agent_blocker="task_environment_blocked",
+            failure_classification=(
+                "disk_budget_blocked" if blocker.startswith("disk_budget_")
+                else "task_environment_blocked"
+            ),
+            pre_agent_blocker=blocker,
         ))
     probe = _agent_runtime_probe(root=root, task_root=task_root)
     evidence["agent_runtime_probe_exit_code"] = probe.returncode
@@ -910,6 +1015,11 @@ def _live_task_executor(
             pilot, home_text, root=root, secret_override=provider_secret_override,
         )
         environment = _task_agent_environment(environment, python)
+        environment.update({
+            str(key): str(value)
+            for key, value in metadata.get("bootstrap_environment", {}).items()
+        })
+        environment["PIP_NO_CACHE_DIR"] = "1"
         environment.update(child_environment_overrides or {})
         try:
             evidence["task_tool_resolution"] = _task_tool_resolution(environment, python)
