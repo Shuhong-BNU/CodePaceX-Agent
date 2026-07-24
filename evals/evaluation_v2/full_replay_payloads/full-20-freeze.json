@@ -22,7 +22,7 @@
     "recommendation_basis": "retains the reviewed Stage C 80/250 envelope over Goal 4 selected costs; rolling reservations fail closed and completion is not guaranteed",
     "rolling_reservation": "one_provider_request"
   },
-  "environment_contract_sha256": "d81e0a4b207ba9e0e3a459c579fbfd133ecb64f0b5e4c109105bb4695f1fb0c7",
+  "environment_contract_sha256": "ed57385f8dd239f628081a47efcc442ac47cb8b5a4a3d84209743507ee068215",
   "experiment_name": "evaluation-v2-goal4-full-20-replay",
   "fresh_workspace_authorization_allocation_ledger_required": true,
   "goal4_source": {

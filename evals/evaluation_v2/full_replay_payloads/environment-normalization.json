@@ -34,7 +34,7 @@
     {
       "instance_id": "deepset-ai__haystack-8489",
       "editable_target": ".[test]",
-      "dependencies": ["ddtrace==2.15.0rc2"],
+      "dependencies": ["ddtrace==2.15.0rc2", "opentelemetry-sdk"],
       "test_target": "test/tracing/test_tracer.py"
     },
     {
@@ -58,13 +58,13 @@
     {
       "instance_id": "bridgecrewio__checkov-6893",
       "editable_target": ".",
-      "dependencies": ["pytest-mock", "pytest-xdist"],
+      "dependencies": ["pytest-mock", "pytest-xdist", "parameterized"],
       "test_target": "tests/terraform/graph/runner/test_graph_builder.py"
     },
     {
       "instance_id": "bridgecrewio__checkov-6895",
       "editable_target": ".",
-      "dependencies": ["pytest-mock", "pytest-xdist"],
+      "dependencies": ["pytest-mock", "pytest-xdist", "parameterized"],
       "test_target": "tests/terraform/graph/runner/test_graph_builder.py"
     },
     {
@@ -100,7 +100,7 @@
     {
       "instance_id": "delgan__loguru-1297",
       "editable_target": ".",
-      "dependencies": ["freezegun==1.5.0"],
+      "dependencies": ["freezegun==1.5.0", "pytest-mypy-plugins==3.2.0"],
       "test_target": "tests/test_add_option_enqueue.py"
     },
     {

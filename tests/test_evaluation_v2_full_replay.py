@@ -60,11 +60,15 @@ def test_environment_normalization_covers_ci_specific_bootstrap_and_selector_req
     assert contracts["cyclotruc__gitingest-134"]["test_target"].endswith(
         "test_parse_patterns_valid"
     )
-    assert contracts["deepset-ai__haystack-8489"]["dependencies"] == ["ddtrace==2.15.0rc2"]
-    assert contracts["bridgecrewio__checkov-6893"]["dependencies"] == [
-        "pytest-mock", "pytest-xdist",
+    assert contracts["deepset-ai__haystack-8489"]["dependencies"] == [
+        "ddtrace==2.15.0rc2", "opentelemetry-sdk",
     ]
-    assert contracts["delgan__loguru-1297"]["dependencies"] == ["freezegun==1.5.0"]
+    assert contracts["bridgecrewio__checkov-6893"]["dependencies"] == [
+        "pytest-mock", "pytest-xdist", "parameterized",
+    ]
+    assert contracts["delgan__loguru-1297"]["dependencies"] == [
+        "freezegun==1.5.0", "pytest-mypy-plugins==3.2.0",
+    ]
     assert contracts["delgan__loguru-1306"]["dependencies"] == ["freezegun==1.5.0"]
     assert contracts["deepset-ai__haystack-8525"]["dependencies"] == []
 
