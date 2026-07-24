@@ -73,6 +73,42 @@ def test_environment_normalization_covers_ci_specific_bootstrap_and_selector_req
     assert contracts["deepset-ai__haystack-8525"]["dependencies"] == []
 
 
+def test_paid_and_preflight_use_identical_canonical_environment_plans() -> None:
+    tasks = {item["instance_id"]: item for item in full_replay.load_tasks(ROOT)}
+    contracts = full_replay._task_environment_contract(ROOT)
+    plans = [full_replay.canonical_task_environment_plan(tasks[item], contracts[item]) for item in full_replay.GOAL4_ORDER]
+    assert [plan["instance_id"] for plan in plans] == list(full_replay.GOAL4_ORDER)
+    assert plans[0] == {
+        "instance_id": "aws-cloudformation__cfn-lint-3749",
+        "editable_target": ".[test]",
+        "dependencies": [],
+        "test_target": "test/unit/module/template/transforms/test_language_extensions.py",
+    }
+
+
+def test_full_paid_executor_passes_the_canonical_plan_to_the_shared_runner(tmp_path: Path) -> None:
+    task = next(item for item in full_replay.load_tasks(ROOT) if item["instance_id"] == full_replay.GOAL4_ORDER[0])
+    metadata = full_replay._task_environment_contract(ROOT)
+    captured: dict[str, object] = {}
+
+    def fake_executor(**kwargs):
+        captured.update(kwargs)
+        return full_replay.control_canary.PaidTaskResult(
+            task["instance_id"], "not_started", "not_exported", "not_run", "not_run",
+            "not_started", "not_started",
+        )
+
+    with patch.object(full_replay.control_canary, "_live_task_executor", fake_executor):
+        full_replay._full_task_executor(
+            ROOT, {}, metadata, object(), tmp_path, "run-id", task,
+        )
+    assert captured["metadata"] == {
+        "preflight_dependencies": [],
+        "editable_target": ".[test]",
+        "test_target": "test/unit/module/template/transforms/test_language_extensions.py",
+    }
+
+
 def test_preflight_persists_collection_execution_and_artifact_evidence(
     tmp_path: Path, monkeypatch,
 ) -> None:

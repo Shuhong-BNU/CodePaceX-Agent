@@ -316,14 +316,14 @@ def _environment_blocker(result: subprocess.CompletedProcess[str]) -> str | None
 
 
 def _bootstrap(
-    workspace: Path, preflight_dependencies: Sequence[str],
+    workspace: Path, preflight_dependencies: Sequence[str], *, editable_target: str = ".",
 ) -> tuple[Path, list[dict[str, Any]]]:
     venv_path = workspace / ".evaluation-v2-preflight-venv"
     venv.EnvBuilder(with_pip=True, clear=True).create(venv_path)
     python = venv_path / "bin" / "python"
     command = [
         str(python), "-m", "pip", "install", "--disable-pip-version-check",
-        "-e", ".", "pytest", *preflight_dependencies,
+        "-e", editable_target, "pytest", *preflight_dependencies,
     ]
     install = _run(command, cwd=workspace)
     logs = [{
@@ -649,7 +649,10 @@ def _live_task_executor(*, root: Path, freeze_payload: dict[str, Any], task: dic
     }
     try:
         _goal3_materialize_instance(task, workspace)
-        python, bootstrap = _bootstrap(workspace, metadata["preflight_dependencies"])
+        python, bootstrap = _bootstrap(
+            workspace, metadata["preflight_dependencies"],
+            editable_target=str(metadata.get("editable_target", ".")),
+        )
         _write_json(task_root / "dependency-bootstrap.json", bootstrap)
         test_command = [str(python), "-m", "pytest", str(metadata["test_target"])]
         pre_edit = _run(test_command, cwd=workspace)
