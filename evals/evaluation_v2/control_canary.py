@@ -698,10 +698,23 @@ def _live_task_executor(*, root: Path, freeze_payload: dict[str, Any], task: dic
     (task_root / "post-edit.stdout.txt").write_text(post_edit.stdout, encoding="utf-8")
     (task_root / "post-edit.stderr.txt").write_text(post_edit.stderr, encoding="utf-8")
     evidence["post_edit_test"] = {"command": test_command, "exit_code": post_edit.returncode}
-    if process.returncode or not patch.strip():
-        evidence["failure_classification"] = "agent_no_candidate" if not patch.strip() else "runner_error"
+    request_ceiling_reached = "ProviderRequestCeilingExceeded" in (process.stderr or "")
+    if not patch.strip():
+        evidence["failure_classification"] = (
+            "request_ceiling_reached" if request_ceiling_reached else "agent_no_candidate"
+        )
         _write_json(task_root / "task-result.json", evidence)
-        return PaidTaskResult(task["instance_id"], "completed" if not process.returncode else "error", "not_exported" if not patch.strip() else "exported_nonempty", "executed", "not_run", "error", "completed", terminal_status="agent_no_candidate" if not patch.strip() else "runner_error", provider_requests=accounting["request_count"], charge_cny=accounting["actual_cny"], candidate_sha256=candidate_sha, workspace_diff_sha256=candidate_sha, candidate_diff_identity=True, failure_classification=evidence["failure_classification"])
+        return PaidTaskResult(
+            task["instance_id"], "completed", "not_exported", "executed", "not_run",
+            "completed", "completed", terminal_status=evidence["failure_classification"],
+            provider_requests=accounting["request_count"], charge_cny=accounting["actual_cny"],
+            candidate_sha256=candidate_sha, workspace_diff_sha256=candidate_sha,
+            candidate_diff_identity=True, failure_classification=evidence["failure_classification"],
+        )
+    if process.returncode and not request_ceiling_reached:
+        evidence["failure_classification"] = "runner_error"
+        _write_json(task_root / "task-result.json", evidence)
+        return PaidTaskResult(task["instance_id"], "error", "exported_nonempty", "executed", "not_run", "error", "completed", terminal_status="runner_error", provider_requests=accounting["request_count"], charge_cny=accounting["actual_cny"], candidate_sha256=candidate_sha, workspace_diff_sha256=candidate_sha, candidate_diff_identity=True, failure_classification="runner_error")
     prediction = task_root / "prediction.json"
     _write_json(prediction, [{"instance_id": task["instance_id"], "model_name_or_path": pilot.model_id, "model_patch": patch}])
     try:
@@ -719,9 +732,10 @@ def _live_task_executor(*, root: Path, freeze_payload: dict[str, Any], task: dic
         return PaidTaskResult(task["instance_id"], "completed", "exported_nonempty", "executed", status, "error", "completed", provider_requests=accounting["request_count"], charge_cny=accounting["actual_cny"], candidate_sha256=candidate_sha, workspace_diff_sha256=candidate_sha, candidate_diff_identity=True, failure_classification=status)
     except (OSError, ValueError, subprocess.SubprocessError):
         return PaidTaskResult(task["instance_id"], "completed", "exported_nonempty", "executed", "evaluator_report_selection_error", "error", "completed", provider_requests=accounting["request_count"], charge_cny=accounting["actual_cny"], candidate_sha256=candidate_sha, workspace_diff_sha256=candidate_sha, candidate_diff_identity=True, failure_classification="evaluator_report_selection_error")
-    evidence.update({"resolved": resolved, "official_report_sha256": _sha256(report_copy), "provider_requests": accounting["request_count"], "charge_cny": accounting["actual_cny"]})
+    terminal_status = "request_ceiling_reached" if request_ceiling_reached else "resolved" if resolved else "unresolved"
+    evidence.update({"resolved": resolved, "official_report_sha256": _sha256(report_copy), "provider_requests": accounting["request_count"], "charge_cny": accounting["actual_cny"], "terminal_status": terminal_status})
     _write_json(task_root / "task-result.json", evidence)
-    return PaidTaskResult(task["instance_id"], "completed", "exported_nonempty", "executed", "completed", "completed", "completed", terminal_status="resolved" if resolved else "unresolved", provider_requests=accounting["request_count"], charge_cny=accounting["actual_cny"], candidate_sha256=candidate_sha, workspace_diff_sha256=candidate_sha, candidate_diff_identity=True, evaluator_report_sha256=_sha256(report_copy), resolved=resolved)
+    return PaidTaskResult(task["instance_id"], "completed", "exported_nonempty", "executed", "completed", "completed", "completed", terminal_status=terminal_status, provider_requests=accounting["request_count"], charge_cny=accounting["actual_cny"], candidate_sha256=candidate_sha, workspace_diff_sha256=candidate_sha, candidate_diff_identity=True, evaluator_report_sha256=_sha256(report_copy), resolved=resolved, failure_classification="request_ceiling_reached" if request_ceiling_reached else None)
 
 
 def run_paid_canary(*, root: Path, freeze: Path, artifact_root: Path, expected_freeze_sha256: str, approved_hard_cap_cny: str, authorization_acknowledgement: str, run_id: str, executor: Callable[[dict[str, str]], PaidTaskResult] | None = None) -> dict[str, Any]:
