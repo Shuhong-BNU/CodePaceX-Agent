@@ -30,6 +30,7 @@ Units in this ledger are intentionally not additive. In particular, MCP Trials, 
 | G3-SWE-PILOT | Goal 3 | Three-task paid SWE Pilot | Instance | 3 | 3 | 3 | 3 | Bailian | `qwen3.7-max-2026-06-08` | CNY 9.078540 | completed Pilot | 1 resolved / 2 unresolved | Native Linux x86_64, official evaluator complete. This is a Pilot, not a formal 20-task result or pass@k. |
 | G4-SWE-FORMAL | Goal 4 | Formal 20-task SWE-bench-Live subset | Instance | 20 | 20 | 25 paid Attempts | 20 | Bailian | `qwen3.7-max-2026-06-08` | CNY 165.044424 verified actual; CNY 170.537160 conservative budget consumption | `GOAL4_ACCEPTED` | 4 resolved / 16 unresolved | Pre-registered Python-only Lite subset, not the full Lite leaderboard or pass@k. Five infrastructure retries are included in Attempts and are not additional Instances. |
 | G4-INFRA-RECOVERY | Goal 4 | Infrastructure recovery Attempts | Attempt | not planned as Instances | 0 additional | 5 | 0 additional | Bailian | `qwen3.7-max-2026-06-08` | CNY 34.158732 historical failed-attempt verified Provider cost | recovered and closed | Final 20 Instances all became scorable | This row is a decomposition of the 25 Attempts and its cost is already included in Goal 4 accounting; do not add it again. |
+| V2.1-CONTROL-CANARY | Evaluation V2.1 | Two historical resolved Goal 4 controls | Instance | 2 | 2 | 2 | 2 | Bailian | `qwen3.7-max-2026-06-08` | CNY 7.412724 actual | complete control canary | 2/2 Candidate, scorable, and resolved | This validates the corrected V2 real execution chain on historical resolved controls only. It is not a 20-task result and must not be generalized to the full Goal 4 matrix. |
 | G5-LONG-CANDIDATE | Goal 5 candidate | Formal long-session follow-up | Session | 3 candidate Sessions | 3 planned | 0 | 0 | not authorized | not selected | CNY 0 | planned/deferred | No result | Candidate only. No Stage B/C, Provider comparison, or eight-hour Session is authorized by this ledger. |
 
 Success/task-failure pairs in the Permission row are terminal Trial outcomes, not pytest counts. Goal 4 selected terminal cost (CNY `130.885692`), historical failed-attempt cost (CNY `34.158732`), uncertain exposure (CNY `5.492736`), and verified actual Provider cost (CNY `165.044424`) remain separate accounting measures.
@@ -52,3 +53,24 @@ These summaries preserve units and exclusions; they are not a grand total.
 CI pytest runs, local pytest runs, Claims validation, secret scans, `git diff --check`, workflow preflights, configuration validation, dry-runs, and dataset/materialization checks are software or evidence verification. They must not be added to any formal Instance, Trial, Attempt, Session, or Control count above.
 
 Artifact identities, hashes, retention, and audit status are tracked in [EVALUATION_ARTIFACT_INDEX.md](EVALUATION_ARTIFACT_INDEX.md).
+
+## Evaluation V2.1 Control Canary evidence
+
+The completed paid Control Canary is bound to Actions run `30031616048`, internal
+Run ID `v2-control-canary-fc5dbd1-20260723T172932Z`, Artifact ID `8573855537`,
+and Artifact digest `sha256:d67537436c144129413048dbbf2ce5ac6f4b80ed25d3f8c492744ed98f33b71d`.
+It used Freeze `28fbadb0fe0b2f3df24f7cb061a55da1c669afe36d3eece2e9e2b40446a117d5`,
+runtime `eb15c230c2033373ae7f0768a51f8743c9fd61acbe78b610b6c38bea0e7d015b`,
+system instruction `f43af3f8b81f58b2970571afb86f69641caf0da49c191cffe4026cf732abd36c`,
+pricing `a09eb6e6955b9fb68d3e011771c948f7a14b7bbca5316a2433cab099d0b643d3`,
+and payload manifest `fc65e40463d44937f851e23f3753359089413c21e5a5c0e7d7c09f79880c5410`.
+
+`beetbox__beets-5495` resolved with 32 requests, CNY `5.498304`, Candidate/diff
+SHA `7e9309fafab4a9a15c81d82c93722c5460f78953a8472118ab783f5fc41516a1`, and
+official report SHA `6f1b08105b850b3af88e1e95a35d38177ac0f93f2d953f8a108a84e370af9edd`.
+`beancount__beancount-931` resolved with 14 requests, CNY `1.914420`,
+Candidate/diff SHA `47304e229ec105a1a39237df649cfb61a4e33f3306498a13d35e31ab0bc9a28e`,
+and official report SHA `ec42a2912a8b494a5aaf29952bd8eed82916fbdfa6b029726eac34860b7fb274`.
+Totals were 46 requests, 571,320 input tokens, 15,469 output tokens, CNY
+`7.412724`, 46 settlements, and `active_reservation=null`. The resulting V2.2
+gate was `V2_2_DIAGNOSTIC_PILOT_GO`; it did not start V2.2 automatically.

@@ -1,0 +1,174 @@
+name: Evaluation V2 Goal 4 full 20-task replay
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/evaluation-v2-full-20-replay.yml"
+      - "evals/evaluation_v2/full_replay.py"
+      - "evals/evaluation_v2/control_canary.py"
+      - "evals/evaluation_v2/full_replay_payloads/**"
+      - "tests/test_evaluation_v2_full_replay.py"
+      - "evals/EVALUATION_HISTORY.md"
+      - "evals/EVALUATION_ARTIFACT_INDEX.md"
+      - "evals/evaluation_v2/FULL_20_REPLAY.md"
+  workflow_dispatch:
+    inputs:
+      paid_execution:
+        description: Separately authorized full 20-task replay only. Defaults to the zero-provider readiness path.
+        required: true
+        type: boolean
+        default: false
+      expected_freeze_sha256:
+        description: Exact committed full-20 Freeze SHA-256 required by a future paid run.
+        required: false
+        type: string
+        default: ''
+      approved_total_hard_cap_cny:
+        description: Exact frozen CNY 250.000000 cap required by a future paid run.
+        required: false
+        type: string
+        default: '250.000000'
+      authorization_acknowledgement:
+        description: Future one-time authorization acknowledgement. Never needed for the zero-provider path.
+        required: false
+        type: string
+        default: ''
+      run_id:
+        description: Fresh future paid run ID. Never needed for the zero-provider path.
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  zero-provider-full-readiness:
+    if: ${{ github.event_name == 'pull_request' || inputs.paid_execution == false }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    env:
+      EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Resolve remote main ref for release readiness
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
+          git rev-parse --verify refs/remotes/origin/main^{commit}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare fresh full-replay artifact directory
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/evaluation-v2-full-20/$GITHUB_RUN_ID"
+          mkdir -p "$root"
+          printf 'FULL_REPLAY_ROOT=%s\n' "$root" >> "$GITHUB_ENV"
+      - name: Install project and frozen official evaluator
+        run: |
+          set -euo pipefail
+          docker info >/dev/null
+          python -m pip install -e . pytest pytest-asyncio
+          evaluator_root="$RUNNER_TEMP/swe-bench-live"
+          git clone --filter=blob:none https://github.com/microsoft/SWE-bench-Live.git "$evaluator_root"
+          git -C "$evaluator_root" checkout --detach "$EVALUATOR_COMMIT"
+          test "$(git -C "$evaluator_root" rev-parse HEAD)" = "$EVALUATOR_COMMIT"
+          python -m pip install -e "$evaluator_root"
+      - name: Validate the frozen Goal 4 full-20 contract
+        run: |
+          set -euo pipefail
+          python -m evals.evaluation_v2.full_replay validate --root . > "$FULL_REPLAY_ROOT/contract-validation.json"
+      - name: Preflight all twenty task environments without Provider transport
+        run: |
+          set -euo pipefail
+          python -m evals.evaluation_v2.full_replay preflight --root . --artifact-root "$FULL_REPLAY_ROOT/preflight" > "$FULL_REPLAY_ROOT/preflight-result.json"
+          python - "$FULL_REPLAY_ROOT/preflight/preflight-summary.json" <<'PY'
+          import json, sys
+          summary = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert summary['passed'] is True
+          assert summary['ready_count'] == 20
+          assert summary['provider_requests'] == summary['usage'] == 0
+          assert summary['charge_cny'] == '0' and summary['provider_secret_read'] is False
+          PY
+      - name: Run the complete 6 plus 14 shadow without Provider transport
+        run: |
+          set -euo pipefail
+          python -m evals.evaluation_v2.full_replay shadow --root . --preflight-summary "$FULL_REPLAY_ROOT/preflight/preflight-summary.json" --artifact-root "$FULL_REPLAY_ROOT/shadow" --run-id "shadow-$GITHUB_RUN_ID" > "$FULL_REPLAY_ROOT/shadow-result.json"
+          python - "$FULL_REPLAY_ROOT/shadow/full-20-shadow-summary.json" <<'PY'
+          import json, sys
+          summary = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert summary['paid_execution'] is False
+          assert summary['provider_requests'] == summary['usage'] == 0
+          assert summary['charge_cny'] == '0' and summary['provider_secret_read'] is False
+          assert summary['phase_a_completed'] and summary['phase_b_admitted'] and summary['phase_b_completed']
+          assert summary['ledger_closed'] and summary['active_reservation'] is None
+          assert len(summary['results']) == 20
+          PY
+      - name: Compile release readiness on main only
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          set -euo pipefail
+          python -m evals.evaluation_v2.full_replay release-check --root . --preflight-summary "$FULL_REPLAY_ROOT/preflight/preflight-summary.json" --shadow-summary "$FULL_REPLAY_ROOT/shadow/full-20-shadow-summary.json" --output "$FULL_REPLAY_ROOT/release-check.json" > "$FULL_REPLAY_ROOT/release-check-result.json"
+          python - "$FULL_REPLAY_ROOT/release-check.json" <<'PY'
+          import json, sys
+          result = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert result['status'] == 'READY_FOR_SINGLE_FULL_20_PAID_REPLAY'
+          assert result['head'] == result['origin_main']
+          assert result['provider_requests'] == result['usage'] == 0
+          assert result['charge_cny'] == '0' and result['provider_secret_read'] is False
+          PY
+      - name: Upload full replay readiness Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaluation-v2-full-20-readiness-${{ github.run_id }}
+          path: ${{ runner.temp }}/evaluation-v2-full-20/${{ github.run_id }}
+          if-no-files-found: warn
+
+  paid-execution:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.paid_execution == true && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 1440
+    env:
+      EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be
+      BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install project and frozen official evaluator
+        run: |
+          set -euo pipefail
+          docker info >/dev/null
+          python -m pip install -e . pytest pytest-asyncio
+          evaluator_root="$RUNNER_TEMP/swe-bench-live"
+          git clone --filter=blob:none https://github.com/microsoft/SWE-bench-Live.git "$evaluator_root"
+          git -C "$evaluator_root" checkout --detach "$EVALUATOR_COMMIT"
+          test "$(git -C "$evaluator_root" rev-parse HEAD)" = "$EVALUATOR_COMMIT"
+          python -m pip install -e "$evaluator_root"
+      - name: Run the explicitly authorized full 20-task replay
+        run: |
+          set -euo pipefail
+          test '${{ inputs.paid_execution }}' = true
+          root="$RUNNER_TEMP/evaluation-v2-full-20-paid/${{ inputs.run_id }}"
+          mkdir -p "$root"
+          python -m evals.evaluation_v2.full_replay preflight --root . --artifact-root "$root/preflight" > "$root/preflight-result.json"
+          python - "$root/preflight/preflight-summary.json" <<'PY'
+          import json, sys
+          summary = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert summary['passed'] is True and summary['ready_count'] == 20
+          PY
+          python -m evals.evaluation_v2.full_replay paid-run --confirm-paid-execution --root . --artifact-root "$root/paid" --expected-freeze-sha256 '${{ inputs.expected_freeze_sha256 }}' --approved-total-hard-cap-cny '${{ inputs.approved_total_hard_cap_cny }}' --authorization-acknowledgement '${{ inputs.authorization_acknowledgement }}' --run-id '${{ inputs.run_id }}' > "$root/paid-result.json"
+      - name: Upload paid full replay evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaluation-v2-full-20-paid-${{ inputs.run_id }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/evaluation-v2-full-20-paid/${{ inputs.run_id }}
+          if-no-files-found: warn
