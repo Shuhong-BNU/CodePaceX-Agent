@@ -277,6 +277,8 @@ def _loopback_agent_provider_dispatch(
     gate = _fresh_gate(root, artifact_root, "zero-provider-loopback-agent-provider")
     task, environment = _task(root), _environment(root)
     plan = full_replay.canonical_task_environment_plan(task, environment)
+    payload_path = artifact_root / "safe-payloads" / f"{TASK_ID}.json"
+    _write_json(payload_path, task)
     with full_replay._loopback_fake_provider("single_response") as (provider, base_url):
         pilot = control_canary._paid_pilot_config(frozen).model_copy(update={
             "base_url": base_url,
@@ -296,6 +298,7 @@ def _loopback_agent_provider_dispatch(
             gate=gate,
             artifact_root=artifact_root,
             run_id=run_id,
+            payload_path=payload_path,
             trial_namespace="v2-single-task-zero-provider",
             pilot_override=pilot,
             provider_secret_override="zero-provider-loopback-only",

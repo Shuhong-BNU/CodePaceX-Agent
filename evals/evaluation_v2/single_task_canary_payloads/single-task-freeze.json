@@ -68,12 +68,12 @@
       ".github/workflows/evaluation-v2-single-task-paid-canary.yml": "57ad04555afcdc94e5724f5ade57f5a27ad484b1e8e49bb3912e9e34a059128f",
       "evals/evaluation_v2/control_canary.py": "d462284c25244158704a23638844a627d7a0172217d3dd3c403055c6e6c836a9",
       "evals/evaluation_v2/full_replay.py": "033e2d410748a9554f9de69c09751bafd1addcb895f311634073c523a483819b",
-      "evals/evaluation_v2/single_task_canary.py": "0f1ac79c288f782b5da46dba1913557eda81d21a69eb08b67c93926aa1daf2c0",
+      "evals/evaluation_v2/single_task_canary.py": "7adbd250c3d5f018b020376b6de63418b1674b0fe3701200ca53ce75da4939b9",
       "evals/paid_gate.py": "4739c7f6f6ff0c06725c4a49c905e8f700848a8f7e4c3db31fb10a2647bdb4ce"
     },
     "usage_contract_terminal": "provider_usage_contract_violation"
   },
-  "runtime_contract_hash": "e22531d27f7e89d4a5e53c6096c288bf105abdfe58b4f65cf10411af19fa68e9",
+  "runtime_contract_hash": "57f6d8af545b066413be8c8e8f7a20d5928839ef3706f082bc449324f2819d11",
   "schema_version": 1,
   "status": "frozen_pending_explicit_single_task_authorization",
   "task": {
