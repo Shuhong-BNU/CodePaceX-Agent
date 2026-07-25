@@ -228,7 +228,11 @@ def _fresh_gate(root: Path, artifact_root: Path, acknowledgement: str) -> PaidRu
         category_limits_cny={"swe": spendable, "mcp": Decimal("0"), "retention": Decimal("0"), "permission": Decimal("0"), "multi_agent": Decimal("0"), "long_session": Decimal("0")},
     )
     _write_json(paths["allocation"], allocation.model_dump(mode="json"))
-    return PaidRunGate(root=root, authorization_path=paths["authorization"], ledger_path=paths["ledger"], allocation_path=paths["allocation"], pricing=pricing, stage="C")
+    return PaidRunGate(
+        root=root, authorization_path=paths["authorization"], ledger_path=paths["ledger"],
+        allocation_path=paths["allocation"], pricing_path=root / PRICING_PATH,
+        pricing=pricing, stage="C",
+    )
 
 
 def run_preflight(root: Path, artifact_root: Path) -> dict[str, Any]:

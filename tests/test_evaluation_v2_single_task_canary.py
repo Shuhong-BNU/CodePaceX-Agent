@@ -96,6 +96,7 @@ def test_single_task_allocation_cannot_increase_spendable_contract(
     assert allocation.spendable_total_cny == allocation.category_limits_cny["swe"] == Decimal("73.236480")
     assert allocation.safety_reserve_cny == Decimal("0.000001")
     assert gate.authorization.authorized_total_cny == Decimal("73.236481")
+    assert gate.pricing_path == ROOT / canary.PRICING_PATH
 
 
 def test_loopback_dispatch_uses_the_fixed_safe_payload(
