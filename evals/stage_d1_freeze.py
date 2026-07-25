@@ -18,6 +18,7 @@ STAGE_D_CANARY_RUN = "29933711107"
 STAGE_D_CANARY_ARTIFACT_SHA256 = "1129c64d9aa1153c8b21fe85f9030627683257d4d4e6aa14064d486002fe28a3"
 OFFICIAL_EVALUATOR_COMMIT = "ad79b850f15e33992e96f03f6e97f05ddf9aa0be"
 CANARY_INSTANCE_IDS = ("beetbox__beets-5495",)
+HISTORICAL_RUNTIME_CONTRACT_HASH = "dc6302be4f0134bde5b60493939b577dd11d77587ae31f3ca0d3512fde118821"
 RUNTIME_SOURCE_PATHS = (
     "codepacex/agent.py",
     "codepacex/validation.py",
@@ -142,8 +143,38 @@ def write_freeze(root: Path, output: Path) -> dict[str, Any]:
 def validate_freeze(root: Path, freeze_path: Path) -> dict[str, Any]:
     actual = json.loads(freeze_path.read_text(encoding="utf-8"))
     expected = freeze_payload(root.resolve())
-    if actual != expected:
-        raise ValueError("Stage D.1 Freeze differs from the current deterministic contract")
+    if set(actual) != set(expected):
+        raise ValueError("Stage D.1 Freeze schema differs from the historical contract")
+    for key in expected:
+        if key not in {"runtime_contract", "runtime_contract_hash"} and actual[key] != expected[key]:
+            raise ValueError(f"Stage D.1 Freeze field differs: {key}")
+    runtime = actual.get("runtime_contract")
+    if not isinstance(runtime, dict):
+        raise ValueError("Stage D.1 Freeze runtime contract is missing")
+    if set(runtime) != set(expected["runtime_contract"]):
+        raise ValueError("Stage D.1 Freeze runtime contract schema differs")
+    if runtime["schema_version"] != 1:
+        raise ValueError("Stage D.1 Freeze runtime contract schema version differs")
+    if runtime["experiment_profile"] != stage_d1_profile().canonical_payload():
+        raise ValueError("Stage D.1 Freeze experiment profile differs")
+    if runtime["experiment_profile_hash"] != stage_d1_profile().profile_hash():
+        raise ValueError("Stage D.1 Freeze experiment profile hash differs")
+    if runtime["loop_entrypoints"] != ["Agent._run", "Agent.run_to_completion"]:
+        raise ValueError("Stage D.1 Freeze loop entrypoints differ")
+    if runtime["protocol_guarantees"] != runtime_contract_payload(root)["protocol_guarantees"]:
+        raise ValueError("Stage D.1 Freeze protocol guarantees differ")
+    source_hashes = runtime.get("runtime_source_sha256")
+    if not isinstance(source_hashes, dict) or set(source_hashes) != set(RUNTIME_SOURCE_PATHS):
+        raise ValueError("Stage D.1 Freeze runtime source inventory differs")
+    if not all(
+        isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value)
+        for value in source_hashes.values()
+    ):
+        raise ValueError("Stage D.1 Freeze runtime source hash is malformed")
+    if actual["runtime_contract_hash"] != HISTORICAL_RUNTIME_CONTRACT_HASH:
+        raise ValueError("Stage D.1 Freeze historical runtime identity differs")
+    if actual["runtime_contract_hash"] != canonical_hash(runtime):
+        raise ValueError("Stage D.1 Freeze runtime contract hash is not self-consistent")
     if actual["canary_instance_ids"] != list(CANARY_INSTANCE_IDS):
         raise ValueError("Stage D.1 Freeze does not contain the exact one-task canary")
     if actual["admission"]["paid_execution_authorized"] is not False:

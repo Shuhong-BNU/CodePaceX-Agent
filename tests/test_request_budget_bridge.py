@@ -24,6 +24,23 @@ class _Usage:
         return {"prompt_tokens": 12, "completion_tokens": 3}
 
 
+class _ExactUsage:
+    prompt_tokens = 30077
+    completion_tokens = 8197
+    prompt_tokens_details = SimpleNamespace(cached_tokens=0)
+
+    def model_dump(self, *, exclude_none: bool) -> dict[str, object]:
+        assert exclude_none is True
+        return {
+            "prompt_tokens": 30077,
+            "completion_tokens": 8197,
+            "completion_tokens_details": {
+                "reasoning_tokens": 6144,
+                "text_tokens": 8197,
+            },
+        }
+
+
 class _Response:
     def __init__(self, chunks: list[object]) -> None:
         self.chunks = chunks
@@ -114,6 +131,61 @@ async def test_compat_client_sends_explicit_goal3_completion_contract() -> None:
     conversation.add_user_message("hello")
     events = [event async for event in client.stream(conversation)]
     assert any(isinstance(event, StreamEnd) for event in events)
+
+
+@pytest.mark.asyncio
+async def test_compat_client_preserves_exact_8197_sdk_usage_payload(monkeypatch) -> None:
+    captured: list[dict[str, object]] = []
+    reservation = object()
+
+    class ExactBudget:
+        def reserve_before_request(self) -> object:
+            return reservation
+
+        def settle_after_usage(
+            self, actual_reservation: object, usage: dict[str, object] | None,
+        ) -> None:
+            assert actual_reservation is reservation
+            assert usage is not None
+            captured.append(usage)
+
+    client = OpenAICompatClient(ProviderConfig(
+        "bailian-qwen37-max", "openai-compat", "https://example.invalid",
+        "qwen3.7-max-2026-06-08", api_key="not-a-real-key",
+        max_completion_tokens=8192, enable_thinking=True, thinking_budget=6144,
+    ), max_retries=0)
+    response = _Response([SimpleNamespace(choices=[], usage=_ExactUsage())])
+
+    async def create(**kwargs):
+        assert kwargs["max_completion_tokens"] == 8192
+        assert kwargs["extra_body"]["thinking_budget"] == 6144
+        assert "max_tokens" not in kwargs
+        return response
+
+    client._client = SimpleNamespace(chat=SimpleNamespace(
+        completions=SimpleNamespace(create=create),
+    ))
+    conversation = ConversationManager()
+    conversation.add_user_message("hello")
+    monkeypatch.setenv("CODEPACEX_EXPERIMENT_REQUEST_BUDGET", "1")
+    with patch(
+        "evals.paid_gate.ProviderRequestBudget.from_environment",
+        return_value=ExactBudget(),
+    ):
+        events = [event async for event in client.stream(conversation)]
+
+    assert any(
+        isinstance(event, StreamEnd) and event.output_tokens == 8197
+        for event in events
+    )
+    assert captured == [{
+        "prompt_tokens": 30077,
+        "completion_tokens": 8197,
+        "completion_tokens_details": {
+            "reasoning_tokens": 6144,
+            "text_tokens": 8197,
+        },
+    }]
 
 
 @pytest.mark.asyncio

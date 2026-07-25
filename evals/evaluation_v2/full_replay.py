@@ -117,7 +117,7 @@ INFRASTRUCTURE_TERMINALS = frozenset({
     "evaluator_execution_error", "evaluator_report_selection_error",
     "budget_blocked", "runner_error", "task_environment_blocked",
     "preflight_wiring_blocked", "pre_agent_blocked", "agent_dispatch_missing",
-    "host_runtime_contaminated",
+    "host_runtime_contaminated", "provider_usage_contract_violation",
 })
 FAKE_PROVIDER_KEY_ENV = "EVALUATION_V2_FAKE_PROVIDER_KEY"
 EXPECTED_SELECTION = {

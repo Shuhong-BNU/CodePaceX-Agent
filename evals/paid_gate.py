@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import importlib.metadata
 import os
 import subprocess
 import uuid
@@ -169,6 +170,26 @@ class ProviderRequestCeilingBlock(BaseModel):
     recorded_at: str
 
 
+class ProviderUsageContractDiagnostics(BaseModel):
+    """Observed request/Usage semantics, without interpreting Provider internals."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    requested_output_parameter: str
+    requested_output_tokens: int | None = Field(default=None, ge=0)
+    requested_thinking_budget: int | None = Field(default=None, ge=0)
+    raw_prompt_tokens: int = Field(ge=0)
+    raw_completion_tokens: int = Field(ge=0)
+    raw_reasoning_tokens: int | None = Field(default=None, ge=0)
+    raw_text_tokens: int | None = Field(default=None, ge=0)
+    completion_equals_text_tokens: bool | None = None
+    reasoning_le_completion: bool | None = None
+    violation_type: str
+    exceeded_by: dict[str, int] = Field(default_factory=dict)
+    sdk_package: str = "openai"
+    sdk_version: str | None = None
+
+
 class ProviderUsageContractViolation(BaseModel):
     """A settled request exceeded a frozen usage ceiling."""
 
@@ -185,6 +206,7 @@ class ProviderUsageContractViolation(BaseModel):
     maximum_reasoning_tokens: int | None = Field(default=None, gt=0)
     provider_usage: dict[str, Any]
     violating_metrics: list[Literal["prompt_tokens", "completion_tokens", "reasoning_tokens"]]
+    diagnostics: ProviderUsageContractDiagnostics | None = None
     reason: Literal["provider_usage_contract_violation"] = "provider_usage_contract_violation"
     recorded_at: str
 
@@ -873,7 +895,9 @@ class PaidRunGate:
         self, reservation: Reservation, *, input_tokens: int, output_tokens: int,
         reasoning_tokens: int | None, maximum_input_tokens: int,
         maximum_output_tokens: int, maximum_reasoning_tokens: int | None,
-        provider_usage: Mapping[str, Any],
+        provider_usage: Mapping[str, Any], requested_output_parameter: str = "unspecified",
+        requested_output_tokens: int | None = None,
+        requested_thinking_budget: int | None = None,
     ) -> ProviderUsageContractViolation | None:
         violating_metrics: list[Literal["prompt_tokens", "completion_tokens", "reasoning_tokens"]] = []
         if input_tokens > maximum_input_tokens:
@@ -890,6 +914,38 @@ class PaidRunGate:
                 raise ValueError("usage contract violation requires a settled Provider request")
             if any(item.reservation_id == reservation.reservation_id for item in ledger.usage_contract_violations):
                 raise ValueError("Provider usage contract violation is already recorded")
+            details = provider_usage.get("completion_tokens_details")
+            details_map = details if isinstance(details, Mapping) else {}
+            raw_text_tokens = provider_usage.get("text_tokens")
+            if raw_text_tokens is None:
+                raw_text_tokens = details_map.get("text_tokens")
+            raw_reasoning_tokens = details_map.get("reasoning_tokens", reasoning_tokens)
+            raw_prompt_tokens = int(provider_usage.get("prompt_tokens", input_tokens) or 0)
+            raw_completion_tokens = int(provider_usage.get("completion_tokens", output_tokens) or 0)
+            raw_text_tokens = int(raw_text_tokens) if raw_text_tokens is not None else None
+            raw_reasoning_tokens = int(raw_reasoning_tokens) if raw_reasoning_tokens is not None else None
+            exceeded_by = {
+                metric: amount
+                for metric, amount in (
+                    ("prompt_tokens", input_tokens - maximum_input_tokens),
+                    ("completion_tokens", output_tokens - maximum_output_tokens),
+                    (
+                        "reasoning_tokens",
+                        (reasoning_tokens - maximum_reasoning_tokens)
+                        if reasoning_tokens is not None and maximum_reasoning_tokens is not None
+                        else 0,
+                    ),
+                )
+                if metric in violating_metrics and amount > 0
+            }
+            violation_type = (
+                f"{violating_metrics[0]}_exceeded"
+                if len(violating_metrics) == 1 else "multiple_metrics_exceeded"
+            )
+            try:
+                sdk_version = importlib.metadata.version("openai")
+            except importlib.metadata.PackageNotFoundError:
+                sdk_version = None
             violation = ProviderUsageContractViolation(
                 reservation_id=reservation.reservation_id, trial_id=reservation.trial_id,
                 stage=reservation.stage, input_tokens=input_tokens, output_tokens=output_tokens,
@@ -898,6 +954,27 @@ class PaidRunGate:
                 maximum_reasoning_tokens=maximum_reasoning_tokens,
                 provider_usage=dict(provider_usage),
                 violating_metrics=violating_metrics, recorded_at=_utc_now(),
+                diagnostics=ProviderUsageContractDiagnostics(
+                    requested_output_parameter=requested_output_parameter,
+                    requested_output_tokens=requested_output_tokens,
+                    requested_thinking_budget=requested_thinking_budget,
+                    raw_prompt_tokens=raw_prompt_tokens,
+                    raw_completion_tokens=raw_completion_tokens,
+                    raw_reasoning_tokens=raw_reasoning_tokens,
+                    raw_text_tokens=raw_text_tokens,
+                    completion_equals_text_tokens=(
+                        raw_completion_tokens == raw_text_tokens
+                        if raw_text_tokens is not None else None
+                    ),
+                    reasoning_le_completion=(
+                        raw_reasoning_tokens <= raw_completion_tokens
+                        if raw_reasoning_tokens is not None else None
+                    ),
+                    violation_type=violation_type,
+                    exceeded_by=exceeded_by,
+                    sdk_package="openai",
+                    sdk_version=sdk_version,
+                ),
             )
             ledger.usage_contract_violations.append(violation)
             self._write_ledger(ledger)
@@ -1047,6 +1124,8 @@ _REQUEST_BUDGET_KEYS = (
     "CODEPACEX_BUDGET_MAX_OUTPUT_TOKENS",
     "CODEPACEX_BUDGET_MAX_REASONING_TOKENS",
     "CODEPACEX_BUDGET_MAX_REQUESTS_PER_TRIAL",
+    "CODEPACEX_BUDGET_REQUESTED_OUTPUT_PARAMETER",
+    "CODEPACEX_BUDGET_REQUESTED_THINKING_BUDGET",
 )
 
 
@@ -1056,6 +1135,8 @@ def provider_request_budget_environment(
     maximum_output_tokens_per_request: int,
     maximum_reasoning_tokens_per_request: int | None = None,
     maximum_provider_requests_per_trial: int | None = None,
+    requested_output_parameter: str = "unspecified",
+    requested_thinking_budget: int | None = None,
 ) -> dict[str, str]:
     """Return the explicit, non-secret environment contract for one Trial.
 
@@ -1093,6 +1174,10 @@ def provider_request_budget_environment(
             str(maximum_provider_requests_per_trial)
             if maximum_provider_requests_per_trial is not None else ""
         ),
+        "CODEPACEX_BUDGET_REQUESTED_OUTPUT_PARAMETER": requested_output_parameter,
+        "CODEPACEX_BUDGET_REQUESTED_THINKING_BUDGET": (
+            str(requested_thinking_budget) if requested_thinking_budget is not None else ""
+        ),
     }
 
 
@@ -1103,6 +1188,8 @@ def provider_request_budget_scope(
     maximum_output_tokens_per_request: int,
     maximum_reasoning_tokens_per_request: int | None = None,
     maximum_provider_requests_per_trial: int | None = None,
+    requested_output_parameter: str = "unspecified",
+    requested_thinking_budget: int | None = None,
 ) -> Iterator[None]:
     """Temporarily bind an in-process experiment request to its Trial."""
     updates = provider_request_budget_environment(
@@ -1111,6 +1198,8 @@ def provider_request_budget_scope(
         maximum_output_tokens_per_request=maximum_output_tokens_per_request,
         maximum_reasoning_tokens_per_request=maximum_reasoning_tokens_per_request,
         maximum_provider_requests_per_trial=maximum_provider_requests_per_trial,
+        requested_output_parameter=requested_output_parameter,
+        requested_thinking_budget=requested_thinking_budget,
     )
     previous = {key: os.environ.get(key) for key in _REQUEST_BUDGET_KEYS}
     os.environ.update(updates)
@@ -1131,13 +1220,17 @@ class ProviderRequestBudget:
                  maximum_input_tokens_per_request: int,
                  maximum_output_tokens_per_request: int,
                  maximum_reasoning_tokens_per_request: int | None = None,
-                 maximum_provider_requests_per_trial: int | None = None) -> None:
+                 maximum_provider_requests_per_trial: int | None = None,
+                 requested_output_parameter: str = "unspecified",
+                 requested_thinking_budget: int | None = None) -> None:
         self.gate = gate
         self.trial_id = trial_id
         self.maximum_input_tokens_per_request = maximum_input_tokens_per_request
         self.maximum_output_tokens_per_request = maximum_output_tokens_per_request
         self.maximum_reasoning_tokens_per_request = maximum_reasoning_tokens_per_request
         self.maximum_provider_requests_per_trial = maximum_provider_requests_per_trial
+        self.requested_output_parameter = requested_output_parameter
+        self.requested_thinking_budget = requested_thinking_budget
 
     @classmethod
     def from_environment(cls) -> ProviderRequestBudget | None:
@@ -1181,6 +1274,11 @@ class ProviderRequestBudget:
             maximum_provider_requests_per_trial=(
                 int(required["CODEPACEX_BUDGET_MAX_REQUESTS_PER_TRIAL"])
                 if required["CODEPACEX_BUDGET_MAX_REQUESTS_PER_TRIAL"] else None
+            ),
+            requested_output_parameter=required["CODEPACEX_BUDGET_REQUESTED_OUTPUT_PARAMETER"] or "unspecified",
+            requested_thinking_budget=(
+                int(required["CODEPACEX_BUDGET_REQUESTED_THINKING_BUDGET"])
+                if required["CODEPACEX_BUDGET_REQUESTED_THINKING_BUDGET"] else None
             ),
         )
 
@@ -1260,6 +1358,9 @@ class ProviderRequestBudget:
             maximum_output_tokens=self.maximum_output_tokens_per_request,
             maximum_reasoning_tokens=self.maximum_reasoning_tokens_per_request,
             provider_usage=provider_usage,
+            requested_output_parameter=self.requested_output_parameter,
+            requested_output_tokens=self.maximum_output_tokens_per_request,
+            requested_thinking_budget=self.requested_thinking_budget,
         )
         if violation is not None:
             raise ProviderUsageContractViolationError(violation)
