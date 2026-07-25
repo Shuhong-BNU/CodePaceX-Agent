@@ -264,6 +264,65 @@ def test_provider_usage_contract_settles_truthfully_before_failing_closed(
         assert violation.provider_usage == usage
 
 
+def test_exact_8197_usage_is_preserved_settled_and_diagnosed(tmp_path: Path) -> None:
+    gate = _gate(tmp_path, total="1000")
+    budget = ProviderRequestBudget(
+        gate, trial_id="swe/v2-full-20/run/cfn-lint-3749",
+        maximum_input_tokens_per_request=128_000,
+        maximum_output_tokens_per_request=8192,
+        maximum_reasoning_tokens_per_request=6144,
+        requested_output_parameter="max_completion_tokens",
+        requested_thinking_budget=6144,
+    )
+    usage = {
+        "prompt_tokens": 30077,
+        "completion_tokens": 8197,
+        "completion_tokens_details": {
+            "reasoning_tokens": 6144,
+            "text_tokens": 8197,
+        },
+    }
+
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ):
+        reservation = budget.reserve_before_request()
+        with pytest.raises(ProviderUsageContractViolationError) as exc_info:
+            budget.settle_after_usage(reservation, usage)
+
+    ledger = BudgetLedger.model_validate_json(
+        (tmp_path / "ledger.json").read_text(encoding="utf-8")
+    )
+    assert ledger.active_reservation is None
+    assert len(ledger.request_charges) == len(ledger.settlements) == 1
+    assert len(ledger.usage_contract_violations) == 1
+    charge, settlement = ledger.request_charges[0], ledger.settlements[0]
+    assert charge.reservation_id == settlement.reservation_id == reservation.reservation_id
+    assert charge.output_tokens == settlement.output_tokens == 8197
+    assert charge.reasoning_tokens == settlement.reasoning_tokens == 6144
+    expected_cost = actual_cost(gate.pricing, input_tokens=30077, output_tokens=8197)
+    assert charge.actual_cny == settlement.actual_cny == expected_cost
+
+    violation = ledger.usage_contract_violations[0]
+    assert exc_info.value.violation == violation
+    assert violation.provider_usage == usage
+    assert violation.violating_metrics == ["completion_tokens"]
+    diagnostics = violation.diagnostics
+    assert diagnostics.requested_output_parameter == "max_completion_tokens"
+    assert diagnostics.requested_output_tokens == 8192
+    assert diagnostics.requested_thinking_budget == 6144
+    assert diagnostics.raw_prompt_tokens == 30077
+    assert diagnostics.raw_completion_tokens == 8197
+    assert diagnostics.raw_reasoning_tokens == 6144
+    assert diagnostics.raw_text_tokens == 8197
+    assert diagnostics.completion_equals_text_tokens is True
+    assert diagnostics.reasoning_le_completion is True
+    assert diagnostics.violation_type == "completion_tokens_exceeded"
+    assert diagnostics.exceeded_by == {"completion_tokens": 5}
+    assert diagnostics.sdk_package == "openai"
+    assert diagnostics.sdk_version
+
+
 def test_gate_fails_closed_when_worst_next_trial_exceeds_remaining_budget(tmp_path: Path) -> None:
     gate = _gate(tmp_path, "0.01")
     with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(

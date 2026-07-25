@@ -270,7 +270,7 @@ def freeze_payload(root: Path) -> dict[str, Any]:
         "dependency_bootstrap": "isolated-no-system-site-packages-task-venv-and-host-runtime-fingerprint-v3",
         "gold_patch_forbidden": True,
         "fresh_authorization_and_ledger_required": True,
-        "terminal_status_schema": ["resolved", "unresolved", "agent_no_candidate", "request_ceiling_reached", "pre_agent_blocked", "agent_dispatch_missing", "host_runtime_contaminated", "protocol_blocked", "provider_transport_error", "evaluator_unavailable", "evaluator_execution_error", "evaluator_report_selection_error", "runner_error", "budget_blocked", "task_environment_blocked", "preflight_wiring_blocked"],
+        "terminal_status_schema": ["resolved", "unresolved", "agent_no_candidate", "request_ceiling_reached", "provider_usage_contract_violation", "pre_agent_blocked", "agent_dispatch_missing", "host_runtime_contaminated", "protocol_blocked", "provider_transport_error", "evaluator_unavailable", "evaluator_execution_error", "evaluator_report_selection_error", "runner_error", "budget_blocked", "task_environment_blocked", "preflight_wiring_blocked"],
         "budget_contract": budget,
         "go_no_go": {
             "go": "both task environment preflights pass and zero-provider paid-path rehearsal closes its ledger",
@@ -649,6 +649,7 @@ class PaidTaskResult:
     settlement_count: int = 0
     trial_id: str | None = None
     pre_agent_blocker: str | None = None
+    provider_usage_contract_violation: dict[str, Any] | None = None
 
 
 def enforce_dispatch_invariant(result: PaidTaskResult) -> PaidTaskResult:
@@ -1036,6 +1037,8 @@ def _live_task_executor(
             maximum_output_tokens_per_request=MAX_OUTPUT_TOKENS,
             maximum_reasoning_tokens_per_request=MAX_REASONING_TOKENS,
             maximum_provider_requests_per_trial=MAX_REQUESTS_PER_TASK,
+            requested_output_parameter="max_completion_tokens",
+            requested_thinking_budget=MAX_REASONING_TOKENS,
         ))
         process = subprocess.run(
             [sys.executable, "-m", "codepacex", "-p", prompt, "--output-format", "stream-json", "--experiment-profile", str(profile_path), "--max-iterations", str(pilot.max_iterations)],
@@ -1064,6 +1067,7 @@ def _live_task_executor(
         "settlement_count": accounting["settlement_count"],
         "charge_cny": accounting["actual_cny"],
     })
+    usage_violation = accounting.get("provider_usage_contract_violation")
     if accounting["budget_blocked"]:
         return finish(PaidTaskResult(
             task["instance_id"], "failed", "not_exported", "not_run", "not_run",
@@ -1081,6 +1085,22 @@ def _live_task_executor(
     patch_path.write_text(patch, encoding="utf-8")
     candidate_sha = _sha256(patch_path)
     evidence.update({"agent_exit_code": process.returncode, "candidate_sha256": candidate_sha, "workspace_diff_sha256": hashlib.sha256(patch.encode()).hexdigest()})
+    if usage_violation is not None:
+        evidence.update({
+            "provider_usage_contract_violation": usage_violation,
+            "failure_classification": "provider_usage_contract_violation",
+            "terminal_status": "provider_usage_contract_violation",
+        })
+        return finish(PaidTaskResult(
+            task["instance_id"], "failed",
+            "exported_nonempty" if patch.strip() else "not_exported", "not_run", "not_run",
+            "error", "completed", terminal_status="provider_usage_contract_violation",
+            candidate_sha256=candidate_sha, workspace_diff_sha256=candidate_sha,
+            candidate_diff_identity=bool(patch.strip()),
+            failure_classification="provider_usage_contract_violation",
+            provider_usage_contract_violation=usage_violation,
+            **common,
+        ))
     request_ceiling_reached = (
         accounting.get("provider_request_ceiling_blocked", False)
         or "ProviderRequestCeilingExceeded" in (process.stderr or "")
@@ -1205,6 +1225,7 @@ def v2_2_gate(results: Sequence[dict[str, Any]], *, ledger_closed: bool) -> dict
         item for item in results if item.get("terminal_status") in {
             "provider_transport_error", "runner_error", "task_environment_blocked",
             "evaluator_unavailable", "evaluator_execution_error", "evaluator_report_selection_error",
+            "provider_usage_contract_violation",
         }
     ]
     positive = any(item.get("terminal_status") == "resolved" for item in results) or any(

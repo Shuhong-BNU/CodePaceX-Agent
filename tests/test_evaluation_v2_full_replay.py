@@ -325,6 +325,38 @@ def test_dispatch_missing_is_an_infrastructure_stop() -> None:
     assert full_replay._phase_is_healthy_for_continuation(result, ledger) is False
 
 
+def test_usage_contract_violation_is_an_infrastructure_stop() -> None:
+    result = full_replay.control_canary.PaidTaskResult(
+        instance_id="task", agent_status="failed", candidate_status="exported_nonempty",
+        validation_status="not_run", evaluator_status="not_run", runner_status="error",
+        provider_status="completed", terminal_status="provider_usage_contract_violation",
+        provider_requests=25, settlement_count=25, active_reservation=None,
+        candidate_sha256="a" * 64, workspace_diff_sha256="a" * 64,
+        candidate_diff_identity=True, agent_exit_code=1,
+        live_executor_invoked=True, agent_dispatch_started=True,
+        provider_client_initialized=True, model_response_observed=True,
+        provider_usage_contract_violation={
+            "reason": "provider_usage_contract_violation",
+            "diagnostics": {"exceeded_by": {"completion_tokens": 5}},
+        },
+    )
+    authorization = full_replay.BudgetAuthorization(
+        authorized_total_cny=full_replay.TOTAL_HARD_CAP_CNY,
+        stage_limits_cny={
+            "A": full_replay.PHASE_A_HARD_CAP_CNY,
+            "B": full_replay.TOTAL_HARD_CAP_CNY,
+            "C": full_replay.TOTAL_HARD_CAP_CNY,
+        },
+        pricing_snapshot_hash=full_replay.budget_contract(ROOT)["pricing_snapshot_sha256"],
+        experiment_commit="a" * 40, authorized_at="test", authorized_by="user",
+    )
+    ledger = BudgetLedger(
+        authorization_hash=full_replay.authorization_hash(authorization), updated_at="test",
+    )
+    assert "provider_usage_contract_violation" in full_replay.INFRASTRUCTURE_TERMINALS
+    assert full_replay._phase_is_healthy_for_continuation(result, ledger) is False
+
+
 def test_full_replay_workflow_keeps_paid_path_explicit_and_zero_provider_path_complete() -> None:
     workflow = (ROOT / full_replay.WORKFLOW_PATH).read_text(encoding="utf-8")
     assert "inputs.paid_execution == false" in workflow

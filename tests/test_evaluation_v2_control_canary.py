@@ -482,6 +482,102 @@ def test_live_executor_classifies_agent_import_crash_as_dispatch_missing(
     assert result.provider_client_initialized is False
 
 
+def test_live_executor_preserves_candidate_for_usage_contract_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    freeze = tmp_path / "freeze"
+    canary.write_freeze(root=root, output=freeze)
+    frozen = json.loads((freeze / "control-canary-freeze.json").read_text(encoding="utf-8"))
+    artifact = tmp_path / "paid"
+    monkeypatch.setattr("evals.paid_gate._git_is_clean", lambda _root: True)
+    gate = canary._fresh_paid_gate(
+        root=root, freeze=freeze, artifact_root=artifact, acknowledgement="test",
+    )
+    task = canary.load_frozen_payloads(root)[0]
+    metadata = dict(canary.TASKS[0])
+    patch = "diff --git a/module.py b/module.py\n+value = 1\n"
+    violation = {
+        "reason": "provider_usage_contract_violation",
+        "violating_metrics": ["completion_tokens"],
+        "diagnostics": {"exceeded_by": {"completion_tokens": 5}},
+    }
+    monkeypatch.setattr(canary, "_host_runtime_fingerprint", lambda: {
+        "fingerprint_sha256": "a" * 64,
+    })
+    monkeypatch.setattr(canary, "_disk_usage_evidence", lambda *_args: {
+        "venv_bytes": 0,
+    })
+    monkeypatch.setattr(canary, "_cleanup_task_environment", lambda _workspace: None)
+    monkeypatch.setattr(
+        canary, "_goal3_materialize_instance",
+        lambda _task, workspace: workspace.mkdir(parents=True),
+    )
+    monkeypatch.setattr(canary, "_bootstrap", lambda workspace, *_args, **_kwargs: (
+        workspace / ".evaluation-v2-preflight-venv" / "bin" / "python",
+        [{"exit_code": 0}],
+    ))
+    monkeypatch.setattr(
+        canary, "_run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "", ""),
+    )
+    monkeypatch.setattr(
+        canary, "_agent_runtime_probe",
+        lambda **_kwargs: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    monkeypatch.setattr(canary, "_initialize_paid_agent_config", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        canary, "_task_tool_resolution",
+        lambda _environment, _python: {
+            name: f"/isolated/{name}" for name in ("python", "python3", "pip", "pip3")
+        },
+    )
+    monkeypatch.setattr(canary, "_goal3_extract_patch", lambda _workspace: patch)
+    monkeypatch.setenv("BAILIAN_API_KEY", "offline-test-key")
+    monkeypatch.setattr(gate, "trial_accounting", lambda _trial_id: {
+        "request_count": 25,
+        "actual_cny": "6.773940",
+        "active_reservation": None,
+        "settlement_count": 25,
+        "budget_blocked": False,
+        "provider_request_ceiling_blocked": False,
+        "provider_usage_contract_violation": violation,
+    })
+    trace = "\n".join((
+        json.dumps({"type": "runtime_manifest"}),
+        json.dumps({"type": "usage"}),
+    ))
+    monkeypatch.setattr(
+        canary.subprocess, "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(
+            command, 1, trace, "ProviderUsageContractViolationError",
+        ),
+    )
+    evaluator_called = False
+
+    def evaluator_runner(**_kwargs):
+        nonlocal evaluator_called
+        evaluator_called = True
+        raise AssertionError("evaluator must not run after a Usage contract violation")
+
+    result = canary._live_task_executor(
+        root=root, freeze_payload=frozen, task=task, metadata=metadata, gate=gate,
+        artifact_root=artifact, run_id="usage-contract", evaluator_runner=evaluator_runner,
+    )
+
+    candidate_sha = hashlib.sha256(patch.encode()).hexdigest()
+    assert result.terminal_status == "provider_usage_contract_violation"
+    assert result.failure_classification == "provider_usage_contract_violation"
+    assert result.provider_usage_contract_violation == violation
+    assert result.candidate_status == "exported_nonempty"
+    assert result.candidate_sha256 == result.workspace_diff_sha256 == candidate_sha
+    assert result.candidate_diff_identity is True
+    assert result.agent_exit_code == 1
+    assert result.active_reservation is None
+    assert result.validation_status == result.evaluator_status == "not_run"
+    assert evaluator_called is False
+
+
 def test_host_runtime_fingerprint_drift_is_fail_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = Path(__file__).resolve().parents[1]
     freeze = tmp_path / "freeze"
