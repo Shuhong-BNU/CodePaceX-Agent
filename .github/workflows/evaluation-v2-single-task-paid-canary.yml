@@ -1,0 +1,186 @@
+name: Evaluation V2 single-task paid canary
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/evaluation-v2-single-task-paid-canary.yml"
+      - "evals/evaluation_v2/single_task_canary.py"
+      - "evals/evaluation_v2/single_task_canary_payloads/single-task-freeze.json"
+      - "tests/test_evaluation_v2_single_task_canary.py"
+      - "evals/evaluation_v2/SINGLE_TASK_CANARY.md"
+  workflow_dispatch:
+    inputs:
+      paid_execution:
+        description: Separately authorized fixed one-task canary only.
+        required: true
+        type: boolean
+        default: false
+      expected_freeze_sha256:
+        description: Exact committed single-task Freeze SHA-256 required by a future paid canary.
+        required: false
+        type: string
+        default: ''
+      approved_hard_cap_cny:
+        description: Exact derived single-task authorization cap required by a future paid canary.
+        required: false
+        type: string
+        default: ''
+      authorization_acknowledgement:
+        description: Future one-time authorization acknowledgement; never needed by the zero-provider rehearsal.
+        required: false
+        type: string
+        default: ''
+      run_id:
+        description: Fresh future paid single-task Run ID; never needed by the zero-provider rehearsal.
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  zero-provider-single-task-rehearsal:
+    if: ${{ github.event_name == 'pull_request' || inputs.paid_execution == false }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    env:
+      EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Resolve remote main ref for release readiness
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
+          git rev-parse --verify refs/remotes/origin/main^{commit}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Prepare fresh single-task Artifact directory
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/evaluation-v2-single-task-canary/$GITHUB_RUN_ID"
+          mkdir -p "$root"
+          printf 'SINGLE_TASK_ROOT=%s\n' "$root" >> "$GITHUB_ENV"
+      - name: Install project and frozen official evaluator
+        run: |
+          set -euo pipefail
+          docker info >/dev/null
+          python -m pip install -e . pytest pytest-asyncio
+          evaluator_root="$RUNNER_TEMP/swe-bench-live"
+          git clone --filter=blob:none https://github.com/microsoft/SWE-bench-Live.git "$evaluator_root"
+          git -C "$evaluator_root" checkout --detach "$EVALUATOR_COMMIT"
+          test "$(git -C "$evaluator_root" rev-parse HEAD)" = "$EVALUATOR_COMMIT"
+          python -m pip install -e "$evaluator_root"
+      - name: Validate the derived single-task Freeze
+        run: |
+          set -euo pipefail
+          python -m evals.evaluation_v2.single_task_canary validate --root . > "$SINGLE_TASK_ROOT/freeze-validation.json"
+      - name: Preflight the fixed task without Provider transport
+        run: |
+          set -euo pipefail
+          python -m evals.evaluation_v2.single_task_canary preflight --root . --artifact-root "$SINGLE_TASK_ROOT/preflight" > "$SINGLE_TASK_ROOT/preflight-result.json"
+          python - "$SINGLE_TASK_ROOT/preflight/preflight-summary.json" <<'PY'
+          import json, sys
+          summary = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert summary['passed'] is True and summary['ready_count'] == 1
+          assert [item['instance_id'] for item in summary['tasks']] == ['aws-cloudformation__cfn-lint-3749']
+          assert summary['provider_requests'] == summary['usage'] == 0
+          assert summary['charge_cny'] == '0' and summary['provider_secret_read'] is False
+          PY
+      - name: Rehearse normal and Usage-contract paths without Provider transport
+        run: |
+          set -euo pipefail
+          python -m evals.evaluation_v2.single_task_canary rehearse --root . --preflight-summary "$SINGLE_TASK_ROOT/preflight/preflight-summary.json" --artifact-root "$SINGLE_TASK_ROOT/rehearsal" --run-id "rehearsal-$GITHUB_RUN_ID" > "$SINGLE_TASK_ROOT/rehearsal-result.json"
+          python - "$SINGLE_TASK_ROOT/rehearsal/single-task-rehearsal-summary.json" <<'PY'
+          import json, sys
+          result = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert result['task'] == 'aws-cloudformation__cfn-lint-3749'
+          assert result['formal_trial_count'] == 0
+          assert result['provider_task_coverage'] == '1/1'
+          assert result['external_provider_requests'] == result['provider_requests'] == result['usage'] == 0
+          assert result['charge_cny'] == '0' and result['provider_secret_read'] is False
+          assert result['ledger_closed'] and result['active_reservation'] is None
+          violation = result['usage_contract_violation']
+          assert violation['terminal_status'] == 'provider_usage_contract_violation'
+          assert violation['evaluator_status'] == 'not_run'
+          assert violation['provider_usage_contract_violation']['diagnostics']['raw_completion_tokens'] == 8197
+          assert violation['provider_usage_contract_violation']['diagnostics']['raw_reasoning_tokens'] == 6144
+          assert violation['provider_usage_contract_violation']['diagnostics']['raw_text_tokens'] == 8197
+          PY
+      - name: Compile single-task release readiness
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          set -euo pipefail
+          python -m evals.evaluation_v2.single_task_canary release-check --root . --preflight-summary "$SINGLE_TASK_ROOT/preflight/preflight-summary.json" --rehearsal-summary "$SINGLE_TASK_ROOT/rehearsal/single-task-rehearsal-summary.json" --output "$SINGLE_TASK_ROOT/release-check.json" > "$SINGLE_TASK_ROOT/release-check-result.json"
+          python - "$SINGLE_TASK_ROOT/release-check.json" <<'PY'
+          import json, sys
+          result = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert result['status'] == 'READY_FOR_SINGLE_TASK_PAID_CANARY_AUTHORIZATION'
+          assert result['provider_requests'] == result['usage'] == 0
+          assert result['charge_cny'] == '0' and result['provider_secret_read'] is False
+          PY
+      - name: Scan generated evidence without printing potential secrets
+        if: always()
+        run: |
+          set -euo pipefail
+          if find "$SINGLE_TASK_ROOT" -type f \( -name '*.json' -o -name '*.txt' -o -name '*.ndjson' \) -print0 | xargs -0 rg -a -q -i 'sk-[A-Za-z0-9]{20,}|bearer[[:space:]]+[A-Za-z0-9._-]{20,}'; then
+            echo 'secret scan failed'
+            exit 1
+          fi
+          echo 'secret scan passed'
+      - name: Upload single-task rehearsal Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaluation-v2-single-task-canary-rehearsal-${{ github.run_id }}
+          path: ${{ runner.temp }}/evaluation-v2-single-task-canary/${{ github.run_id }}
+          if-no-files-found: warn
+
+  paid-execution:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.paid_execution == true && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    env:
+      EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be
+      BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install project and frozen official evaluator
+        run: |
+          set -euo pipefail
+          docker info >/dev/null
+          python -m pip install -e . pytest pytest-asyncio
+          evaluator_root="$RUNNER_TEMP/swe-bench-live"
+          git clone --filter=blob:none https://github.com/microsoft/SWE-bench-Live.git "$evaluator_root"
+          git -C "$evaluator_root" checkout --detach "$EVALUATOR_COMMIT"
+          test "$(git -C "$evaluator_root" rev-parse HEAD)" = "$EVALUATOR_COMMIT"
+          python -m pip install -e "$evaluator_root"
+      - name: Run the explicitly authorized fixed-task canary
+        run: |
+          set -euo pipefail
+          test '${{ inputs.paid_execution }}' = true
+          root="$RUNNER_TEMP/evaluation-v2-single-task-paid/${{ inputs.run_id }}"
+          mkdir -p "$root"
+          python -m evals.evaluation_v2.single_task_canary preflight --root . --artifact-root "$root/preflight" > "$root/preflight-result.json"
+          python - "$root/preflight/preflight-summary.json" <<'PY'
+          import json, sys
+          summary = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert summary['passed'] is True and summary['ready_count'] == 1
+          assert [item['instance_id'] for item in summary['tasks']] == ['aws-cloudformation__cfn-lint-3749']
+          PY
+          python -m evals.evaluation_v2.single_task_canary paid-run --confirm-paid-execution --root . --artifact-root "$root/paid" --expected-freeze-sha256 '${{ inputs.expected_freeze_sha256 }}' --approved-hard-cap-cny '${{ inputs.approved_hard_cap_cny }}' --authorization-acknowledgement '${{ inputs.authorization_acknowledgement }}' --run-id '${{ inputs.run_id }}' > "$root/paid-result.json"
+      - name: Upload paid single-task evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaluation-v2-single-task-paid-${{ inputs.run_id }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/evaluation-v2-single-task-paid/${{ inputs.run_id }}
+          if-no-files-found: warn
