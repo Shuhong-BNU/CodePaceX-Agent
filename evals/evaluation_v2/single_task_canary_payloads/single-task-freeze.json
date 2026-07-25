@@ -1,0 +1,119 @@
+{
+  "budget_contract": {
+    "agent_max_iterations": 50,
+    "authorization_hard_cap_cny": "73.236481",
+    "budget_rule": "only the frozen one-task maximum exposure is spendable; the micro reserve is nonspendable",
+    "currency": "CNY",
+    "maximum_input_tokens_per_request": 128000,
+    "maximum_output_tokens_per_request": 8192,
+    "maximum_reasoning_tokens_per_request": 6144,
+    "nonspendable_safety_reserve_cny": "0.000001",
+    "one_request_theoretical_exposure_cny": "1.830912",
+    "pricing_snapshot_hash": "a09eb6e6955b9fb68d3e011771c948f7a14b7bbca5316a2433cab099d0b643d3",
+    "pricing_snapshot_path": "evals/goal2/pricing_bailian_qwen37_max_2026-07-13.json",
+    "provider_request_ceiling_per_task": 40,
+    "rolling_reservation": "one_provider_request",
+    "single_task_spendable_cap_cny": "73.236480"
+  },
+  "experiment_name": "evaluation-v2-single-task-paid-canary",
+  "go_no_go": {
+    "forbidden": [
+      "second_task",
+      "phase_a",
+      "full_20",
+      "retry",
+      "continuation",
+      "fallback"
+    ],
+    "paid_execution": "future separately authorized single task only",
+    "stop_after": [
+      "provider_usage_contract_violation",
+      "provider_transport_error",
+      "runner_error",
+      "active_reservation"
+    ]
+  },
+  "official_evaluator": {
+    "commit": "ad79b850f15e33992e96f03f6e97f05ddf9aa0be",
+    "dataset": "SWE-bench-Live/SWE-bench-Live",
+    "namespace": "starryzhang",
+    "report_selection": "detailed_then_summary_fail_closed-v1",
+    "repository": "https://github.com/microsoft/SWE-bench-Live",
+    "split": "lite"
+  },
+  "parent_checkout": "0927c92264d8ebf6e042e2ebc7165d07bbaf1eb3",
+  "parent_readiness": {
+    "artifact_digest": "sha256:1256700266cfa3195589548f526bf2e46f418239d42aa0b72b6ca30fbac5b236",
+    "artifact_id": 8621081736,
+    "freeze_sha256": "0128c2effa148d4afa761491a23fedecfa47dc57b1acb75c88498689d5de42f7",
+    "pricing_snapshot_sha256": "a09eb6e6955b9fb68d3e011771c948f7a14b7bbca5316a2433cab099d0b643d3",
+    "run_id": 30163373235,
+    "runtime_contract_sha256": "441abddee3dc1129e430e1e1d8a2845bba30a61656b3a8cbf7ec9ffee51521ec"
+  },
+  "provider_contract": {
+    "base_url": "https://llm-ipge9fy38w648m28.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    "fallback_enabled": false,
+    "model_id": "qwen3.7-max-2026-06-08",
+    "protocol": "openai-compat",
+    "provider": "bailian-qwen37-max",
+    "provider_secret_name": "BAILIAN_API_KEY",
+    "retry": 0,
+    "strict_serial": true
+  },
+  "runtime_contract": {
+    "delegated_executor": "full_replay._full_task_executor",
+    "one_formal_trial_contract": "exactly-one-fixed-task-trial-v1",
+    "schema_version": 1,
+    "source_sha256": {
+      ".github/workflows/evaluation-v2-single-task-paid-canary.yml": "57ad04555afcdc94e5724f5ade57f5a27ad484b1e8e49bb3912e9e34a059128f",
+      "evals/evaluation_v2/control_canary.py": "d462284c25244158704a23638844a627d7a0172217d3dd3c403055c6e6c836a9",
+      "evals/evaluation_v2/full_replay.py": "033e2d410748a9554f9de69c09751bafd1addcb895f311634073c523a483819b",
+      "evals/evaluation_v2/single_task_canary.py": "3b4dd50ee68d02dbb32332055bd0c1a96bbbf54136f1b61c153f5cf2d889d195",
+      "evals/paid_gate.py": "4739c7f6f6ff0c06725c4a49c905e8f700848a8f7e4c3db31fb10a2647bdb4ce"
+    },
+    "usage_contract_terminal": "provider_usage_contract_violation"
+  },
+  "runtime_contract_hash": "5e1dc2c8e477b14eaa4fa323038fa32502a6989052f46a7f6b82b395039866eb",
+  "schema_version": 1,
+  "status": "frozen_pending_explicit_single_task_authorization",
+  "task": {
+    "base_commit": "07652d4a4133e825aeeb09973398575b25713c82",
+    "environment_setup_commit": null,
+    "instance_id": "aws-cloudformation__cfn-lint-3749",
+    "platform": null,
+    "problem_statement": "Fn::ForEach could not be resolved when values array references Map using AccountId key\n### CloudFormation Lint Version\r\n\r\ncfn-lint 1.16.1 / git v1.16.1-5-g07652d4a4\r\n\r\n### What operating system are you using?\r\n\r\nMac\r\n\r\n### Describe the bug\r\n\r\n`cfn-lint` fails to resolve `Fn::ForEach` when values array comes from Map with `AccountId` key\r\n\r\n```\r\n$ cfn-lint mapt.yaml \r\nE0001 Error transforming template: Fn::ForEach could not be resolved\r\nmapt.yaml:11:7\r\n```\r\n\r\n### Expected behavior\r\n\r\ncfn-lint passes\r\n\r\n### Reproduction template\r\n\r\n```yaml\r\nAWSTemplateFormatVersion: '2010-09-09'\r\nTransform: AWS::LanguageExtensions\r\nMappings:\r\n  AccountMap:\r\n    12345678901:\r\n      Emails:\r\n        - test@test.com\r\nResources:\r\n  'Fn::ForEach::Subscriptions':\r\n    - Email\r\n    - !FindInMap [AccountMap, !Ref AWS::AccountId, Emails]\r\n    - 'SubscriptionFor&{Email}':\r\n        Type: AWS::SNS::Subscription\r\n        Properties:\r\n          TopicArn: \"arn:aws:sns:us-east-1:12345678901:my-sns-topic\"\r\n          Protocol: email\r\n          Endpoint: !Ref Email\r\n```\n",
+    "repo": "aws-cloudformation/cfn-lint",
+    "version": null
+  },
+  "task_environment": {
+    "dependencies": [],
+    "disk_budget": {
+      "minimum_available_bytes": 4294967296,
+      "minimum_available_inodes": 100000
+    },
+    "editable_target": ".[test]",
+    "instance_id": "aws-cloudformation__cfn-lint-3749",
+    "test_target": "test/unit/module/template/transforms/test_language_extensions.py"
+  },
+  "task_payload_sha256": "92aaec543cf5614e2cb7fc3b72cd4247b6616bbefbe072a700e27f9bbceb02b6",
+  "terminal_status_schema": [
+    "agent_dispatch_missing",
+    "agent_no_candidate",
+    "budget_blocked",
+    "evaluator_execution_error",
+    "evaluator_report_selection_error",
+    "evaluator_unavailable",
+    "host_runtime_contaminated",
+    "pre_agent_blocked",
+    "preflight_wiring_blocked",
+    "protocol_blocked",
+    "provider_transport_error",
+    "provider_usage_contract_violation",
+    "request_ceiling_reached",
+    "resolved",
+    "runner_error",
+    "task_environment_blocked",
+    "unresolved",
+    "validation_failed"
+  ]
+}
