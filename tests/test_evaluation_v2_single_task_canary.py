@@ -39,6 +39,18 @@ def test_rehearsal_closes_each_ledger_and_preserves_exact_usage_violation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("evals.paid_gate._git_is_clean", lambda _root: True)
+    monkeypatch.setattr(
+        canary, "_loopback_agent_provider_dispatch",
+        lambda *_args: (
+            canary.control_canary.PaidTaskResult(
+                canary.TASK_ID, "completed_without_candidate", "not_exported", "executed",
+                "not_run", "completed", "completed", terminal_status="agent_no_candidate",
+                provider_requests=1, live_executor_invoked=True, agent_dispatch_started=True,
+                provider_client_initialized=True, model_response_observed=True,
+            ),
+            1,
+        ),
+    )
     preflight = tmp_path / "preflight-summary.json"
     preflight.write_text(json.dumps({"passed": True}), encoding="utf-8")
 
@@ -47,6 +59,9 @@ def test_rehearsal_closes_each_ledger_and_preserves_exact_usage_violation(
     assert result["formal_trial_count"] == 0
     assert result["task"] == canary.TASK_ID
     assert result["provider_task_coverage"] == "1/1"
+    assert result["provider_transport"] == "loopback_fake_openai_compatible"
+    assert result["external_provider_transport"] is False
+    assert result["loopback_simulated_provider_requests"] == 1
     assert result["external_provider_requests"] == result["provider_requests"] == result["usage"] == 0
     assert result["charge_cny"] == "0"
     assert result["ledger_closed"] is True and result["active_reservation"] is None

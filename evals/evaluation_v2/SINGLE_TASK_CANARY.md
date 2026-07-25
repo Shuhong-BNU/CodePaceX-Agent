@@ -17,8 +17,9 @@ reserve only; it cannot be allocated or charged.  Every request receives a
 fresh rolling reservation and must settle before another request can start.
 
 With `paid_execution=false`, the workflow has no Secret environment and
-performs only a zero-provider rehearsal.  It records a normal fake-Usage path
-and the exact `completion_tokens=8197`, `reasoning_tokens=6144`,
+performs only a zero-provider rehearsal. It exercises the fixed Agent against
+an in-process loopback OpenAI-compatible Provider, records a normal fake-Usage path,
+and records the exact `completion_tokens=8197`, `reasoning_tokens=6144`,
 `text_tokens=8197` contract-violation path.  Both ledgers close with
 `active_reservation=null`, while external Provider requests, Usage and charge
 remain zero.

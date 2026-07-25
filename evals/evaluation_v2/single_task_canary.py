@@ -269,6 +269,47 @@ def _fake_result(root: Path, artifact_root: Path, run_id: str, scenario: str) ->
     return result, BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
 
 
+def _loopback_agent_provider_dispatch(
+    root: Path, artifact_root: Path, run_id: str,
+) -> tuple[control_canary.PaidTaskResult, int]:
+    """Exercise the fixed Agent path against an in-process OpenAI-compatible server."""
+    frozen = _read_json(root / COMMITTED_FREEZE)
+    gate = _fresh_gate(root, artifact_root, "zero-provider-loopback-agent-provider")
+    task, environment = _task(root), _environment(root)
+    plan = full_replay.canonical_task_environment_plan(task, environment)
+    with full_replay._loopback_fake_provider("single_response") as (provider, base_url):
+        pilot = control_canary._paid_pilot_config(frozen).model_copy(update={
+            "base_url": base_url,
+            "api_key_env": "EVALUATION_V2_SINGLE_TASK_LOOPBACK_KEY",
+        })
+        result = control_canary._live_task_executor(
+            root=root,
+            freeze_payload=frozen,
+            task=task,
+            metadata={
+                "preflight_dependencies": plan["dependencies"],
+                "editable_target": plan["editable_target"],
+                "test_target": plan["test_target"],
+                "bootstrap_environment": plan["bootstrap_environment"],
+                "disk_budget": plan["disk_budget"],
+            },
+            gate=gate,
+            artifact_root=artifact_root,
+            run_id=run_id,
+            trial_namespace="v2-single-task-zero-provider",
+            pilot_override=pilot,
+            provider_secret_override="zero-provider-loopback-only",
+            child_environment_overrides={
+                "NO_PROXY": "127.0.0.1,localhost",
+                "no_proxy": "127.0.0.1,localhost",
+            },
+        )
+    ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
+    if ledger.active_reservation is not None:
+        raise RuntimeError("single-task loopback dispatch left an active reservation")
+    return result, provider.request_count
+
+
 def rehearse(root: Path, preflight_summary: Path, artifact_root: Path, run_id: str) -> dict[str, Any]:
     validate_freeze(root)
     if not _read_json(preflight_summary).get("passed"):
@@ -279,9 +320,14 @@ def rehearse(root: Path, preflight_summary: Path, artifact_root: Path, run_id: s
     normal_root, violation_root = artifact_root / "normal", artifact_root / "usage-contract-violation"
     normal, normal_ledger = _fake_result(root, normal_root, f"{run_id}-normal", "normal")
     violation, violation_ledger = _fake_result(root, violation_root, f"{run_id}-violation", "usage-contract-violation")
+    dispatch, loopback_requests = _loopback_agent_provider_dispatch(
+        root, artifact_root / "agent-provider-dispatch", f"{run_id}-loopback",
+    )
     if normal_ledger.active_reservation is not None or violation_ledger.active_reservation is not None:
         raise RuntimeError("zero-provider rehearsal left an active reservation")
-    result = {"schema_version": SCHEMA_VERSION, "run_id": run_id, "paid_execution": False, "formal_trial_count": 0, "task": TASK_ID, "provider_transport": "deterministic_fake_usage", "external_provider_requests": 0, "provider_requests": 0, "usage": 0, "charge_cny": "0", "provider_secret_read": False, "agent_dispatch_count": 1, "provider_task_coverage": "1/1", "normal": asdict(normal), "usage_contract_violation": asdict(violation), "ledger_closed": True, "active_reservation": None, "completed": True}
+    if not dispatch.agent_dispatch_started or loopback_requests < 1:
+        raise RuntimeError("single-task Agent-to-loopback Provider coverage is incomplete")
+    result = {"schema_version": SCHEMA_VERSION, "run_id": run_id, "paid_execution": False, "formal_trial_count": 0, "task": TASK_ID, "provider_transport": "loopback_fake_openai_compatible", "external_provider_transport": False, "external_provider_requests": 0, "provider_requests": 0, "usage": 0, "charge_cny": "0", "provider_secret_read": False, "agent_dispatch_count": 1, "provider_task_coverage": "1/1", "loopback_simulated_provider_requests": loopback_requests, "agent_provider_dispatch": asdict(dispatch), "normal": asdict(normal), "usage_contract_violation": asdict(violation), "ledger_closed": True, "active_reservation": None, "completed": True}
     _write_json(artifact_root / "single-task-rehearsal-summary.json", result)
     _write_json(artifact_root / "artifact-index-record.json", {"schema_version": SCHEMA_VERSION, "kind": "evaluation-v2-single-task-zero-provider-rehearsal", "task": TASK_ID, "parent_readiness": freeze_payload(root)["parent_readiness"], "summary": "single-task-rehearsal-summary.json"})
     return result
