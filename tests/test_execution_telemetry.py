@@ -7,12 +7,14 @@ from pydantic import BaseModel
 
 from codepacex.agent import (
     Agent,
+    CapabilityV3TelemetryEvent,
     CompressionEvent,
     PermissionDecisionEvent,
     PermissionRequest,
     PermissionResponse,
     UsageEvent,
 )
+from codepacex.capability_v3 import CapabilityV3Config
 from codepacex.context import CompactEvent
 from codepacex.conversation import ConversationManager
 from codepacex.experiments import ExperimentProfile
@@ -118,6 +120,33 @@ async def test_streaming_path_emits_one_final_permission_event(tmp_path) -> None
     ]
     assert decisions[0].executed is True
     assert tool.count == 1
+
+
+@pytest.mark.asyncio
+async def test_capability_v3_is_disabled_by_default_and_fail_open_when_enabled(tmp_path) -> None:
+    tool = CountingTool("V3Read")
+    registry = create_default_registry(); registry.register(tool)
+    disabled = Agent(_two_turn_client(ToolCallComplete("v3-off", tool.name, {})), registry, "anthropic", work_dir=str(tmp_path))
+    disabled_events = await _run(disabled)
+    assert not [event for event in disabled_events if isinstance(event, CapabilityV3TelemetryEvent)]
+
+    enabled_tool = CountingTool("V3EnabledRead")
+    enabled_registry = create_default_registry(); enabled_registry.register(enabled_tool)
+    enabled = Agent(
+        _two_turn_client(ToolCallComplete("v3-on", enabled_tool.name, {})), enabled_registry, "anthropic",
+        work_dir=str(tmp_path), capability_v3_config=CapabilityV3Config(enabled=True),
+    )
+    def broken_update(_request: int):
+        raise RuntimeError("simulated V3 failure")
+    enabled.capability_v3_controller.update_budget = broken_update  # type: ignore[method-assign]
+    enabled._index_runtime_event(RuntimeManifestEvent(
+        provider="test", protocol="anthropic", model_id="test", system_sha256="s",
+        tools_sha256="t", messages_sha256="m",
+    ))
+    enabled_events = await _run(enabled)
+    assert enabled_tool.count == 1
+    v3_events = [event for event in enabled_events if isinstance(event, CapabilityV3TelemetryEvent)]
+    assert any(event.payload["event_type"] == "V3InternalError" for event in v3_events)
 
 
 @pytest.mark.asyncio

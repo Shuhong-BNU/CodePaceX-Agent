@@ -74,6 +74,7 @@ from codepacex.validation import (
     ValidationController,
     ValidationProfile,
 )
+from codepacex.capability_v3 import CapabilityV3Config, CapabilityV3Controller
 from codepacex.tools.validation_checkpoint import ValidationCheckpoint
 from codepacex.tools.run_test import RunTest
 
@@ -188,6 +189,13 @@ class ValidationTelemetryEvent:
 
 
 @dataclass
+class CapabilityV3TelemetryEvent:
+    """Append-only, advisory V3 telemetry. It is never a permission decision."""
+
+    payload: dict[str, Any]
+
+
+@dataclass
 class HookEvent:
     hook_id: str
     event: str
@@ -226,6 +234,7 @@ AgentEvent = (
     | PermissionDecisionEvent
     | CompressionEvent
     | ValidationTelemetryEvent
+    | CapabilityV3TelemetryEvent
 )
 
 
@@ -457,6 +466,8 @@ class Agent:
         experiment_profile: ExperimentProfile | None = None,
         validation_profile: ValidationProfile | None = None,
         validation_controller: ValidationController | None = None,
+        capability_v3_config: CapabilityV3Config | None = None,
+        capability_v3_controller: CapabilityV3Controller | None = None,
     ) -> None:
         self.client = client
         self.registry = registry
@@ -528,6 +539,11 @@ class Agent:
             self.registry.register(ValidationCheckpoint(self.validation_controller, self.agent_id))
         if self.validation_controller.enabled and self.registry.get("RunTest") is None:
             self.registry.register(RunTest())
+        self.capability_v3_controller = capability_v3_controller or CapabilityV3Controller(
+            capability_v3_config or CapabilityV3Config(),
+            task_id=self.session_id,
+            state_dir=Path(work_dir) / ".codepacex" / "capability_v3" / uuid.uuid4().hex,
+        )
 
         # 非阻塞 memory recall：prefetch task 与主 LLM 调用并行，工具执行后注入
         self.memory_recall_task: Any | None = None
@@ -549,6 +565,18 @@ class Agent:
             self.validation_controller.observe_request_completed(
                 agent_id=self.agent_id, parent_agent_id=self.parent_id,
             )
+        if self.capability_v3_controller.enabled:
+            try:
+                self.capability_v3_controller.update_budget(
+                    event.request_index or self._runtime_request_index
+                )
+            except Exception as exc:
+                # V3 is strictly advisory. An unexpected integration error must
+                # be captured without changing the V2 request lifecycle.
+                try:
+                    self.capability_v3_controller._fail_open("agent_budget_update", exc)
+                except Exception:
+                    log.exception("Capability V3 fail-open telemetry failed")
         if self.experiment_profile is not None:
             profile_hash = self.experiment_profile.profile_hash()
             event.experiment_profile_hash = profile_hash
@@ -563,9 +591,18 @@ class Agent:
     def _drain_validation_events(self) -> list[ValidationTelemetryEvent]:
         return [ValidationTelemetryEvent(event.to_dict()) for event in self.validation_controller.drain_events()]
 
+    def _drain_capability_v3_events(self) -> list[CapabilityV3TelemetryEvent]:
+        controller = self.capability_v3_controller
+        events, controller.events = controller.events[:], []
+        return [CapabilityV3TelemetryEvent(event) for event in events]
+
     @staticmethod
     def _validation_event_payload(event: ValidationTelemetryEvent) -> dict[str, Any]:
         return {"type": "validation", **event.payload}
+
+    @staticmethod
+    def _capability_v3_event_payload(event: CapabilityV3TelemetryEvent) -> dict[str, Any]:
+        return {"type": "capability_v3", **event.payload}
 
     def _compression_recovery_inputs(
         self, protocol: str,
@@ -1160,6 +1197,8 @@ class Agent:
                 )
                 for validation_event in self._drain_validation_events():
                     yield validation_event
+                for v3_event in self._drain_capability_v3_events():
+                    yield v3_event
                 conversation.add_assistant_message(
                     response.text, thinking_blocks=conv_thinking
                 )
@@ -1367,6 +1406,8 @@ class Agent:
 
             for validation_event in self._drain_validation_events():
                 yield validation_event
+            for v3_event in self._drain_capability_v3_events():
+                yield v3_event
 
             exit_plan_called = any(
                 tc.tool_name == "ExitPlanMode" for tc in response.tool_calls
@@ -2035,6 +2076,8 @@ class Agent:
                 if event_callback:
                     for validation_event in self._drain_validation_events():
                         event_callback(self._validation_event_payload(validation_event))
+                    for v3_event in self._drain_capability_v3_events():
+                        event_callback(self._capability_v3_event_payload(v3_event))
                 conversation.add_assistant_message(response.text)
                 if not completion.allowed and not completion.terminal:
                     conversation.add_user_message(
@@ -2081,6 +2124,8 @@ class Agent:
                     event_callback(self._permission_event_payload(permission_event))
                     for validation_event in self._drain_validation_events():
                         event_callback(self._validation_event_payload(validation_event))
+                    for v3_event in self._drain_capability_v3_events():
+                        event_callback(self._capability_v3_event_payload(v3_event))
                 content = self._maybe_persist_or_truncate(
                     tc.tool_id, outcome.result.output,
                 )
