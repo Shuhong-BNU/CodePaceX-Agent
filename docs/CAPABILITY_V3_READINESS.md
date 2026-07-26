@@ -48,13 +48,14 @@ non-strong evidence and incomparable baseline is always classified as
 Full local suite result:
 
 ```text
-1358 passed, 1 skipped, 6 failed
+1364 passed, 1 skipped
 ```
 
-The six failures are the existing commit-bound Evaluation V2 full-replay
-freeze tests. Their canonical payload includes a fixed historical execution
-commit, so they fail on every new implementation HEAD without changing the
-accepted Goal 4 baseline. No Goal 4 artifact was modified to mask that fact.
+The pending Evaluation V2 full-replay and derived single-task freeze files were
+regenerated to include the new V3 modules in their runtime source fingerprints.
+This changes only deterministic runtime hashes; Goal 4 task data, accepted
+baseline rows, evaluator contract, pricing, and paid authorization status are
+unchanged.
 
 ## Replay And Limitations
 

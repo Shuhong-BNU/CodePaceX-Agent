@@ -157,13 +157,16 @@
     "provider_request_budget_bridge_ceiling": 40,
     "runtime_source_sha256": {
       ".github/workflows/evaluation-v2-full-20-replay.yml": "ad8fb88f4619b3ebb32ef91bdfb7915a181f83ea514a29d48dac202599791fac",
-      "codepacex/agent.py": "cb8ab5ae16c2e41382c6a603c6f60be988db3c4e73100a3f08efb5bb2426050f",
+      "codepacex/agent.py": "18222236083eef9bf4817a57c8eab70ea7fdcdb76d37713bb1e212ee5e5a95bd",
+      "codepacex/capability_v3/config.py": "371ba85591b65278bf48003fc5a4c25c17233c3b2f9e3e01fb709dab01a10218",
+      "codepacex/capability_v3/controller.py": "51355326ea81ed73b668dba18c61147441298f5754eb608e2fcba3666949fe1a",
+      "codepacex/capability_v3/models.py": "b72e9d689742afa7a10e24022e4f190fc96618a2e628ec52a0eb2b14c8371beb",
       "codepacex/client.py": "205e40cf5629fdc9fca0b58edc43505bd5ac3ae8bfb69ebcd4dd73eed46fce0f",
       "codepacex/permissions/checker.py": "bab12d8cde66fac86bdb6df8e63c8540e0dba43dd8b2ae461047144afa380cd2",
       "codepacex/tools/edit_file.py": "495231404680b588a7ac14b2d2807aa156e832136c14459f923ac3276dab750f",
       "codepacex/tools/run_test.py": "19335d85dbd43ea6062e419bfcc089eb98da15c928bb1fcb6280705bc27b52fe",
       "evals/evaluation_v2/control_canary.py": "d462284c25244158704a23638844a627d7a0172217d3dd3c403055c6e6c836a9",
-      "evals/evaluation_v2/full_replay.py": "033e2d410748a9554f9de69c09751bafd1addcb895f311634073c523a483819b",
+      "evals/evaluation_v2/full_replay.py": "5826da32b5b593e14b8987b6b848ce79c0b5a03b9ff6eb5793fa289741ac4a1a",
       "evals/paid_gate.py": "4739c7f6f6ff0c06725c4a49c905e8f700848a8f7e4c3db31fb10a2647bdb4ce",
       "evals/pilot.py": "24bf24f8ad4b1783ae6160a6fb9781f42fde1bbbe0560689ea2a19330aacc24c"
     },
@@ -172,7 +175,7 @@
     "task_python_isolation_contract": "fresh-no-system-site-packages-venv-path-bound-python-python3-pip-pip3-v1",
     "tool_schemas_sha256": "72ae1262c5acd1a8b21c3f0964cdcb210508f1b780590b79b0ec2cc2eba07aea"
   },
-  "runtime_contract_sha256": "441abddee3dc1129e430e1e1d8a2845bba30a61656b3a8cbf7ec9ffee51521ec",
+  "runtime_contract_sha256": "c4fd70b03b8c8f63df5f87520441a7482cc6759f44d4aa95ad96c441c1f05cfd",
   "schema_version": 1,
   "selection_manifest_sha256": "3efa2694627f699324c78b3c8dd09f208330eebb77fecd9d807bfd509529935e",
   "status": "frozen_pending_single_full_20_authorization"

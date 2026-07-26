@@ -130,6 +130,9 @@ EXPECTED_SELECTION = {
 }
 RUNTIME_SOURCES = (
     "codepacex/agent.py",
+    "codepacex/capability_v3/config.py",
+    "codepacex/capability_v3/controller.py",
+    "codepacex/capability_v3/models.py",
     "codepacex/client.py",
     "codepacex/permissions/checker.py",
     "codepacex/tools/edit_file.py",
