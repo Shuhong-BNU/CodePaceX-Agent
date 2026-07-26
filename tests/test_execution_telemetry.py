@@ -147,6 +147,7 @@ async def test_capability_v3_is_disabled_by_default_and_fail_open_when_enabled(t
     assert enabled_tool.count == 1
     v3_events = [event for event in enabled_events if isinstance(event, CapabilityV3TelemetryEvent)]
     assert any(event.payload["event_type"] == "V3InternalError" for event in v3_events)
+    assert any(event["event_type"] == "V3InternalError" for event in enabled.capability_v3_controller.events)
 
 
 @pytest.mark.asyncio

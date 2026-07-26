@@ -544,6 +544,7 @@ class Agent:
             task_id=self.session_id,
             state_dir=Path(work_dir) / ".codepacex" / "capability_v3" / uuid.uuid4().hex,
         )
+        self._capability_v3_event_cursor = 0
 
         # 非阻塞 memory recall：prefetch task 与主 LLM 调用并行，工具执行后注入
         self.memory_recall_task: Any | None = None
@@ -593,7 +594,8 @@ class Agent:
 
     def _drain_capability_v3_events(self) -> list[CapabilityV3TelemetryEvent]:
         controller = self.capability_v3_controller
-        events, controller.events = controller.events[:], []
+        events = controller.events[self._capability_v3_event_cursor:]
+        self._capability_v3_event_cursor = len(controller.events)
         return [CapabilityV3TelemetryEvent(event) for event in events]
 
     @staticmethod
