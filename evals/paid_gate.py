@@ -247,6 +247,9 @@ class StageCBudgetAllocation(BaseModel):
 
     schema_version: Literal[1] = 1
     currency: Literal["CNY"] = "CNY"
+    allocation_id: str | None = Field(
+        default=None, pattern=r"^[a-z0-9][a-z0-9._-]{2,127}$",
+    )
     experiment_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
     pricing_snapshot_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     baseline_ledger_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -284,7 +287,7 @@ def allocation_hash(allocation: StageCBudgetAllocation) -> str:
     import hashlib
 
     payload = json.dumps(
-        allocation.model_dump(mode="json"), sort_keys=True, separators=(",", ":"),
+        allocation.model_dump(mode="json", exclude_none=True), sort_keys=True, separators=(",", ":"),
     ).encode()
     return hashlib.sha256(payload).hexdigest()
 

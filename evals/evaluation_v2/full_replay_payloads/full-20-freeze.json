@@ -157,7 +157,7 @@
     "pilot_config_max_iterations": 50,
     "provider_request_budget_bridge_ceiling": 40,
     "runtime_source_sha256": {
-      ".github/workflows/evaluation-v2-full-20-replay.yml": "b5e97e71baeeece476c5fd4f89f3ef2806ad65e8a422642561807a39d9d1ee5d",
+      ".github/workflows/evaluation-v2-full-20-replay.yml": "a691f674fcd45e0c58c5b7df09e02c86798d03eb844944d32d5f3a820070d306",
       "codepacex/agent.py": "2855a152fb852f31c2c4b021d08bdc03ec3e3f0cfaa790d3f8a18ba0ba8ae33d",
       "codepacex/capability_v3/config.py": "ad810ab41bd4ff83608dbf1e1d307cff9c2ac69bcb7f30555f6bbc55d639970b",
       "codepacex/capability_v3/controller.py": "f80d7abbc57dbcb8d3942b093a3ffebb43fb8911aa6138e5d0021393bc763288",
@@ -168,7 +168,7 @@
       "codepacex/tools/run_test.py": "19335d85dbd43ea6062e419bfcc089eb98da15c928bb1fcb6280705bc27b52fe",
       "evals/evaluation_v2/control_canary.py": "a2f650faa4c3ee7a615d77320952f652036b25fcad6635ffe3095bb16eed97f7",
       "evals/evaluation_v2/full_replay.py": "6be5d49fa3202ae6658a1aab4bf3c1e1fa7ed2ed56faed0834abfc27231dd007",
-      "evals/paid_gate.py": "4739c7f6f6ff0c06725c4a49c905e8f700848a8f7e4c3db31fb10a2647bdb4ce",
+      "evals/paid_gate.py": "c3cfc44dbd6f54e8b0a9eb3ce2d22d7827bc8bb3d7e1f5b34673f56b9a3f67c5",
       "evals/pilot.py": "22884f7b7285135be7fb349801a35760721a1093bb0d0fe12017f13e5ad77c9d"
     },
     "schema_version": 1,
@@ -176,7 +176,7 @@
     "task_python_isolation_contract": "fresh-no-system-site-packages-venv-path-bound-python-python3-pip-pip3-v1",
     "tool_schemas_sha256": "72ae1262c5acd1a8b21c3f0964cdcb210508f1b780590b79b0ec2cc2eba07aea"
   },
-  "runtime_contract_sha256": "98e822da888efa7febbc1990f19a9199b52e9b0ef1557f056ff71920dd87e8fa",
+  "runtime_contract_sha256": "4a102fb7022293109ad824d82b8356c2ab0c171018fab65f80eeb797ffa2a6c8",
   "schema_version": 1,
   "selection_manifest_sha256": "3efa2694627f699324c78b3c8dd09f208330eebb77fecd9d807bfd509529935e",
   "status": "frozen_pending_single_full_20_authorization"

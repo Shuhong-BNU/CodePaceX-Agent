@@ -20,7 +20,10 @@ from codepacex.capability_v3 import CapabilityV3Flag
 from evals.benchmark import canonical_hash, current_git_commit
 from evals.costing import load_pricing, pricing_snapshot_hash
 from evals.evaluation_v2 import control_canary, full_replay
-from evals.paid_gate import BudgetAuthorization, BudgetLedger, PaidRunGate, authorization_hash, worst_case_reservation
+from evals.paid_gate import (
+    BudgetAuthorization, BudgetLedger, PaidRunGate, StageCBudgetAllocation,
+    allocation_hash, authorization_hash, ledger_fingerprint, worst_case_reservation,
+)
 
 
 SCHEMA_VERSION = 1
@@ -36,6 +39,8 @@ PILOT_TASK_IDS = (
 TREATMENTS = (CapabilityV3Flag.V2_CONTROL, CapabilityV3Flag.V3_CORE)
 FREEZE_NAME = "capability-v3-controlled-pilot-freeze.json"
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
+RUN_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{2,80}$")
+ALLOCATION_SAFETY_RESERVE_CNY = Decimal("0.000001")
 
 
 def _write_json(path: Path, value: Any) -> None:
@@ -112,7 +117,63 @@ def budget_contract(root: Path) -> dict[str, Any]:
     }
 
 
-def freeze_payload(root: Path, *, bound_main_commit: str | None = None) -> dict[str, Any]:
+def _safe_run_id(run_id: str) -> str:
+    if not RUN_ID.fullmatch(run_id) or Path(run_id).name != run_id:
+        raise ValueError("controlled Pilot requires a fresh safe Run ID")
+    return run_id
+
+
+def _authorization(frozen: Mapping[str, Any], pricing_hash: str, commit: str) -> BudgetAuthorization:
+    total = Decimal(str(frozen["budget_contract"]["total_theoretical_exposure_cny"]))
+    return BudgetAuthorization(
+        authorized_total_cny=total, stage_limits_cny={"A": total, "B": total, "C": total},
+        pricing_snapshot_hash=pricing_hash, experiment_commit=commit,
+        authorized_at="single-capability-v3-controlled-pilot", authorized_by="user",
+    )
+
+
+def _allocation_binding(frozen: Mapping[str, Any], *, run_id: str) -> tuple[BudgetAuthorization, BudgetLedger, StageCBudgetAllocation, dict[str, Any]]:
+    run_id = _safe_run_id(run_id)
+    total = Decimal(str(frozen["budget_contract"]["total_theoretical_exposure_cny"]))
+    pricing_hash = str(frozen["budget_contract"]["pricing_snapshot_sha256"])
+    authorization = _authorization(frozen, pricing_hash, str(frozen["bound_main_commit"]))
+    ledger = BudgetLedger(
+        authorization_hash=authorization_hash(authorization), updated_at="controlled-pilot-allocation-prepared",
+    )
+    allocation = StageCBudgetAllocation(
+        allocation_id=f"capability-v3-{run_id}-stage-c",
+        experiment_commit=str(frozen["bound_main_commit"]), pricing_snapshot_hash=pricing_hash,
+        baseline_ledger_sha256=ledger_fingerprint(ledger),
+        baseline_authorization_hash=authorization_hash(authorization),
+        baseline_spent_cny=Decimal("0"), baseline_request_charge_count=0,
+        baseline_settlement_count=0, baseline_budget_block_count=0, baseline_rebind_count=0,
+        safety_reserve_cny=ALLOCATION_SAFETY_RESERVE_CNY,
+        spendable_total_cny=total - ALLOCATION_SAFETY_RESERVE_CNY,
+        category_limits_cny={
+            "swe": total - ALLOCATION_SAFETY_RESERVE_CNY, "mcp": Decimal("0"),
+            "retention": Decimal("0"), "permission": Decimal("0"),
+            "multi_agent": Decimal("0"), "long_session": Decimal("0"),
+        },
+    )
+    binding = {
+        "allocation_id": allocation.allocation_id,
+        "allocation_hash": allocation_hash(allocation),
+        "internal_run_id": run_id,
+        "bound_main_commit": frozen["bound_main_commit"],
+        "pricing_snapshot_sha256": pricing_hash,
+        "runtime_hash": frozen["runtime_hash"],
+        "task_list_sha256": frozen["task_list_sha256"],
+        "task_runs_sha256": frozen["task_runs_sha256"],
+        "authorized_total_cny": str(total),
+        "spendable_total_cny": str(allocation.spendable_total_cny),
+        "safety_reserve_cny": str(allocation.safety_reserve_cny),
+        "allocation_path": "controlled-pilot-stage-c-allocation.json",
+        "ledger_binding": "allocation_hash is durable before the first reservation",
+    }
+    return authorization, ledger, allocation, binding
+
+
+def freeze_payload(root: Path, *, bound_main_commit: str | None = None, run_id: str) -> dict[str, Any]:
     head = current_git_commit(root)
     bound = bound_main_commit or head
     if not COMMIT.fullmatch(bound):
@@ -124,7 +185,7 @@ def freeze_payload(root: Path, *, bound_main_commit: str | None = None) -> dict[
     task_list = [{key: item[key] for key in (
         "instance_id", "repo", "base_commit", "agent_visible_payload_sha256",
     )} for item in runs[::2]]
-    return {
+    payload = {
         "schema_version": SCHEMA_VERSION,
         "experiment_name": EXPERIMENT_NAME,
         "status": "frozen_pending_single_paid_authorization",
@@ -166,10 +227,13 @@ def freeze_payload(root: Path, *, bound_main_commit: str | None = None) -> dict[
         "provider_secret_presence_only": True,
         "gold_hidden_access_forbidden": True,
     }
+    _authorization, _ledger, _allocation, binding = _allocation_binding(payload, run_id=run_id)
+    payload["allocation_binding"] = binding
+    return payload
 
 
-def write_freeze(root: Path, output: Path) -> dict[str, str]:
-    payload = freeze_payload(root)
+def write_freeze(root: Path, output: Path, *, run_id: str) -> dict[str, str]:
+    payload = freeze_payload(root, run_id=run_id)
     output.mkdir(parents=True, exist_ok=False)
     _write_json(output / FREEZE_NAME, payload)
     pricing = root / full_replay.PRICING_PATH
@@ -179,12 +243,19 @@ def write_freeze(root: Path, output: Path) -> dict[str, str]:
         "pricing_snapshot_sha256": payload["budget_contract"]["pricing_snapshot_sha256"],
         "runtime_hash": payload["runtime_hash"],
         "task_list_sha256": payload["task_list_sha256"],
+        "allocation_hash": payload["allocation_binding"]["allocation_hash"],
     }
 
 
 def validate_freeze(root: Path, freeze: Path) -> dict[str, Any]:
     actual = _read_json(freeze / FREEZE_NAME)
-    expected = freeze_payload(root, bound_main_commit=str(actual.get("bound_main_commit", "")))
+    binding = actual.get("allocation_binding")
+    if not isinstance(binding, dict):
+        raise ValueError("controlled Pilot Freeze is missing its allocation binding")
+    expected = freeze_payload(
+        root, bound_main_commit=str(actual.get("bound_main_commit", "")),
+        run_id=str(binding.get("internal_run_id", "")),
+    )
     if actual != expected:
         raise ValueError("controlled Pilot Freeze differs from its canonical contract")
     pricing = freeze / "pricing-snapshot.json"
@@ -198,6 +269,7 @@ def write_freeze_identities(payload: Mapping[str, Any]) -> dict[str, str]:
         "pricing_snapshot_sha256": str(payload["budget_contract"]["pricing_snapshot_sha256"]),
         "runtime_hash": str(payload["runtime_hash"]),
         "task_list_sha256": str(payload["task_list_sha256"]),
+        "allocation_hash": str(payload["allocation_binding"]["allocation_hash"]),
     }
 
 
@@ -225,22 +297,30 @@ def run_preflight(root: Path, freeze: Path, artifact_root: Path) -> dict[str, An
     return summary
 
 
-def _fresh_gate(root: Path, freeze: Path, artifact_root: Path, acknowledgement: str) -> PaidRunGate:
+def _fresh_gate(root: Path, freeze: Path, artifact_root: Path, acknowledgement: str, *, run_id: str) -> PaidRunGate:
     if not acknowledgement:
         raise ValueError("controlled Pilot requires a non-empty authorization acknowledgement")
     frozen = _read_json(freeze / FREEZE_NAME)
-    total = Decimal(str(frozen["budget_contract"]["total_theoretical_exposure_cny"]))
     pricing = load_pricing(freeze / "pricing-snapshot.json")
-    authorization = BudgetAuthorization(
-        authorized_total_cny=total, stage_limits_cny={"A": total, "B": total, "C": total},
-        pricing_snapshot_hash=pricing_snapshot_hash(pricing), experiment_commit=current_git_commit(root),
-        authorized_at="single-capability-v3-controlled-pilot", authorized_by="user",
-    )
+    authorization, ledger, allocation, binding = _allocation_binding(frozen, run_id=run_id)
+    if authorization.pricing_snapshot_hash != pricing_snapshot_hash(pricing) or authorization.experiment_commit != current_git_commit(root):
+        raise ValueError("controlled Pilot allocation binding does not match its live freeze identity")
+    if binding != frozen["allocation_binding"]:
+        raise ValueError("controlled Pilot allocation hash or Run ID does not match the freeze")
     authorization_path, ledger_path = artifact_root / "authorization.json", artifact_root / "ledger.json"
+    allocation_path = artifact_root / binding["allocation_path"]
     _write_json(authorization_path, authorization.model_dump(mode="json"))
     _write_json(artifact_root / "authorization-acknowledgement.json", {"acknowledgement": acknowledgement})
-    _write_json(ledger_path, BudgetLedger(authorization_hash=authorization_hash(authorization), updated_at="controlled-pilot-start").model_dump(mode="json"))
-    return PaidRunGate(root=root, authorization_path=authorization_path, ledger_path=ledger_path, pricing_path=freeze / "pricing-snapshot.json", pricing=pricing, stage="C")
+    ledger = ledger.model_copy(update={"allocation_hash": allocation_hash(allocation), "updated_at": "controlled-pilot-entry"})
+    _write_json(ledger_path, ledger.model_dump(mode="json"))
+    _write_json(allocation_path, allocation.model_dump(mode="json"))
+    _write_json(artifact_root / "controlled-pilot-execution-contract.json", {
+        "freeze_sha256": _sha256(freeze / FREEZE_NAME), "allocation_binding": binding,
+        "allocation_hash": allocation_hash(allocation), "ledger_allocation_hash": ledger.allocation_hash,
+        "paid_execution": False, "provider_requests": 0, "provider_secret_read": False,
+    })
+    return PaidRunGate(root=root, authorization_path=authorization_path, ledger_path=ledger_path,
+        allocation_path=allocation_path, pricing_path=freeze / "pricing-snapshot.json", pricing=pricing, stage="C")
 
 
 def rehearse(root: Path, freeze: Path, preflight_summary: Path, artifact_root: Path) -> dict[str, Any]:
@@ -280,17 +360,61 @@ def rehearse(root: Path, freeze: Path, preflight_summary: Path, artifact_root: P
     return summary
 
 
-def run_paid_pilot(root: Path, freeze: Path, artifact_root: Path, *, expected_freeze_sha256: str, approved_total_hard_cap_cny: str, authorization_acknowledgement: str, run_id: str) -> dict[str, Any]:
+def rehearse_execution_entry(root: Path, freeze: Path, preflight_summary: Path, artifact_root: Path) -> dict[str, Any]:
+    """Exercise the real Stage C entry gate for all frozen runs without transport."""
+    identities = validate_freeze(root, freeze)
+    preflight = _read_json(preflight_summary)
+    if not preflight.get("passed") or preflight.get("ready_count") != len(PILOT_TASK_IDS):
+        raise ValueError("controlled Pilot preflight is not ready")
+    if artifact_root.exists():
+        raise ValueError("refusing to create a duplicate controlled Pilot allocation Artifact")
+    frozen = _read_json(freeze / FREEZE_NAME)
+    artifact_root.mkdir(parents=True)
+    run_id = str(frozen["allocation_binding"]["internal_run_id"])
+    gate = _fresh_gate(root, freeze, artifact_root, "zero-provider-execution-entry-rehearsal", run_id=run_id)
+    handoffs = []
+    for run in frozen["task_runs"]:
+        trial_id = f"swe/capability-v3-controlled-pilot/{run_id}/{run['task_run_id']}"
+        reservation = gate.reserve(
+            trial_id, maximum_requests=1,
+            maximum_input_tokens_per_request=full_replay.MAX_INPUT_TOKENS,
+            maximum_output_tokens_per_request=full_replay.MAX_OUTPUT_TOKENS,
+        )
+        settlement = gate.cancel(reservation, reason="provider_confirmed_not_submitted")
+        handoffs.append({
+            "task_run_id": run["task_run_id"], "capability_v3_flag": run["capability_v3_flag"],
+            "trial_id": trial_id, "reservation_cny": str(reservation.reserved_cny),
+            "settlement_cny": str(settlement.actual_cny), "status": settlement.status,
+        })
+    ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
+    binding = frozen["allocation_binding"]
+    if ledger.active_reservation is not None or ledger.request_charges or ledger.spent_cny != 0:
+        raise RuntimeError("zero-provider controlled Pilot entry rehearsal did not close cleanly")
+    result = {
+        "schema_version": SCHEMA_VERSION, "paid_execution": False, "provider_requests": 0,
+        "usage": 0, "charge_cny": "0", "provider_secret_read": False,
+        "freeze_sha256": identities["freeze_sha256"], "allocation_binding": binding,
+        "ledger_allocation_hash": ledger.allocation_hash, "active_reservation": None,
+        "task_runs": handoffs, "completed": len(handoffs) == len(frozen["task_runs"]),
+    }
+    _write_json(artifact_root / "controlled-pilot-execution-entry-rehearsal.json", result)
+    return result
+
+
+def run_paid_pilot(root: Path, freeze: Path, artifact_root: Path, *, expected_freeze_sha256: str, expected_allocation_hash: str, approved_total_hard_cap_cny: str, authorization_acknowledgement: str, run_id: str) -> dict[str, Any]:
     """Future-only serial executor; no caller reaches it without explicit confirmation."""
     identities = validate_freeze(root, freeze)
     frozen = _read_json(freeze / FREEZE_NAME)
     total = Decimal(str(frozen["budget_contract"]["total_theoretical_exposure_cny"]))
+    binding = frozen["allocation_binding"]
     if expected_freeze_sha256 != identities["freeze_sha256"] or Decimal(approved_total_hard_cap_cny) != total:
         raise ValueError("paid authorization does not match the controlled Pilot Freeze and hard cap")
-    if not run_id or Path(run_id).name != run_id or artifact_root.exists():
+    if expected_allocation_hash != binding["allocation_hash"]:
+        raise ValueError("paid authorization does not match the controlled Pilot allocation hash")
+    if run_id != binding["internal_run_id"] or not run_id or Path(run_id).name != run_id or artifact_root.exists():
         raise ValueError("controlled Pilot requires a fresh safe Run ID and Artifact root")
     artifact_root.mkdir(parents=True)
-    gate = _fresh_gate(root, freeze, artifact_root, authorization_acknowledgement)
+    gate = _fresh_gate(root, freeze, artifact_root, authorization_acknowledgement, run_id=run_id)
     tasks = {item["instance_id"]: item for item in full_replay.load_tasks(root)}
     metadata = full_replay._task_environment_contract(root)
     results = []
@@ -307,6 +431,7 @@ def run_paid_pilot(root: Path, freeze: Path, artifact_root: Path, *, expected_fr
     summary = {
         "schema_version": SCHEMA_VERSION, "paid_execution": True, "run_id": run_id,
         "freeze_sha256": identities["freeze_sha256"], "results": results,
+        "allocation_id": binding["allocation_id"], "allocation_hash": binding["allocation_hash"],
         "provider_requests": len(ledger.request_charges), "usage": sum(item.input_tokens + item.output_tokens for item in ledger.request_charges),
         "charge_cny": str(ledger.spent_cny), "ledger_closed": ledger.active_reservation is None,
         "completed": len(results) == 12 and ledger.active_reservation is None,
@@ -318,20 +443,22 @@ def run_paid_pilot(root: Path, freeze: Path, artifact_root: Path, *, expected_fr
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Capability V3 controlled Pilot contracts")
     sub = parser.add_subparsers(dest="command", required=True)
-    freeze = sub.add_parser("freeze"); freeze.add_argument("--root", type=Path, required=True); freeze.add_argument("--output", type=Path, required=True)
+    freeze = sub.add_parser("freeze"); freeze.add_argument("--root", type=Path, required=True); freeze.add_argument("--output", type=Path, required=True); freeze.add_argument("--run-id", required=True)
     validate = sub.add_parser("validate"); validate.add_argument("--root", type=Path, required=True); validate.add_argument("--freeze", type=Path, required=True)
     preflight = sub.add_parser("preflight"); preflight.add_argument("--root", type=Path, required=True); preflight.add_argument("--freeze", type=Path, required=True); preflight.add_argument("--artifact-root", type=Path, required=True)
     rehearsal = sub.add_parser("rehearse"); rehearsal.add_argument("--root", type=Path, required=True); rehearsal.add_argument("--freeze", type=Path, required=True); rehearsal.add_argument("--preflight-summary", type=Path, required=True); rehearsal.add_argument("--artifact-root", type=Path, required=True)
-    paid = sub.add_parser("paid-run"); paid.add_argument("--root", type=Path, required=True); paid.add_argument("--freeze", type=Path, required=True); paid.add_argument("--artifact-root", type=Path, required=True); paid.add_argument("--expected-freeze-sha256", required=True); paid.add_argument("--approved-total-hard-cap-cny", required=True); paid.add_argument("--authorization-acknowledgement", required=True); paid.add_argument("--run-id", required=True); paid.add_argument("--confirm-paid-execution", action="store_true")
+    entry = sub.add_parser("rehearse-execution-entry"); entry.add_argument("--root", type=Path, required=True); entry.add_argument("--freeze", type=Path, required=True); entry.add_argument("--preflight-summary", type=Path, required=True); entry.add_argument("--artifact-root", type=Path, required=True)
+    paid = sub.add_parser("paid-run"); paid.add_argument("--root", type=Path, required=True); paid.add_argument("--freeze", type=Path, required=True); paid.add_argument("--artifact-root", type=Path, required=True); paid.add_argument("--expected-freeze-sha256", required=True); paid.add_argument("--expected-allocation-hash", required=True); paid.add_argument("--approved-total-hard-cap-cny", required=True); paid.add_argument("--authorization-acknowledgement", required=True); paid.add_argument("--run-id", required=True); paid.add_argument("--confirm-paid-execution", action="store_true")
     args = parser.parse_args(argv)
-    if args.command == "freeze": result = write_freeze(args.root.resolve(), args.output.resolve())
+    if args.command == "freeze": result = write_freeze(args.root.resolve(), args.output.resolve(), run_id=args.run_id)
     elif args.command == "validate": result = validate_freeze(args.root.resolve(), args.freeze.resolve())
     elif args.command == "preflight": result = run_preflight(args.root.resolve(), args.freeze.resolve(), args.artifact_root.resolve())
     elif args.command == "rehearse": result = rehearse(args.root.resolve(), args.freeze.resolve(), args.preflight_summary.resolve(), args.artifact_root.resolve())
+    elif args.command == "rehearse-execution-entry": result = rehearse_execution_entry(args.root.resolve(), args.freeze.resolve(), args.preflight_summary.resolve(), args.artifact_root.resolve())
     else:
         if not args.confirm_paid_execution:
             raise ValueError("paid execution requires --confirm-paid-execution")
-        result = run_paid_pilot(args.root.resolve(), args.freeze.resolve(), args.artifact_root.resolve(), expected_freeze_sha256=args.expected_freeze_sha256, approved_total_hard_cap_cny=args.approved_total_hard_cap_cny, authorization_acknowledgement=args.authorization_acknowledgement, run_id=args.run_id)
+        result = run_paid_pilot(args.root.resolve(), args.freeze.resolve(), args.artifact_root.resolve(), expected_freeze_sha256=args.expected_freeze_sha256, expected_allocation_hash=args.expected_allocation_hash, approved_total_hard_cap_cny=args.approved_total_hard_cap_cny, authorization_acknowledgement=args.authorization_acknowledgement, run_id=args.run_id)
     print(json.dumps(result, sort_keys=True)); return 0
 
 
