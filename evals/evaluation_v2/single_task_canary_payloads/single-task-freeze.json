@@ -45,10 +45,10 @@
   "parent_readiness": {
     "artifact_digest": "sha256:1256700266cfa3195589548f526bf2e46f418239d42aa0b72b6ca30fbac5b236",
     "artifact_id": 8621081736,
-    "freeze_sha256": "844b86639a46e9aab9de48222c51f9bd801ae350f218a6857acb1bf5a0b158a8",
+    "freeze_sha256": "082a06f7bfcbe2f88b438ce609700b17043cec4017e37d3750a906188256b931",
     "pricing_snapshot_sha256": "a09eb6e6955b9fb68d3e011771c948f7a14b7bbca5316a2433cab099d0b643d3",
     "run_id": 30163373235,
-    "runtime_contract_sha256": "98e822da888efa7febbc1990f19a9199b52e9b0ef1557f056ff71920dd87e8fa"
+    "runtime_contract_sha256": "4a102fb7022293109ad824d82b8356c2ab0c171018fab65f80eeb797ffa2a6c8"
   },
   "provider_contract": {
     "base_url": "https://llm-ipge9fy38w648m28.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
@@ -68,12 +68,12 @@
       ".github/workflows/evaluation-v2-single-task-paid-canary.yml": "57ad04555afcdc94e5724f5ade57f5a27ad484b1e8e49bb3912e9e34a059128f",
       "evals/evaluation_v2/control_canary.py": "a2f650faa4c3ee7a615d77320952f652036b25fcad6635ffe3095bb16eed97f7",
       "evals/evaluation_v2/full_replay.py": "6be5d49fa3202ae6658a1aab4bf3c1e1fa7ed2ed56faed0834abfc27231dd007",
-      "evals/evaluation_v2/single_task_canary.py": "7fab2461014bf09230eb3ba2be08f0b6f810ba78f4537dcd05ad290d9ed0802d",
-      "evals/paid_gate.py": "4739c7f6f6ff0c06725c4a49c905e8f700848a8f7e4c3db31fb10a2647bdb4ce"
+      "evals/evaluation_v2/single_task_canary.py": "3b47e5b9f9f5ed55233ef77700f120718361f4f763c78b2aa740dc6214c8e72e",
+      "evals/paid_gate.py": "c3cfc44dbd6f54e8b0a9eb3ce2d22d7827bc8bb3d7e1f5b34673f56b9a3f67c5"
     },
     "usage_contract_terminal": "provider_usage_contract_violation"
   },
-  "runtime_contract_hash": "2a57d4256dd45d3006c511f658a822cf207a5317f02624a822511bdcc326ed0b",
+  "runtime_contract_hash": "dc48fdec990c2b2aa0a53cef02ee73b5a253b858e3ed80d3c154431e8ac1d2ea",
   "schema_version": 1,
   "status": "frozen_pending_explicit_single_task_authorization",
   "task": {

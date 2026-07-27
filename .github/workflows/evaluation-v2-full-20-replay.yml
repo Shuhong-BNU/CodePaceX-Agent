@@ -50,6 +50,11 @@ on:
         required: false
         type: string
         default: ''
+      controlled_pilot_expected_allocation_hash:
+        description: Exact run-scoped Stage C allocation SHA-256 from the controlled-Pilot Freeze.
+        required: false
+        type: string
+        default: ''
       controlled_pilot_approved_total_hard_cap_cny:
         description: Exact controlled-Pilot hard cap from its Freeze.
         required: false
@@ -240,7 +245,7 @@ jobs:
           root="$RUNNER_TEMP/capability-v3-controlled-pilot/$GITHUB_RUN_ID"
           mkdir -p "$root"
           printf 'CONTROLLED_PILOT_ROOT=%s\n' "$root" >> "$GITHUB_ENV"
-          python -m evals.evaluation_v2.capability_v3_pilot freeze --root . --output "$root/freeze" > "$root/freeze-result.json"
+          python -m evals.evaluation_v2.capability_v3_pilot freeze --root . --output "$root/freeze" --run-id "readiness-$GITHUB_RUN_ID" > "$root/freeze-result.json"
           python -m evals.evaluation_v2.capability_v3_pilot validate --root . --freeze "$root/freeze" > "$root/freeze-validation.json"
       - name: Preflight all six controlled-Pilot task environments without Provider transport
         run: |
@@ -265,6 +270,20 @@ jobs:
           assert summary['provider_requests'] == summary['usage'] == 0
           assert summary['charge_cny'] == '0' and summary['provider_secret_read'] is False
           assert len(summary['run_artifacts']) == 12
+          PY
+      - name: Rehearse the real Stage C allocation execution entry without Provider transport
+        run: |
+          set -euo pipefail
+          python -m evals.evaluation_v2.capability_v3_pilot rehearse-execution-entry --root . --freeze "$CONTROLLED_PILOT_ROOT/freeze" --preflight-summary "$CONTROLLED_PILOT_ROOT/preflight/preflight-summary.json" --artifact-root "$CONTROLLED_PILOT_ROOT/execution-entry" > "$CONTROLLED_PILOT_ROOT/execution-entry-result.json"
+          python - "$CONTROLLED_PILOT_ROOT/execution-entry/controlled-pilot-execution-entry-rehearsal.json" <<'PY'
+          import json, sys
+          summary = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert summary['completed'] is True
+          assert summary['provider_requests'] == summary['usage'] == 0
+          assert summary['charge_cny'] == '0' and summary['provider_secret_read'] is False
+          assert summary['active_reservation'] is None
+          assert len(summary['task_runs']) == 12
+          assert summary['ledger_allocation_hash'] == summary['allocation_binding']['allocation_hash']
           PY
       - name: Upload controlled-Pilot zero-provider readiness Artifact
         if: always()
@@ -302,9 +321,9 @@ jobs:
           set -euo pipefail
           root="$RUNNER_TEMP/capability-v3-controlled-pilot-paid/${{ inputs.controlled_pilot_run_id }}"
           mkdir -p "$root"
-          python -m evals.evaluation_v2.capability_v3_pilot freeze --root . --output "$root/freeze" > "$root/freeze-result.json"
+          python -m evals.evaluation_v2.capability_v3_pilot freeze --root . --output "$root/freeze" --run-id '${{ inputs.controlled_pilot_run_id }}' > "$root/freeze-result.json"
           python -m evals.evaluation_v2.capability_v3_pilot preflight --root . --freeze "$root/freeze" --artifact-root "$root/preflight" > "$root/preflight-result.json"
-          python -m evals.evaluation_v2.capability_v3_pilot paid-run --confirm-paid-execution --root . --freeze "$root/freeze" --artifact-root "$root/paid" --expected-freeze-sha256 '${{ inputs.controlled_pilot_expected_freeze_sha256 }}' --approved-total-hard-cap-cny '${{ inputs.controlled_pilot_approved_total_hard_cap_cny }}' --authorization-acknowledgement '${{ inputs.controlled_pilot_authorization_acknowledgement }}' --run-id '${{ inputs.controlled_pilot_run_id }}' > "$root/paid-result.json"
+          python -m evals.evaluation_v2.capability_v3_pilot paid-run --confirm-paid-execution --root . --freeze "$root/freeze" --artifact-root "$root/paid" --expected-freeze-sha256 '${{ inputs.controlled_pilot_expected_freeze_sha256 }}' --expected-allocation-hash '${{ inputs.controlled_pilot_expected_allocation_hash }}' --approved-total-hard-cap-cny '${{ inputs.controlled_pilot_approved_total_hard_cap_cny }}' --authorization-acknowledgement '${{ inputs.controlled_pilot_authorization_acknowledgement }}' --run-id '${{ inputs.controlled_pilot_run_id }}' > "$root/paid-result.json"
       - name: Upload controlled-Pilot paid evidence
         if: always()
         uses: actions/upload-artifact@v4
