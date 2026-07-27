@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 import yaml
+from codepacex.capability_v3 import CapabilityV3Flag, FEATURE_FLAG_KEY, flag_from_feature_flags
 from codepacex.config import load_config as load_codepacex_config
 from codepacex.experiments import ExperimentProfile
 from codepacex.prompts import build_static_system_instruction
@@ -828,12 +829,18 @@ def _paid_pilot_config(freeze_payload: dict[str, Any]) -> PilotConfig:
         permission_strategy="session_allow", agent_mode="single",
     )
     provider = freeze_payload["provider_contract"]
+    flag = CapabilityV3Flag(
+        str(freeze_payload.get("runtime_contract", {}).get(
+            "capability_v3_feature_flag", CapabilityV3Flag.V2_CONTROL.value,
+        ))
+    )
     return PilotConfig.model_validate({
         "schema_version": 2, "experiment_kind": "pilot", "provider": provider["provider"],
         "protocol": provider["protocol"], "base_url": provider["base_url"],
         "api_key_env": provider["provider_secret_name"], "model_id": provider["model_id"],
         "fallback_enabled": False, "retry_budget": 0, "task_ids": [], "repetitions": 1,
-        "feature_flags": {}, "experiment_profile": profile.canonical_payload(),
+        "feature_flags": {FEATURE_FLAG_KEY: flag.value},
+        "experiment_profile": profile.canonical_payload(),
         # PilotConfig keeps this schema-compatibility field at 50. The separate
         # Provider request bridge below remains the frozen 40-request limit.
         "max_iterations": 50,
@@ -999,6 +1006,7 @@ def _live_task_executor(
             pre_agent_blocker="agent_runtime_dependency_invalid",
         ))
     pilot = pilot_override or _paid_pilot_config(freeze_payload)
+    capability_v3_flag = flag_from_feature_flags(pilot.feature_flags)
     if provider_secret_override is None and not os.environ.get(pilot.api_key_env):
         evidence["failure"] = "provider_secret_unavailable"
         return finish(PaidTaskResult(
@@ -1021,6 +1029,17 @@ def _live_task_executor(
             for key, value in metadata.get("bootstrap_environment", {}).items()
         })
         environment["PIP_NO_CACHE_DIR"] = "1"
+        capability_v3_artifact = task_root / "capability-v3"
+        environment.update({
+            "CODEPACEX_CAPABILITY_V3_FLAG": capability_v3_flag.value,
+            "CODEPACEX_CAPABILITY_V3_TASK_ID": task["instance_id"],
+            "CODEPACEX_CAPABILITY_V3_BASE_COMMIT": task["base_commit"],
+            "CODEPACEX_CAPABILITY_V3_ARTIFACT_DIR": str(capability_v3_artifact),
+        })
+        evidence["capability_v3"] = {
+            "feature_flag": capability_v3_flag.value,
+            "artifact_path": str(capability_v3_artifact.relative_to(task_root)),
+        }
         environment.update(child_environment_overrides or {})
         try:
             evidence["task_tool_resolution"] = _task_tool_resolution(environment, python)
@@ -1080,7 +1099,11 @@ def _live_task_executor(
             "error", "transport_failed", terminal_status="provider_transport_error",
             failure_classification="provider_transport_error", **common,
         ))
-    patch = _goal3_extract_patch(workspace)
+    stable_patch = task_root / "capability-v3" / "final.patch"
+    patch = (
+        stable_patch.read_text(encoding="utf-8")
+        if stable_patch.is_file() else _goal3_extract_patch(workspace)
+    )
     patch_path = task_root / "candidate.patch"
     patch_path.write_text(patch, encoding="utf-8")
     candidate_sha = _sha256(patch_path)

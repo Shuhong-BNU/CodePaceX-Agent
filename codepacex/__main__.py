@@ -17,6 +17,7 @@ from pathlib import Path
 import yaml
 
 from codepacex.config import ConfigError, load_config
+from codepacex.capability_v3 import CapabilityV3Config, CapabilityV3Flag
 from codepacex.experiments import (
     AgentMode,
     ExperimentProfile,
@@ -80,6 +81,12 @@ def main() -> None:
         help="Maximum Agent turns for non-interactive execution",
     )
     parser.add_argument(
+        "--capability-v3-flag",
+        choices=[flag.value for flag in CapabilityV3Flag],
+        default=os.environ.get("CODEPACEX_CAPABILITY_V3_FLAG", CapabilityV3Flag.V2_CONTROL.value),
+        help="Advisory Capability V3 evaluation flag (defaults to the V2 control)",
+    )
+    parser.add_argument(
         "--remote",
         action="store_true",
         default=False,
@@ -122,6 +129,7 @@ def main() -> None:
         asyncio.run(_run_prompt(
             config, permission_mode, hook_engine, args.p, output_format,
             experiment_profile=experiment_profile, max_iterations=args.max_iterations,
+            capability_v3_flag=args.capability_v3_flag,
         ))
         return
 
@@ -167,6 +175,7 @@ async def _run_prompt(
     *,
     experiment_profile: ExperimentProfile | None = None,
     max_iterations: int | None = None,
+    capability_v3_flag: str = CapabilityV3Flag.V2_CONTROL.value,
 ) -> None:
     mcp_manager = None
 
@@ -183,6 +192,7 @@ async def _run_prompt(
             output_format,
             experiment_profile=experiment_profile,
             max_iterations=max_iterations,
+            capability_v3_flag=capability_v3_flag,
             _set_mcp_manager=set_mcp_manager,
         )
     finally:
@@ -204,6 +214,7 @@ async def _run_prompt_impl(
     *,
     experiment_profile: ExperimentProfile | None = None,
     max_iterations: int | None = None,
+    capability_v3_flag: str = CapabilityV3Flag.V2_CONTROL.value,
     _set_mcp_manager,
 ) -> None:
     from codepacex.agent import (
@@ -340,6 +351,14 @@ async def _run_prompt_impl(
         providers=config.providers,
         fallback=config.fallback,
         experiment_profile=experiment_profile,
+        capability_v3_config=CapabilityV3Config.from_flag(capability_v3_flag),
+        capability_v3_flag=capability_v3_flag,
+        capability_v3_artifact_root=(
+            Path(os.environ["CODEPACEX_CAPABILITY_V3_ARTIFACT_DIR"])
+            if os.environ.get("CODEPACEX_CAPABILITY_V3_ARTIFACT_DIR") else None
+        ),
+        capability_v3_task_id=os.environ.get("CODEPACEX_CAPABILITY_V3_TASK_ID", ""),
+        capability_v3_base_commit=os.environ.get("CODEPACEX_CAPABILITY_V3_BASE_COMMIT", ""),
     )
 
     wt_cfg = config.worktree or WorktreeConfig()
