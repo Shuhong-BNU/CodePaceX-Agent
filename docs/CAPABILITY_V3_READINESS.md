@@ -23,6 +23,23 @@ resolution-rate or model-capability improvement and does not authorize a Pilot.
 | V3-D differential validation | `models.py` comparable identities/failure records and `controller.py` unknown/incomparable-aware attribution |
 | Agent-loop adaptation | `codepacex/agent.py` opt-in telemetry/budget observation; no V3 output enters Permission or Validation deny paths |
 
+## Pilot Wiring
+
+Evaluation V2 binds `capability_v3_feature_flag` into the pending runtime
+contract, defaulting to `V2_CONTROL`. A separately authorized future run may
+select one of the frozen V3 flags through the existing Pilot `feature_flags`;
+the runner passes it to the Agent, records it in the task Artifact, and leaves
+`V2_CONTROL` fully disabled.
+
+For an enabled run, the Agent collects evidence at task start, snapshots a
+complete workspace diff after successful writes, builds impact when the diff is
+available, observes `RunTest` results, and finalizes at task end. These calls
+are advisory and fail open. The final export reads `final.patch` from the
+highest stable Candidate snapshot, so later WIP cannot replace it. If no stable
+Candidate exists, the Artifact records `no_stable_candidate` and exports no
+patch. Matrix generation is accurately labeled `bounded_cartesian`; no
+pairwise coverage claim is made.
+
 ## Tests And Fixture Metrics
 
 Commands run in the isolated local Python 3.12 lockfile environment:
@@ -48,7 +65,14 @@ non-strong evidence and incomparable baseline is always classified as
 Full local suite result:
 
 ```text
-1364 passed, 1 skipped
+1366 passed, 1 skipped
+```
+
+The targeted V3/Agent/Pilot-config/freeze-contract suite, including synthetic
+zero-provider lifecycle and stable-Candidate-over-WIP export tests, passed:
+
+```text
+106 passed
 ```
 
 The pending Evaluation V2 full-replay and derived single-task freeze files were

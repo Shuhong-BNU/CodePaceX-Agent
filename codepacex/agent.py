@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import subprocess
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -468,6 +469,10 @@ class Agent:
         validation_controller: ValidationController | None = None,
         capability_v3_config: CapabilityV3Config | None = None,
         capability_v3_controller: CapabilityV3Controller | None = None,
+        capability_v3_flag: str = "V2_CONTROL",
+        capability_v3_artifact_root: Path | None = None,
+        capability_v3_task_id: str = "",
+        capability_v3_base_commit: str = "",
     ) -> None:
         self.client = client
         self.registry = registry
@@ -541,9 +546,15 @@ class Agent:
             self.registry.register(RunTest())
         self.capability_v3_controller = capability_v3_controller or CapabilityV3Controller(
             capability_v3_config or CapabilityV3Config(),
-            task_id=self.session_id,
-            state_dir=Path(work_dir) / ".codepacex" / "capability_v3" / uuid.uuid4().hex,
+            task_id=capability_v3_task_id or self.session_id,
+            base_commit=capability_v3_base_commit,
+            state_dir=capability_v3_artifact_root
+            or Path(work_dir) / ".codepacex" / "capability_v3" / uuid.uuid4().hex,
         )
+        self.capability_v3_flag = capability_v3_flag
+        self._capability_v3_task_id = capability_v3_task_id
+        self._capability_v3_base_commit = capability_v3_base_commit
+        self._capability_v3_started = False
         self._capability_v3_event_cursor = 0
 
         # 非阻塞 memory recall：prefetch task 与主 LLM 调用并行，工具执行后注入
@@ -597,6 +608,93 @@ class Agent:
         events = controller.events[self._capability_v3_event_cursor:]
         self._capability_v3_event_cursor = len(controller.events)
         return [CapabilityV3TelemetryEvent(event) for event in events]
+
+    def _start_capability_v3_run(self, task: str) -> None:
+        """Collect advisory evidence once the real task and workspace are known."""
+        controller = self.capability_v3_controller
+        if self._capability_v3_started or not controller.enabled:
+            return
+        self._capability_v3_started = True
+        try:
+            base_commit = self._capability_v3_base_commit
+            if not base_commit:
+                result = subprocess.run(
+                    ["git", "rev-parse", "HEAD"], cwd=self.work_dir, text=True,
+                    capture_output=True, timeout=10, check=False,
+                )
+                base_commit = result.stdout.strip() if result.returncode == 0 else ""
+            task_id = self._capability_v3_task_id or self.session_id or "agent-task"
+            controller.begin_run(task_id=task_id, base_commit=base_commit,
+                                 feature_flag=self.capability_v3_flag)
+            if task:
+                controller.collect_evidence(task, Path(self.work_dir))
+        except Exception as exc:
+            try:
+                controller._fail_open("agent_start", exc)
+            except Exception:
+                log.exception("Capability V3 start telemetry failed")
+
+    def _observe_capability_v3_tool_result(
+        self, tc: ToolCallComplete, tool: Any, result: ToolResult,
+    ) -> None:
+        """Record completed work without affecting tool permission or completion flow."""
+        controller = self.capability_v3_controller
+        if not controller.enabled:
+            return
+        try:
+            if tool.category == "write" and not result.is_error:
+                diff = subprocess.run(
+                    ["git", "diff", "--binary", "--no-ext-diff"], cwd=self.work_dir,
+                    text=True, capture_output=True, timeout=20, check=False,
+                )
+                if diff.returncode == 0 and diff.stdout.strip():
+                    names = subprocess.run(
+                        ["git", "diff", "--name-only"], cwd=self.work_dir,
+                        text=True, capture_output=True, timeout=10, check=False,
+                    )
+                    changed_files = tuple(line for line in names.stdout.splitlines() if line)
+                    state_dir = controller.state_dir or Path(self.work_dir) / ".codepacex" / "capability_v3"
+                    state_dir.mkdir(parents=True, exist_ok=True)
+                    patch_path = state_dir / f"candidate-{len(controller.candidates) + 1:03d}.patch"
+                    patch_path.write_text(diff.stdout, encoding="utf-8")
+                    candidate = controller.observe_diff(
+                        diff_text=diff.stdout, changed_files=changed_files, patch_path=patch_path,
+                    )
+                    if candidate is not None:
+                        controller.build_impact(
+                            diff_sha=candidate.diff_sha, changed_files=changed_files,
+                            repository=Path(self.work_dir),
+                        )
+            if tc.tool_name == "RunTest":
+                controller.observe_test_result(
+                    passed=not result.is_error, test_evidence_id=tc.tool_id,
+                )
+        except Exception as exc:
+            try:
+                controller._fail_open("agent_tool_result", exc)
+            except Exception:
+                log.exception("Capability V3 tool telemetry failed")
+
+    def _finalize_capability_v3_run(self, reason: str) -> None:
+        controller = self.capability_v3_controller
+        if not controller.enabled:
+            return
+        try:
+            selected = controller.finalize(reason)
+            state_dir = controller.state_dir or Path(self.work_dir) / ".codepacex" / "capability_v3"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            final_patch = state_dir / "final.patch"
+            if selected is not None and selected.patch_path:
+                candidate_path = Path(selected.patch_path)
+                if candidate_path.is_file():
+                    final_patch.write_bytes(candidate_path.read_bytes())
+            controller.write_artifact(state_dir)
+        except Exception as exc:
+            try:
+                controller._fail_open("agent_finalize", exc)
+                controller.write_artifact(controller.state_dir or Path(self.work_dir) / ".codepacex" / "capability_v3")
+            except Exception:
+                log.exception("Capability V3 finalization telemetry failed")
 
     @staticmethod
     def _validation_event_payload(event: ValidationTelemetryEvent) -> dict[str, Any]:
@@ -1942,6 +2040,7 @@ class Agent:
             conversation.add_user_message(task)
 
         self._runtime_request_index = 0
+        self._start_capability_v3_run(task)
 
         hook_prompts = (
             self.hook_engine.get_prompt_messages() if self.hook_engine else None
@@ -2145,6 +2244,7 @@ class Agent:
                 ctx = self._build_hook_context("turn_end")
                 await self.hook_engine.run_hooks("turn_end", ctx)
 
+        self._finalize_capability_v3_run("agent_completed")
         return last_text
 
     async def _execute_tool_noninteractive(
@@ -2200,6 +2300,7 @@ class Agent:
                 output=f"Tool execution error: {e}", is_error=True
             )
 
+        self._observe_capability_v3_tool_result(tc, tool, result)
         self._snapshot_for_recovery(tc, result)
 
         if self.hook_engine and executed:

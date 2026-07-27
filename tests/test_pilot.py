@@ -78,6 +78,8 @@ def test_frozen_config_validates_and_hash_changes(tmp_path: Path) -> None:
     assert len(manifest.benchmark_asset_hash or "") == 64
     with pytest.raises(ValueError, match="feature_flags"):
         pilot.load_config(config_file(tmp_path, feature_flags={"deferred": True}))
+    flagged = pilot.load_config(config_file(tmp_path, feature_flags={"capability_v3_flag": "V3_CORE"}))
+    assert flagged.feature_flags == {"capability_v3_flag": "V3_CORE"}
 
 
 def test_model_copy_with_unmapped_flags_is_rejected_before_manifest(tmp_path: Path) -> None:

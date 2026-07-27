@@ -70,6 +70,15 @@ class CapabilityV3Controller:
     def enabled(self) -> bool:
         return self.config.enabled
 
+    def begin_run(self, *, task_id: str, base_commit: str, feature_flag: str) -> None:
+        """Bind the advisory state to the concrete run before collecting evidence."""
+        if not self.enabled:
+            return
+        self.task_id = task_id
+        self.base_commit = base_commit
+        self._emit("V3RunConfigured", task_id=task_id, base_commit=base_commit,
+                   feature_flag=feature_flag, config=self.config)
+
     def _emit(self, event_type: str, **payload: Any) -> None:
         self.events.append({"schema_version": SCHEMA_VERSION, "sequence": len(self.events) + 1,
                             "event_type": event_type, "payload": jsonable(payload)})
@@ -255,7 +264,7 @@ class CapabilityV3Controller:
             uncovered = tuple(item.name for item in dimensions if not item.evidence_ids)
             cases = [dict(zip([item.name for item in valid], values)) for values in product(*(item.values for item in valid))] if valid else []
             self.matrix = ContractDimensionMatrix(tuple(valid), tuple(cases[:self.config.max_matrix_cases]),
-                                                  "pairwise" if len(valid) > 1 else "explicit", uncovered)
+                                                  "bounded_cartesian" if len(valid) > 1 else "explicit", uncovered)
             self._emit("ContractMatrixBuilt", matrix=self.matrix)
             return self.matrix
         except Exception as exc:

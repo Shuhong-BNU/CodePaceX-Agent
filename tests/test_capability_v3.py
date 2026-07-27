@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from codepacex.capability_v3 import CapabilityV3Config, CapabilityV3Controller, CapabilityV3Flag
+from codepacex.capability_v3 import CapabilityV3Config, CapabilityV3Controller, CapabilityV3Flag, flag_from_feature_flags
 from codepacex.capability_v3.models import (
     CandidateLevel, ComparableRunIdentity, ContractDimension, FailureRecord,
     HypothesisRecord, ReproducerEvidence, ReproducerStatus,
@@ -17,6 +17,7 @@ def _controller(**kwargs) -> CapabilityV3Controller:
 
 def test_flags_defaults_and_invalid_configuration() -> None:
     assert not CapabilityV3Config.from_flag(CapabilityV3Flag.V2_CONTROL).enabled
+    assert flag_from_feature_flags({"capability_v3_flag": "V3_CORE"}) is CapabilityV3Flag.V3_CORE
     assert CapabilityV3Config.from_flag(CapabilityV3Flag.V3_A_ONLY).contract_recovery_enabled
     assert not CapabilityV3Config.from_flag(CapabilityV3Flag.V3_A_ONLY).impact_slice_enabled
     with pytest.raises(ValueError, match="max_hypotheses"):

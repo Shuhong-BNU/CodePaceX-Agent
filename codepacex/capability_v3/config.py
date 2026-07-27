@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any, Mapping
+
+
+FEATURE_FLAG_KEY = "capability_v3_flag"
 
 
 class CapabilityV3Flag(str, Enum):
@@ -85,3 +89,9 @@ class CapabilityV3Config:
         if flag is CapabilityV3Flag.V3_CORE_NO_MATRIX:
             return cls(**common, contract_matrix_enabled=False)
         return cls(**common)
+
+
+def flag_from_feature_flags(feature_flags: Mapping[str, Any] | None) -> CapabilityV3Flag:
+    """Resolve the sole V3 evaluation feature flag, defaulting to the V2 control."""
+    value = (feature_flags or {}).get(FEATURE_FLAG_KEY, CapabilityV3Flag.V2_CONTROL.value)
+    return CapabilityV3Flag(str(value))

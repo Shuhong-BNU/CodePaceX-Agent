@@ -367,6 +367,7 @@ def runtime_contract(root: Path) -> dict[str, Any]:
         "agent_entrypoint": "Agent.run_to_completion",
         "pilot_config_max_iterations": AGENT_MAX_ITERATIONS,
         "provider_request_budget_bridge_ceiling": MAX_REQUESTS_PER_TASK,
+        "capability_v3_feature_flag": "V2_CONTROL",
         "candidate_export_contract": "git-diff-binary-sha256-bound-v1",
         "phase_transition_contract": "dispatch-evidenced-capability-terminals-continue-infrastructure-stop-v2",
         "agent_dispatch_coverage_contract": "every-capability-terminal-requires-live-executor-provider-request-and-settlement-v1",

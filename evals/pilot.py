@@ -18,6 +18,7 @@ from typing import Any, Literal, Mapping
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from codepacex.capability_v3 import FEATURE_FLAG_KEY, flag_from_feature_flags
 from codepacex.experiments import ExperimentProfile
 from evals.benchmark import RunManifest, RunRecorder, canonical_hash, current_git_commit, sanitize_origin
 from evals.costing import load_pricing, pricing_snapshot_hash
@@ -105,10 +106,9 @@ class PilotConfig(BaseModel):
             legacy_parameters, goal3_parameters,
         ):
             raise ValueError("Pilot v2 requires a frozen output-token contract")
-        if self.feature_flags:
-            raise ValueError(
-                "Pilot v1 does not map feature_flags to runtime behavior; live runs require {}"
-            )
+        if set(self.feature_flags) - {FEATURE_FLAG_KEY}:
+            raise ValueError("Pilot feature_flags may only select capability_v3_flag")
+        flag_from_feature_flags(self.feature_flags)
         return self
 
 
@@ -159,8 +159,9 @@ def _validate_task_ids(task_ids: list[str], root: Path) -> None:
 
 
 def build_manifest(config: PilotConfig, root: Path, *, run_id: str = "") -> RunManifest:
-    if config.feature_flags:
+    if set(config.feature_flags) - {FEATURE_FLAG_KEY}:
         raise PilotConfigurationError("unmapped feature_flags cannot enter a Pilot Run")
+    flag_from_feature_flags(config.feature_flags)
     _validate_task_ids(config.task_ids, root)
     return RunManifest(
         experiment_kind=config.experiment_kind,
