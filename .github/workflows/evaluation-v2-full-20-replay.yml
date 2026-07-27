@@ -5,9 +5,11 @@ on:
     paths:
       - ".github/workflows/evaluation-v2-full-20-replay.yml"
       - "evals/evaluation_v2/full_replay.py"
+      - "evals/evaluation_v2/capability_v3_pilot.py"
       - "evals/evaluation_v2/control_canary.py"
       - "evals/evaluation_v2/full_replay_payloads/**"
       - "tests/test_evaluation_v2_full_replay.py"
+      - "tests/test_capability_v3_controlled_pilot.py"
       - "evals/EVALUATION_HISTORY.md"
       - "evals/EVALUATION_ARTIFACT_INDEX.md"
       - "evals/evaluation_v2/FULL_20_REPLAY.md"
@@ -35,6 +37,31 @@ on:
         default: ''
       run_id:
         description: Fresh future paid run ID. Never needed for the zero-provider path.
+        required: false
+        type: string
+        default: ''
+      controlled_pilot_paid_execution:
+        description: Separately authorized six-task V2_CONTROL/V3_CORE controlled Pilot only.
+        required: true
+        type: boolean
+        default: false
+      controlled_pilot_expected_freeze_sha256:
+        description: Exact controlled-Pilot Freeze SHA-256 from main.
+        required: false
+        type: string
+        default: ''
+      controlled_pilot_approved_total_hard_cap_cny:
+        description: Exact controlled-Pilot hard cap from its Freeze.
+        required: false
+        type: string
+        default: ''
+      controlled_pilot_authorization_acknowledgement:
+        description: One-time user authorization acknowledgement for the controlled Pilot.
+        required: false
+        type: string
+        default: ''
+      controlled_pilot_run_id:
+        description: Fresh controlled-Pilot Run ID; never reused.
         required: false
         type: string
         default: ''
@@ -182,4 +209,106 @@ jobs:
         with:
           name: evaluation-v2-full-20-paid-${{ inputs.run_id }}-${{ github.run_id }}
           path: ${{ runner.temp }}/evaluation-v2-full-20-paid/${{ inputs.run_id }}
+          if-no-files-found: warn
+
+  zero-provider-controlled-pilot-readiness:
+    if: ${{ github.event_name == 'pull_request' || inputs.controlled_pilot_paid_execution == false }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    env:
+      EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install project and frozen official evaluator
+        run: |
+          set -euo pipefail
+          docker info >/dev/null
+          python -m pip install -e . pytest pytest-asyncio
+          evaluator_root="$RUNNER_TEMP/swe-bench-live"
+          git clone --filter=blob:none https://github.com/microsoft/SWE-bench-Live.git "$evaluator_root"
+          git -C "$evaluator_root" checkout --detach "$EVALUATOR_COMMIT"
+          test "$(git -C "$evaluator_root" rev-parse HEAD)" = "$EVALUATOR_COMMIT"
+          python -m pip install -e "$evaluator_root"
+      - name: Freeze and validate the six-task V2/V3 contract without Provider transport
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/capability-v3-controlled-pilot/$GITHUB_RUN_ID"
+          mkdir -p "$root"
+          printf 'CONTROLLED_PILOT_ROOT=%s\n' "$root" >> "$GITHUB_ENV"
+          python -m evals.evaluation_v2.capability_v3_pilot freeze --root . --output "$root/freeze" > "$root/freeze-result.json"
+          python -m evals.evaluation_v2.capability_v3_pilot validate --root . --freeze "$root/freeze" > "$root/freeze-validation.json"
+      - name: Preflight all six controlled-Pilot task environments without Provider transport
+        run: |
+          set -euo pipefail
+          python -m evals.evaluation_v2.capability_v3_pilot preflight --root . --freeze "$CONTROLLED_PILOT_ROOT/freeze" --artifact-root "$CONTROLLED_PILOT_ROOT/preflight" > "$CONTROLLED_PILOT_ROOT/preflight-result.json"
+          python - "$CONTROLLED_PILOT_ROOT/preflight/preflight-summary.json" <<'PY'
+          import json, sys
+          summary = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert summary['passed'] is True and summary['ready_count'] == 6
+          assert summary['provider_requests'] == summary['usage'] == 0
+          assert summary['charge_cny'] == '0' and summary['provider_secret_read'] is False
+          PY
+      - name: Rehearse all twelve flag-to-Agent and Artifact hand-offs without Provider transport
+        run: |
+          set -euo pipefail
+          python -m evals.evaluation_v2.capability_v3_pilot rehearse --root . --freeze "$CONTROLLED_PILOT_ROOT/freeze" --preflight-summary "$CONTROLLED_PILOT_ROOT/preflight/preflight-summary.json" --artifact-root "$CONTROLLED_PILOT_ROOT/rehearsal" > "$CONTROLLED_PILOT_ROOT/rehearsal-result.json"
+          python - "$CONTROLLED_PILOT_ROOT/rehearsal/controlled-pilot-rehearsal-summary.json" <<'PY'
+          import json, sys
+          summary = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert summary['completed'] is True
+          assert summary['flag_handoffs_verified'] == ['V2_CONTROL', 'V3_CORE']
+          assert summary['provider_requests'] == summary['usage'] == 0
+          assert summary['charge_cny'] == '0' and summary['provider_secret_read'] is False
+          assert len(summary['run_artifacts']) == 12
+          PY
+      - name: Upload controlled-Pilot zero-provider readiness Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: capability-v3-controlled-pilot-readiness-${{ github.run_id }}
+          path: ${{ runner.temp }}/capability-v3-controlled-pilot/${{ github.run_id }}
+          if-no-files-found: warn
+
+  controlled-pilot-paid-execution:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.controlled_pilot_paid_execution == true && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 1440
+    env:
+      EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be
+      BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install project and frozen official evaluator
+        run: |
+          set -euo pipefail
+          docker info >/dev/null
+          python -m pip install -e . pytest pytest-asyncio
+          evaluator_root="$RUNNER_TEMP/swe-bench-live"
+          git clone --filter=blob:none https://github.com/microsoft/SWE-bench-Live.git "$evaluator_root"
+          git -C "$evaluator_root" checkout --detach "$EVALUATOR_COMMIT"
+          python -m pip install -e "$evaluator_root"
+      - name: Run the explicitly authorized serial six-task V2/V3 Pilot
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/capability-v3-controlled-pilot-paid/${{ inputs.controlled_pilot_run_id }}"
+          mkdir -p "$root"
+          python -m evals.evaluation_v2.capability_v3_pilot freeze --root . --output "$root/freeze" > "$root/freeze-result.json"
+          python -m evals.evaluation_v2.capability_v3_pilot preflight --root . --freeze "$root/freeze" --artifact-root "$root/preflight" > "$root/preflight-result.json"
+          python -m evals.evaluation_v2.capability_v3_pilot paid-run --confirm-paid-execution --root . --freeze "$root/freeze" --artifact-root "$root/paid" --expected-freeze-sha256 '${{ inputs.controlled_pilot_expected_freeze_sha256 }}' --approved-total-hard-cap-cny '${{ inputs.controlled_pilot_approved_total_hard_cap_cny }}' --authorization-acknowledgement '${{ inputs.controlled_pilot_authorization_acknowledgement }}' --run-id '${{ inputs.controlled_pilot_run_id }}' > "$root/paid-result.json"
+      - name: Upload controlled-Pilot paid evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: capability-v3-controlled-pilot-paid-${{ inputs.controlled_pilot_run_id }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/capability-v3-controlled-pilot-paid/${{ inputs.controlled_pilot_run_id }}
           if-no-files-found: warn
