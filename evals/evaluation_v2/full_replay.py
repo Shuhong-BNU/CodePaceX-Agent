@@ -1023,6 +1023,7 @@ def _full_task_executor(
     root: Path, frozen: Mapping[str, Any], metadata: Mapping[str, Mapping[str, Any]],
     gate: PaidRunGate, artifact_root: Path, run_id: str, task: dict[str, Any],
     *, live_executor_kwargs: Mapping[str, Any] | None = None,
+    task_run_identity: Any | None = None,
 ) -> control_canary.PaidTaskResult:
     """Run the shared paid executor with this replay's safe payload identity."""
     payload_path = artifact_root / "safe-payloads" / f"{task['instance_id']}.json"
@@ -1039,6 +1040,7 @@ def _full_task_executor(
         }, gate=gate,
         artifact_root=artifact_root, run_id=run_id, payload_path=payload_path,
         trial_namespace="v2-full-20",
+        task_run_identity=task_run_identity,
         **dict(live_executor_kwargs or {}),
     )
 

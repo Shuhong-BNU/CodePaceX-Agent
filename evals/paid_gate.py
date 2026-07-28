@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import importlib.metadata
 import os
 import subprocess
@@ -71,6 +72,49 @@ class BudgetAuthorization(BaseModel):
         raise ValueError("budget authorization has an unregistered stage-limit set")
 
 
+class TaskRunBudgetIdentity(BaseModel):
+    """Explicit, immutable identity for one controlled-Pilot task-run.
+
+    This is a ceiling binding inside one Stage C allocation.  It is not a
+    separate authorization, ledger, or pre-funded budget pool.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_run_id: str = Field(min_length=1)
+    task_run_allocation_id: str = Field(
+        pattern=r"^[a-z0-9][a-z0-9._-]{2,127}$",
+    )
+    task_run_allocation_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    instance_id: str = Field(min_length=1)
+    treatment: str = Field(min_length=1)
+    expected_artifact_path: str = Field(min_length=1)
+
+
+def task_run_allocation_hash(payload: Mapping[str, Any]) -> str:
+    """Hash a task-run allocation identity without its self-referential hash."""
+    canonical = dict(payload)
+    canonical.pop("task_run_allocation_hash", None)
+    return hashlib.sha256(json.dumps(
+        canonical, sort_keys=True, separators=(",", ":"), default=str,
+    ).encode()).hexdigest()
+
+
+class TaskRunBudgetAllocation(TaskRunBudgetIdentity):
+    """Frozen controlled-Pilot ceiling binding within a parent allocation."""
+
+    execution_run_id: str = Field(min_length=1)
+    theoretical_ceiling_cny: Decimal = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_identity_hash(self) -> TaskRunBudgetAllocation:
+        if self.task_run_allocation_hash != task_run_allocation_hash(
+            self.model_dump(mode="json")
+        ):
+            raise ValueError("task-run allocation hash does not match its identity")
+        return self
+
+
 class Reservation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -85,6 +129,9 @@ class Reservation(BaseModel):
     request_index: int | None = Field(default=None, gt=0)
     failure_type: str | None = None
     failure_recorded_at: str | None = None
+    task_run_id: str | None = None
+    task_run_allocation_id: str | None = None
+    task_run_allocation_hash: str | None = None
 
 
 class Settlement(BaseModel):
@@ -107,6 +154,9 @@ class Settlement(BaseModel):
     usage_status: Literal["known", "unknown"] = "known"
     evidence_gap: str | None = None
     settled_at: str
+    task_run_id: str | None = None
+    task_run_allocation_id: str | None = None
+    task_run_allocation_hash: str | None = None
 
     @model_validator(mode="after")
     def validate_usage_semantics(self) -> Settlement:
@@ -143,6 +193,9 @@ class RequestCharge(BaseModel):
     reasoning_tokens: int | None = Field(default=None, ge=0)
     actual_cny: Decimal = Field(ge=0)
     recorded_at: str
+    task_run_id: str | None = None
+    task_run_allocation_id: str | None = None
+    task_run_allocation_hash: str | None = None
 
 
 class BudgetBlock(BaseModel):
@@ -154,8 +207,14 @@ class BudgetBlock(BaseModel):
     stage: BudgetStage
     category: BudgetCategory | None = None
     required_cny: Decimal = Field(gt=0)
-    reason: Literal["stage_limit", "category_limit", "safety_reserve", "unknown_category"]
+    reason: Literal[
+        "stage_limit", "category_limit", "safety_reserve", "unknown_category",
+        "task_run_contract", "task_run_ceiling",
+    ]
     recorded_at: str
+    task_run_id: str | None = None
+    task_run_allocation_id: str | None = None
+    task_run_allocation_hash: str | None = None
 
 
 class ProviderRequestCeilingBlock(BaseModel):
@@ -262,6 +321,7 @@ class StageCBudgetAllocation(BaseModel):
     safety_reserve_cny: Decimal = Field(gt=0)
     spendable_total_cny: Decimal = Field(gt=0)
     category_limits_cny: dict[BudgetCategory, Decimal]
+    task_run_allocations: list[TaskRunBudgetAllocation] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_limits(self) -> StageCBudgetAllocation:
@@ -271,6 +331,15 @@ class StageCBudgetAllocation(BaseModel):
             raise ValueError("Stage C category limits cannot be negative")
         if self.baseline_spent_cny + sum(self.category_limits_cny.values()) > self.spendable_total_cny:
             raise ValueError("Stage C category limits exceed the spendable total")
+        allocation_ids = [item.task_run_allocation_id for item in self.task_run_allocations]
+        task_run_ids = [item.task_run_id for item in self.task_run_allocations]
+        if len(allocation_ids) != len(set(allocation_ids)) or len(task_run_ids) != len(set(task_run_ids)):
+            raise ValueError("Stage C task-run allocation identities must be unique")
+        theoretical_total = sum(
+            (item.theoretical_ceiling_cny for item in self.task_run_allocations), Decimal("0"),
+        )
+        if theoretical_total > self.spendable_total_cny + self.safety_reserve_cny:
+            raise ValueError("Stage C task-run theoretical ceilings exceed the parent authorization")
         return self
 
 
@@ -301,9 +370,9 @@ def ledger_fingerprint(ledger: BudgetLedger) -> str:
         "currency": ledger.currency,
         "authorization_hash": ledger.authorization_hash,
         "spent_cny": str(ledger.spent_cny),
-        "request_charges": [item.model_dump(mode="json") for item in ledger.request_charges],
-        "settlements": [item.model_dump(mode="json") for item in ledger.settlements],
-        "budget_blocks": [item.model_dump(mode="json") for item in ledger.budget_blocks],
+        "request_charges": [item.model_dump(mode="json", exclude_none=True) for item in ledger.request_charges],
+        "settlements": [item.model_dump(mode="json", exclude_none=True) for item in ledger.settlements],
+        "budget_blocks": [item.model_dump(mode="json", exclude_none=True) for item in ledger.budget_blocks],
         "provider_request_ceiling_blocks": [
             item.model_dump(mode="json") for item in ledger.provider_request_ceiling_blocks
         ],
@@ -346,9 +415,17 @@ def _write_ledger_atomic(
         ledger.updated_at = _utc_now()
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = ledger_path.with_name(f".{ledger_path.name}.{uuid.uuid4().hex}.tmp")
+    serialized = ledger.model_dump(mode="json")
+    for collection in ("request_charges", "settlements", "budget_blocks"):
+        for item in serialized[collection]:
+            for key in (
+                "task_run_id", "task_run_allocation_id", "task_run_allocation_hash",
+            ):
+                if item.get(key) is None:
+                    item.pop(key, None)
     with temporary.open("w", encoding="utf-8") as handle:
         handle.write(json.dumps(
-            ledger.model_dump(mode="json"), ensure_ascii=False,
+            serialized, ensure_ascii=False,
             indent=2, sort_keys=True,
         ) + "\n")
         handle.flush()
@@ -379,6 +456,9 @@ def _conservative_settlement(
         settlement_method="conservative_reserved_amount",
         usage_status="unknown", evidence_gap=evidence_gap,
         settled_at=_utc_now(),
+        task_run_id=active.task_run_id,
+        task_run_allocation_id=active.task_run_allocation_id,
+        task_run_allocation_hash=active.task_run_allocation_hash,
     )
     ledger.spent_cny = _money(ledger.spent_cny + active.reserved_cny)
     ledger.settlements.append(settlement)
@@ -442,6 +522,9 @@ def reconcile_pretransport_connect_timeout(
             stage=active.stage, requests=0, input_tokens=0, output_tokens=0,
             actual_cny=Decimal("0"), status="cancelled",
             settlement_method="transport_connect_timeout", settled_at=settled_at or _utc_now(),
+            task_run_id=active.task_run_id,
+            task_run_allocation_id=active.task_run_allocation_id,
+            task_run_allocation_hash=active.task_run_allocation_hash,
         )
         ledger.settlements.append(settlement)
         ledger.active_reservation = None
@@ -677,12 +760,23 @@ class PaidRunGate:
 
     def _record_budget_block(
         self, ledger: BudgetLedger, *, trial_id: str, amount: Decimal,
-        reason: Literal["stage_limit", "category_limit", "safety_reserve", "unknown_category"],
+        reason: Literal[
+            "stage_limit", "category_limit", "safety_reserve", "unknown_category",
+            "task_run_contract", "task_run_ceiling",
+        ],
         category: BudgetCategory | None = None,
+        task_run_identity: TaskRunBudgetIdentity | None = None,
     ) -> None:
         ledger.budget_blocks.append(BudgetBlock(
             trial_id=trial_id, stage=self.stage, category=category,
             required_cny=amount, reason=reason, recorded_at=_utc_now(),
+            task_run_id=(task_run_identity.task_run_id if task_run_identity else None),
+            task_run_allocation_id=(
+                task_run_identity.task_run_allocation_id if task_run_identity else None
+            ),
+            task_run_allocation_hash=(
+                task_run_identity.task_run_allocation_hash if task_run_identity else None
+            ),
         ))
         self._write_ledger(ledger)
 
@@ -690,6 +784,7 @@ class PaidRunGate:
         self, trial_id: str, *, maximum_requests: int,
         maximum_input_tokens_per_request: int,
         maximum_output_tokens_per_request: int,
+        task_run_identity: TaskRunBudgetIdentity | None = None,
     ) -> Reservation:
         """Reserve exactly one Provider request.
 
@@ -704,11 +799,13 @@ class PaidRunGate:
             return self._reserve_request(
                 trial_id, maximum_input_tokens_per_request=maximum_input_tokens_per_request,
                 maximum_output_tokens_per_request=maximum_output_tokens_per_request,
+                task_run_identity=task_run_identity,
             )
 
     def _reserve_request(
         self, trial_id: str, *, maximum_input_tokens_per_request: int,
         maximum_output_tokens_per_request: int,
+        task_run_identity: TaskRunBudgetIdentity | None,
     ) -> Reservation:
         validate_authorization(
             self.authorization, root=self.root, pricing=self.pricing,
@@ -735,6 +832,10 @@ class PaidRunGate:
             )
         if self.allocation is not None:
             self._validate_allocation_ledger(ledger)
+            task_run_allocation = self._validated_task_run_allocation(
+                ledger, trial_id=trial_id, amount=amount,
+                task_run_identity=task_run_identity,
+            )
             try:
                 category = self._category_for_trial(trial_id)
             except ValueError:
@@ -771,6 +872,12 @@ class PaidRunGate:
                 )
                 raise ValueError("Stage C safety reserve prevents the worst next trial")
             ledger.allocation_hash = self._allocation_hash
+        elif task_run_identity is not None:
+            self._record_budget_block(
+                ledger, trial_id=trial_id, amount=amount, reason="task_run_contract",
+                task_run_identity=task_run_identity,
+            )
+            raise ValueError("task-run allocation identity requires a Stage C parent allocation")
         reservation = Reservation(
             reservation_id=uuid.uuid4().hex, trial_id=trial_id, stage=self.stage,
             maximum_requests=1,
@@ -780,10 +887,85 @@ class PaidRunGate:
             request_index=1 + sum(
                 item.trial_id == trial_id for item in ledger.request_charges
             ),
+            task_run_id=(task_run_allocation.task_run_id if self.allocation is not None and task_run_allocation else None),
+            task_run_allocation_id=(
+                task_run_allocation.task_run_allocation_id
+                if self.allocation is not None and task_run_allocation else None
+            ),
+            task_run_allocation_hash=(
+                task_run_allocation.task_run_allocation_hash
+                if self.allocation is not None and task_run_allocation else None
+            ),
         )
         ledger.active_reservation = reservation
         self._write_ledger(ledger)
         return reservation
+
+    def _validated_task_run_allocation(
+        self, ledger: BudgetLedger, *, trial_id: str, amount: Decimal,
+        task_run_identity: TaskRunBudgetIdentity | None,
+    ) -> TaskRunBudgetAllocation | None:
+        """Validate a controlled-Pilot child ceiling before Provider transport."""
+        assert self.allocation is not None
+        bindings = self.allocation.task_run_allocations
+        if not bindings:
+            if task_run_identity is not None:
+                self._record_budget_block(
+                    ledger, trial_id=trial_id, amount=amount, reason="task_run_contract",
+                    task_run_identity=task_run_identity,
+                )
+                raise ValueError("parent allocation has no task-run allocation manifest")
+            return None
+        if task_run_identity is None:
+            self._record_budget_block(
+                ledger, trial_id=trial_id, amount=amount, reason="task_run_contract",
+            )
+            raise ValueError("controlled Pilot Provider request lacks an explicit task-run allocation identity")
+        matches = [
+            item for item in bindings
+            if item.task_run_id == task_run_identity.task_run_id
+        ]
+        if len(matches) != 1:
+            self._record_budget_block(
+                ledger, trial_id=trial_id, amount=amount, reason="task_run_contract",
+                task_run_identity=task_run_identity,
+            )
+            raise ValueError("controlled Pilot task-run allocation identity is not unique in its parent")
+        binding = matches[0]
+        explicit = task_run_identity.model_dump(mode="json")
+        frozen = binding.model_dump(mode="json", exclude={"execution_run_id", "theoretical_ceiling_cny"})
+        if explicit != frozen:
+            self._record_budget_block(
+                ledger, trial_id=trial_id, amount=amount, reason="task_run_contract",
+                task_run_identity=task_run_identity,
+            )
+            raise ValueError("controlled Pilot task-run allocation identity does not match the frozen parent allocation")
+        expected_trial = f"swe/v2-full-20/{binding.execution_run_id}/{binding.instance_id}"
+        if trial_id != expected_trial:
+            self._record_budget_block(
+                ledger, trial_id=trial_id, amount=amount, reason="task_run_contract",
+                task_run_identity=task_run_identity,
+            )
+            raise ValueError("controlled Pilot trial ID does not match its explicit task-run allocation identity")
+        task_run_spent = sum(
+            (
+                item.actual_cny for item in ledger.request_charges
+                if item.task_run_allocation_id == binding.task_run_allocation_id
+            ), Decimal("0"),
+        ) + sum(
+            (
+                item.actual_cny for item in ledger.settlements
+                if item.status == "conservative_settled"
+                and item.task_run_allocation_id == binding.task_run_allocation_id
+            ), Decimal("0"),
+        )
+        if task_run_spent + amount > binding.theoretical_ceiling_cny:
+            self._record_budget_block(
+                ledger, trial_id=trial_id, amount=amount, reason="task_run_ceiling",
+                task_run_identity=task_run_identity,
+            )
+            raise ValueError("controlled Pilot task-run theoretical ceiling prevents the next Provider request")
+        return binding
 
     def _validate_allocation_ledger(self, ledger: BudgetLedger) -> None:
         assert self.allocation is not None
@@ -856,6 +1038,9 @@ class PaidRunGate:
             actual_cny=actual_cost(
                 self.pricing, input_tokens=input_tokens, output_tokens=output_tokens,
             ), recorded_at=_utc_now(),
+            task_run_id=active.task_run_id,
+            task_run_allocation_id=active.task_run_allocation_id,
+            task_run_allocation_hash=active.task_run_allocation_hash,
         )
         cost = charge.actual_cny
         settlement = Settlement(
@@ -865,6 +1050,9 @@ class PaidRunGate:
             output_tokens=output_tokens, reasoning_tokens=reasoning_tokens, actual_cny=cost,
             status="settled", settlement_method="provider_usage",
             settled_at=_utc_now(),
+            task_run_id=active.task_run_id,
+            task_run_allocation_id=active.task_run_allocation_id,
+            task_run_allocation_hash=active.task_run_allocation_hash,
         )
         ledger.spent_cny = _money(ledger.spent_cny + cost)
         ledger.request_charges.append(charge)
@@ -1004,6 +1192,9 @@ class PaidRunGate:
             requests=0, input_tokens=0, output_tokens=0,
             actual_cny=Decimal("0"), status="cancelled",
             settlement_method=reason, settled_at=_utc_now(),
+            task_run_id=active.task_run_id,
+            task_run_allocation_id=active.task_run_allocation_id,
+            task_run_allocation_hash=active.task_run_allocation_hash,
         )
         ledger.settlements.append(settlement)
         ledger.active_reservation = None
@@ -1123,6 +1314,12 @@ _REQUEST_BUDGET_KEYS = (
     "CODEPACEX_BUDGET_PRICING",
     "CODEPACEX_BUDGET_STAGE",
     "CODEPACEX_BUDGET_TRIAL_ID",
+    "CODEPACEX_BUDGET_TASK_RUN_ID",
+    "CODEPACEX_BUDGET_TASK_RUN_ALLOCATION_ID",
+    "CODEPACEX_BUDGET_TASK_RUN_ALLOCATION_HASH",
+    "CODEPACEX_BUDGET_INSTANCE_ID",
+    "CODEPACEX_BUDGET_TREATMENT",
+    "CODEPACEX_BUDGET_EXPECTED_ARTIFACT_PATH",
     "CODEPACEX_BUDGET_MAX_INPUT_TOKENS",
     "CODEPACEX_BUDGET_MAX_OUTPUT_TOKENS",
     "CODEPACEX_BUDGET_MAX_REASONING_TOKENS",
@@ -1140,6 +1337,7 @@ def provider_request_budget_environment(
     maximum_provider_requests_per_trial: int | None = None,
     requested_output_parameter: str = "unspecified",
     requested_thinking_budget: int | None = None,
+    task_run_identity: TaskRunBudgetIdentity | None = None,
 ) -> dict[str, str]:
     """Return the explicit, non-secret environment contract for one Trial.
 
@@ -1167,6 +1365,24 @@ def provider_request_budget_environment(
         "CODEPACEX_BUDGET_PRICING": str(gate.pricing_path),
         "CODEPACEX_BUDGET_STAGE": gate.stage,
         "CODEPACEX_BUDGET_TRIAL_ID": trial_id,
+        "CODEPACEX_BUDGET_TASK_RUN_ID": (
+            task_run_identity.task_run_id if task_run_identity is not None else ""
+        ),
+        "CODEPACEX_BUDGET_TASK_RUN_ALLOCATION_ID": (
+            task_run_identity.task_run_allocation_id if task_run_identity is not None else ""
+        ),
+        "CODEPACEX_BUDGET_TASK_RUN_ALLOCATION_HASH": (
+            task_run_identity.task_run_allocation_hash if task_run_identity is not None else ""
+        ),
+        "CODEPACEX_BUDGET_INSTANCE_ID": (
+            task_run_identity.instance_id if task_run_identity is not None else ""
+        ),
+        "CODEPACEX_BUDGET_TREATMENT": (
+            task_run_identity.treatment if task_run_identity is not None else ""
+        ),
+        "CODEPACEX_BUDGET_EXPECTED_ARTIFACT_PATH": (
+            task_run_identity.expected_artifact_path if task_run_identity is not None else ""
+        ),
         "CODEPACEX_BUDGET_MAX_INPUT_TOKENS": str(maximum_input_tokens_per_request),
         "CODEPACEX_BUDGET_MAX_OUTPUT_TOKENS": str(maximum_output_tokens_per_request),
         "CODEPACEX_BUDGET_MAX_REASONING_TOKENS": (
@@ -1193,6 +1409,7 @@ def provider_request_budget_scope(
     maximum_provider_requests_per_trial: int | None = None,
     requested_output_parameter: str = "unspecified",
     requested_thinking_budget: int | None = None,
+    task_run_identity: TaskRunBudgetIdentity | None = None,
 ) -> Iterator[None]:
     """Temporarily bind an in-process experiment request to its Trial."""
     updates = provider_request_budget_environment(
@@ -1203,6 +1420,7 @@ def provider_request_budget_scope(
         maximum_provider_requests_per_trial=maximum_provider_requests_per_trial,
         requested_output_parameter=requested_output_parameter,
         requested_thinking_budget=requested_thinking_budget,
+        task_run_identity=task_run_identity,
     )
     previous = {key: os.environ.get(key) for key in _REQUEST_BUDGET_KEYS}
     os.environ.update(updates)
@@ -1225,7 +1443,8 @@ class ProviderRequestBudget:
                  maximum_reasoning_tokens_per_request: int | None = None,
                  maximum_provider_requests_per_trial: int | None = None,
                  requested_output_parameter: str = "unspecified",
-                 requested_thinking_budget: int | None = None) -> None:
+                 requested_thinking_budget: int | None = None,
+                 task_run_identity: TaskRunBudgetIdentity | None = None) -> None:
         self.gate = gate
         self.trial_id = trial_id
         self.maximum_input_tokens_per_request = maximum_input_tokens_per_request
@@ -1234,6 +1453,7 @@ class ProviderRequestBudget:
         self.maximum_provider_requests_per_trial = maximum_provider_requests_per_trial
         self.requested_output_parameter = requested_output_parameter
         self.requested_thinking_budget = requested_thinking_budget
+        self.task_run_identity = task_run_identity
 
     @classmethod
     def from_environment(cls) -> ProviderRequestBudget | None:
@@ -1250,6 +1470,12 @@ class ProviderRequestBudget:
                    if not value and key not in {
                        "CODEPACEX_BUDGET_ALLOCATION", "CODEPACEX_BUDGET_MAX_REASONING_TOKENS",
                        "CODEPACEX_BUDGET_MAX_REQUESTS_PER_TRIAL",
+                       "CODEPACEX_BUDGET_TASK_RUN_ID",
+                       "CODEPACEX_BUDGET_TASK_RUN_ALLOCATION_ID",
+                       "CODEPACEX_BUDGET_TASK_RUN_ALLOCATION_HASH",
+                       "CODEPACEX_BUDGET_INSTANCE_ID",
+                       "CODEPACEX_BUDGET_TREATMENT",
+                       "CODEPACEX_BUDGET_EXPECTED_ARTIFACT_PATH",
                    }]
         if missing:
             raise ValueError("incomplete experimental Provider request budget contract")
@@ -1261,6 +1487,21 @@ class ProviderRequestBudget:
             pricing=load_pricing(Path(required["CODEPACEX_BUDGET_PRICING"])),
             stage=required["CODEPACEX_BUDGET_STAGE"],  # type: ignore[arg-type]
             allocation_path=Path(allocation) if allocation else None,
+        )
+        task_run_keys = {
+            "task_run_id": "CODEPACEX_BUDGET_TASK_RUN_ID",
+            "task_run_allocation_id": "CODEPACEX_BUDGET_TASK_RUN_ALLOCATION_ID",
+            "task_run_allocation_hash": "CODEPACEX_BUDGET_TASK_RUN_ALLOCATION_HASH",
+            "instance_id": "CODEPACEX_BUDGET_INSTANCE_ID",
+            "treatment": "CODEPACEX_BUDGET_TREATMENT",
+            "expected_artifact_path": "CODEPACEX_BUDGET_EXPECTED_ARTIFACT_PATH",
+        }
+        task_run_values = {field: required[key] for field, key in task_run_keys.items()}
+        if any(task_run_values.values()) and not all(task_run_values.values()):
+            raise ValueError("incomplete controlled Pilot task-run allocation identity")
+        task_run_identity = (
+            TaskRunBudgetIdentity.model_validate(task_run_values)
+            if all(task_run_values.values()) else None
         )
         return cls(
             gate, trial_id=required["CODEPACEX_BUDGET_TRIAL_ID"],
@@ -1283,6 +1524,7 @@ class ProviderRequestBudget:
                 int(required["CODEPACEX_BUDGET_REQUESTED_THINKING_BUDGET"])
                 if required["CODEPACEX_BUDGET_REQUESTED_THINKING_BUDGET"] else None
             ),
+            task_run_identity=task_run_identity,
         )
 
     def reserve_before_request(self) -> Reservation:
@@ -1309,6 +1551,7 @@ class ProviderRequestBudget:
             self.trial_id, maximum_requests=1,
             maximum_input_tokens_per_request=self.maximum_input_tokens_per_request,
             maximum_output_tokens_per_request=self.maximum_output_tokens_per_request,
+            task_run_identity=self.task_run_identity,
         )
 
     def record_request_failure(

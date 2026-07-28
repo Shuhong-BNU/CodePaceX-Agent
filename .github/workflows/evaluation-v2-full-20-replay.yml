@@ -284,6 +284,14 @@ jobs:
           assert summary['active_reservation'] is None
           assert len(summary['task_runs']) == 12
           assert summary['ledger_allocation_hash'] == summary['allocation_binding']['allocation_hash']
+          allocations = summary['allocation_binding']['task_run_allocations']
+          assert len(allocations) == 12
+          assert len({item['task_run_id'] for item in allocations}) == 12
+          assert len({item['task_run_allocation_id'] for item in allocations}) == 12
+          assert len({item['task_run_allocation_hash'] for item in allocations}) == 12
+          assert all(item['theoretical_ceiling_cny'] == '73.236480' for item in allocations)
+          assert all(item['settlement_cny'] == '0' and item['status'] == 'cancelled' for item in summary['task_runs'])
+          assert all(item['task_run_allocation_id'] and item['task_run_allocation_hash'] for item in summary['task_runs'])
           PY
       - name: Upload controlled-Pilot zero-provider readiness Artifact
         if: always()

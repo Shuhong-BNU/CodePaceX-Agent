@@ -47,6 +47,7 @@ from evals.paid_gate import (
     BudgetLedger,
     PaidRunGate,
     StageCBudgetAllocation,
+    TaskRunBudgetIdentity,
     allocation_hash,
     authorization_hash,
     ledger_fingerprint,
@@ -895,6 +896,7 @@ def _live_task_executor(
     payload_path: Path | None = None, trial_namespace: str = "v2-control",
     pilot_override: PilotConfig | None = None, provider_secret_override: str | None = None,
     child_environment_overrides: dict[str, str] | None = None,
+    task_run_identity: TaskRunBudgetIdentity | None = None,
     evaluator_runner: Callable[..., subprocess.CompletedProcess[str]] = run_official_evaluator,
     evaluator_report_locator: Callable[..., Path] = official_evaluator_report_path,
     outcome_collector: Callable[[Path, str], bool] = collect_goal3_official_outcome,
@@ -919,6 +921,9 @@ def _live_task_executor(
         "live_executor_invoked": True,
         "authorization_hash": authorization_hash(gate.authorization),
         "allocation_hash": allocation_hash(gate.allocation) if gate.allocation is not None else None,
+        "task_run_allocation": (
+            task_run_identity.model_dump(mode="json") if task_run_identity is not None else None
+        ),
         "host_runtime_before_sha256": host_runtime_before.get("fingerprint_sha256"),
     }
 
@@ -1058,6 +1063,7 @@ def _live_task_executor(
             maximum_provider_requests_per_trial=MAX_REQUESTS_PER_TASK,
             requested_output_parameter="max_completion_tokens",
             requested_thinking_budget=MAX_REASONING_TOKENS,
+            task_run_identity=task_run_identity,
         ))
         process = subprocess.run(
             [sys.executable, "-m", "codepacex", "-p", prompt, "--output-format", "stream-json", "--experiment-profile", str(profile_path), "--max-iterations", str(pilot.max_iterations)],
