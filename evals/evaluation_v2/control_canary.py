@@ -121,6 +121,64 @@ def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _validate_capability_v3_artifact(
+    *, task_root: Path, instance_id: str, treatment: CapabilityV3Flag,
+) -> dict[str, Any]:
+    """Validate raw V3 controller evidence retained in a task Artifact."""
+    root = task_root / "capability-v3"
+    result: dict[str, Any] = {
+        "required": treatment is CapabilityV3Flag.V3_CORE,
+        "artifact_path": str(root.relative_to(task_root)),
+        "valid": False,
+        "errors": [],
+    }
+    if treatment is not CapabilityV3Flag.V3_CORE:
+        result["valid"] = True
+        return result
+
+    summary_path, events_path, patch_path = (
+        root / "summary.json", root / "events.jsonl", root / "final.patch",
+    )
+    for path in (summary_path, events_path, patch_path):
+        if not path.is_file():
+            result["errors"].append(f"missing:{path.name}")
+        elif path.stat().st_size == 0:
+            result["errors"].append(f"empty:{path.name}")
+    if result["errors"]:
+        return result
+
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+    except (OSError, json.JSONDecodeError) as exc:
+        result["errors"].append(f"parse_error:{type(exc).__name__}")
+        return result
+    if not isinstance(summary, dict) or not isinstance(summary.get("events"), list):
+        result["errors"].append("invalid:summary_schema")
+    if not events or any(not isinstance(event, dict) for event in events):
+        result["errors"].append("invalid:event_chain")
+        return result
+    if summary.get("events") != events:
+        result["errors"].append("mismatch:summary_events")
+    configured = [event for event in events if event.get("event_type") == "V3RunConfigured"]
+    if len(configured) != 1:
+        result["errors"].append("invalid:run_configuration")
+    else:
+        payload = configured[0].get("payload")
+        if not isinstance(payload, dict) or payload.get("task_id") != instance_id:
+            result["errors"].append("mismatch:task_id")
+        if not isinstance(payload, dict) or payload.get("feature_flag") != treatment.value:
+            result["errors"].append("mismatch:treatment")
+    result.update({
+        "summary_sha256": _sha256(summary_path),
+        "events_sha256": _sha256(events_path),
+        "final_patch_sha256": _sha256(patch_path),
+        "event_count": len(events),
+    })
+    result["valid"] = not result["errors"]
+    return result
+
+
 def _scan_payload_value(value: Any) -> None:
     if isinstance(value, dict):
         for key, item in value.items():
@@ -1105,14 +1163,32 @@ def _live_task_executor(
             "error", "transport_failed", terminal_status="provider_transport_error",
             failure_classification="provider_transport_error", **common,
         ))
-    stable_patch = task_root / "capability-v3" / "final.patch"
-    patch = (
-        stable_patch.read_text(encoding="utf-8")
-        if stable_patch.is_file() else _goal3_extract_patch(workspace)
+    fidelity = _validate_capability_v3_artifact(
+        task_root=task_root, instance_id=task["instance_id"], treatment=capability_v3_flag,
     )
+    evidence["capability_v3"]["treatment_fidelity"] = fidelity
+    if capability_v3_flag is CapabilityV3Flag.V3_CORE and not fidelity["valid"]:
+        evidence["failure_classification"] = "capability_v3_artifact_incomplete"
+        return finish(PaidTaskResult(
+            task["instance_id"], "failed", "not_exported", "not_run", "not_run",
+            "error", "completed", terminal_status="capability_v3_artifact_incomplete",
+            failure_classification="capability_v3_artifact_incomplete", **common,
+        ))
+    stable_patch = task_root / "capability-v3" / "final.patch"
+    patch = stable_patch.read_text(encoding="utf-8") if capability_v3_flag is CapabilityV3Flag.V3_CORE else _goal3_extract_patch(workspace)
     patch_path = task_root / "candidate.patch"
     patch_path.write_text(patch, encoding="utf-8")
     candidate_sha = _sha256(patch_path)
+    if capability_v3_flag is CapabilityV3Flag.V3_CORE:
+        fidelity["candidate_sha256"] = candidate_sha
+        fidelity["candidate_matches_final_patch"] = candidate_sha == fidelity["final_patch_sha256"]
+        if not fidelity["candidate_matches_final_patch"]:
+            evidence["failure_classification"] = "capability_v3_artifact_candidate_mismatch"
+            return finish(PaidTaskResult(
+                task["instance_id"], "failed", "not_exported", "not_run", "not_run",
+                "error", "completed", terminal_status="capability_v3_artifact_candidate_mismatch",
+                failure_classification="capability_v3_artifact_candidate_mismatch", **common,
+            ))
     evidence.update({"agent_exit_code": process.returncode, "candidate_sha256": candidate_sha, "workspace_diff_sha256": hashlib.sha256(patch.encode()).hexdigest()})
     if usage_violation is not None:
         evidence.update({

@@ -16,7 +16,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from codepacex.capability_v3 import CapabilityV3Flag
+from codepacex.capability_v3 import CapabilityV3Config, CapabilityV3Controller, CapabilityV3Flag
 from evals.benchmark import canonical_hash, current_git_commit
 from evals.costing import load_pricing, pricing_snapshot_hash
 from evals.evaluation_v2 import control_canary, full_replay
@@ -89,6 +89,10 @@ def task_runs(root: Path) -> list[dict[str, Any]]:
 def _common_runtime(root: Path) -> dict[str, Any]:
     runtime = dict(full_replay.runtime_contract(root))
     runtime.pop("capability_v3_feature_flag", None)
+    runtime["capability_v3_pilot_source_sha256"] = _sha256(root / "evals/evaluation_v2/capability_v3_pilot.py")
+    runtime["capability_v3_artifact_fidelity_contract"] = (
+        "V3_CORE raw controller Artifact is retained at the frozen task-root path and fail-closed before Candidate export-v1"
+    )
     return runtime
 
 
@@ -354,6 +358,51 @@ def _fresh_gate(root: Path, freeze: Path, artifact_root: Path, acknowledgement: 
         allocation_path=allocation_path, pricing_path=freeze / "pricing-snapshot.json", pricing=pricing, stage="C")
 
 
+def _write_rehearsal_capability_v3_artifact(location: Path, run: Mapping[str, Any]) -> dict[str, Any]:
+    """Create deterministic raw V3 evidence at the same nested Artifact path.
+
+    This is an Artifact collection rehearsal, not an Agent or Provider run. The
+    streaming Agent lifecycle is separately covered by its zero-provider test.
+    """
+    root = location / "capability-v3"
+    controller = CapabilityV3Controller(
+        CapabilityV3Config.from_flag(CapabilityV3Flag.V3_CORE),
+        task_id=str(run["instance_id"]), base_commit=str(run["base_commit"]), state_dir=root,
+    )
+    controller.begin_run(
+        task_id=str(run["instance_id"]), base_commit=str(run["base_commit"]),
+        feature_flag=CapabilityV3Flag.V3_CORE.value,
+    )
+    candidate = root / "candidate-rehearsal.patch"
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    candidate.write_text(
+        "diff --git a/.codepacex-rehearsal b/.codepacex-rehearsal\n"
+        "--- a/.codepacex-rehearsal\n+++ b/.codepacex-rehearsal\n"
+        "+zero-provider-artifact-rehearsal\n",
+        encoding="utf-8",
+    )
+    controller.observe_diff(
+        diff_text=candidate.read_text(encoding="utf-8"), changed_files=(".codepacex-rehearsal",),
+        patch_path=candidate,
+    )
+    controller.observe_test_result(passed=True, test_evidence_id="zero-provider-artifact-rehearsal")
+    selected = controller.finalize("zero_provider_artifact_rehearsal")
+    if selected is None:
+        raise AssertionError("zero-provider V3 rehearsal did not retain its Candidate")
+    (root / "final.patch").write_bytes(candidate.read_bytes())
+    controller.write_artifact(root)
+    fidelity = control_canary._validate_capability_v3_artifact(
+        task_root=location, instance_id=str(run["instance_id"]), treatment=CapabilityV3Flag.V3_CORE,
+    )
+    if not fidelity["valid"]:
+        raise AssertionError(f"zero-provider V3 rehearsal Artifact invalid: {fidelity['errors']}")
+    fidelity["candidate_sha256"] = _sha256(candidate)
+    fidelity["candidate_matches_final_patch"] = fidelity["candidate_sha256"] == fidelity["final_patch_sha256"]
+    if not fidelity["candidate_matches_final_patch"]:
+        raise AssertionError("zero-provider V3 rehearsal Candidate differs from final.patch")
+    return fidelity
+
+
 def rehearse(root: Path, freeze: Path, preflight_summary: Path, artifact_root: Path) -> dict[str, Any]:
     """Materialize all twelve Artifact paths and flag hand-offs without transport."""
     identities = validate_freeze(root, freeze)
@@ -384,13 +433,24 @@ def rehearse(root: Path, freeze: Path, preflight_summary: Path, artifact_root: P
             "status": "zero_provider_rehearsal_only",
             "task_run_allocation": allocation_by_run[run["task_run_id"]],
         }
+        if run["capability_v3_flag"] == CapabilityV3Flag.V3_CORE.value:
+            artifact["capability_v3_treatment_fidelity"] = _write_rehearsal_capability_v3_artifact(location, run)
         _write_json(location / "task-run-contract.json", artifact)
         run_artifacts.append({"task_run_id": run["task_run_id"], "artifact": str(location.relative_to(artifact_root))})
+    v3_coverage = [
+        json.loads((artifact_root / run["expected_artifact_path"] / "task-run-contract.json").read_text(encoding="utf-8"))["capability_v3_treatment_fidelity"]
+        for run in frozen["task_runs"] if run["capability_v3_flag"] == CapabilityV3Flag.V3_CORE.value
+    ]
+    if len(v3_coverage) != len(PILOT_TASK_IDS) or not all(item["valid"] for item in v3_coverage):
+        raise AssertionError("zero-provider rehearsal lacks complete V3 Artifact coverage")
     summary = {
         "schema_version": SCHEMA_VERSION, "paid_execution": False, "provider_requests": 0,
         "usage": 0, "charge_cny": "0", "provider_secret_read": False,
         "freeze_sha256": identities["freeze_sha256"], "run_artifacts": run_artifacts,
-        "flag_handoffs_verified": [item.value for item in TREATMENTS], "completed": len(run_artifacts) == 12,
+        "flag_handoffs_verified": [item.value for item in TREATMENTS],
+        "v3_evidence_coverage": v3_coverage,
+        "v3_evidence_coverage_count": len(v3_coverage),
+        "completed": len(run_artifacts) == 12,
     }
     _write_json(artifact_root / "controlled-pilot-rehearsal-summary.json", summary)
     return summary
