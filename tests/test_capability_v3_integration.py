@@ -13,6 +13,7 @@ from codepacex.permissions import DangerousCommandDetector, PathSandbox, Permiss
 from codepacex.tools import create_default_registry
 from codepacex.tools.base import StreamEnd, StreamEvent, TextDelta, ToolCallComplete
 from codepacex.tools.run_test import RunTest
+from codepacex.conversation import ConversationManager
 
 
 class _SyntheticClient(LLMClient):
@@ -105,6 +106,35 @@ def test_v3_flag_drives_agent_lifecycle_and_artifact_without_provider(tmp_path: 
         ["git", "diff", "--binary", "--no-ext-diff"], cwd=workspace,
         check=True, capture_output=True, text=True,
     ).stdout
+
+
+def test_streaming_agent_lifecycle_writes_raw_v3_artifact_without_provider(tmp_path: Path) -> None:
+    workspace = _git_workspace(tmp_path)
+    artifact_root = tmp_path / "streaming-artifact"
+    stable_patch = artifact_root / "stable.patch"
+    stable_patch.parent.mkdir()
+    stable_patch.write_text("diff --git a/source.py b/source.py\n+streaming\n", encoding="utf-8")
+    controller = CapabilityV3Controller(
+        CapabilityV3Config.from_flag(CapabilityV3Flag.V3_CORE), state_dir=artifact_root,
+    )
+    controller.observe_diff(diff_text="streaming", changed_files=["source.py"], patch_path=stable_patch)
+    agent = _agent(_DoneClient(), workspace, artifact_root, controller=controller)
+    conversation = ConversationManager()
+    conversation.add_user_message("Update source VALUE and validate it.")
+
+    async def consume() -> None:
+        async for _event in agent.run(conversation):
+            pass
+
+    asyncio.run(consume())
+
+    summary = json.loads((artifact_root / "summary.json").read_text(encoding="utf-8"))
+    events = [json.loads(line) for line in (artifact_root / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    configured = [item for item in events if item["event_type"] == "V3RunConfigured"]
+    assert summary["events"] == events and events
+    assert configured[0]["payload"]["task_id"] == "synthetic-task"
+    assert configured[0]["payload"]["feature_flag"] == CapabilityV3Flag.V3_CORE.value
+    assert (artifact_root / "final.patch").read_text(encoding="utf-8") == stable_patch.read_text(encoding="utf-8")
 
 
 def test_final_export_prefers_stable_candidate_over_later_workspace_wip(tmp_path: Path) -> None:

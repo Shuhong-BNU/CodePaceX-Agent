@@ -555,6 +555,7 @@ class Agent:
         self._capability_v3_task_id = capability_v3_task_id
         self._capability_v3_base_commit = capability_v3_base_commit
         self._capability_v3_started = False
+        self._capability_v3_finalized = False
         self._capability_v3_event_cursor = 0
 
         # 非阻塞 memory recall：prefetch task 与主 LLM 调用并行，工具执行后注入
@@ -634,6 +635,14 @@ class Agent:
             except Exception:
                 log.exception("Capability V3 start telemetry failed")
 
+    @staticmethod
+    def _capability_v3_task_from_conversation(conversation: ConversationManager) -> str:
+        """Return the initiating user task before runtime context is injected."""
+        for message in reversed(conversation.history):
+            if message.role == "user" and message.content and not message.content.startswith("<system-reminder>"):
+                return message.content
+        return ""
+
     def _observe_capability_v3_tool_result(
         self, tc: ToolCallComplete, tool: Any, result: ToolResult,
     ) -> None:
@@ -677,8 +686,9 @@ class Agent:
 
     def _finalize_capability_v3_run(self, reason: str) -> None:
         controller = self.capability_v3_controller
-        if not controller.enabled:
+        if self._capability_v3_finalized or not controller.enabled:
             return
+        self._capability_v3_finalized = True
         try:
             selected = controller.finalize(reason)
             state_dir = controller.state_dir or Path(self.work_dir) / ".codepacex" / "capability_v3"
@@ -915,12 +925,16 @@ class Agent:
     async def run(self, conversation: ConversationManager) -> AsyncIterator[AgentEvent]:
         self._runtime_request_index = 0
         active_executor: list[StreamingExecutor | None] = [None]
+        self._start_capability_v3_run(self._capability_v3_task_from_conversation(conversation))
         try:
             async for event in self._run(conversation, active_executor):
                 yield event
         finally:
             if active_executor[0] is not None:
                 await active_executor[0].cancel_and_reap()
+            # The CLI and paid evaluator consume this streaming lifecycle. Keep the
+            # raw V3 state beside the task Artifact before its workspace is cleaned.
+            self._finalize_capability_v3_run("agent_stream_finalized")
 
     async def _run(
         self,

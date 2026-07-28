@@ -68,6 +68,16 @@ def test_freeze_validation_and_zero_provider_rehearsal_bind_both_flags(tmp_path:
     records = list((tmp_path / "rehearsal").glob("runs/*/tasks/*/task-run-contract.json"))
     assert len(records) == 12
     assert {json.loads(path.read_text())["capability_v3_flag"] for path in records} == {"V2_CONTROL", "V3_CORE"}
+    summary = json.loads((tmp_path / "rehearsal" / "controlled-pilot-rehearsal-summary.json").read_text())
+    assert summary["v3_evidence_coverage_count"] == 6
+    assert all(item["valid"] and item["candidate_matches_final_patch"] for item in summary["v3_evidence_coverage"])
+    for path in records:
+        record = json.loads(path.read_text())
+        v3_root = path.parent / "capability-v3"
+        if record["capability_v3_flag"] == "V3_CORE":
+            assert all((v3_root / name).is_file() for name in ("summary.json", "events.jsonl", "final.patch"))
+        else:
+            assert not v3_root.exists()
 
 
 def test_execution_entry_rehearsal_binds_unique_allocation_without_provider(
@@ -94,6 +104,21 @@ def test_execution_entry_rehearsal_binds_unique_allocation_without_provider(
     assert all(item["task_run_allocation_hash"] for item in ledger["settlements"])
     with pytest.raises(ValueError, match="duplicate controlled Pilot allocation"):
         pilot.rehearse_execution_entry(ROOT, freeze, preflight, artifact)
+
+
+def test_v3_treatment_fidelity_rejects_missing_or_mismatched_raw_artifact(tmp_path: Path) -> None:
+    task_root = tmp_path / "task"
+    task_root.mkdir()
+    missing = pilot.control_canary._validate_capability_v3_artifact(
+        task_root=task_root, instance_id="example", treatment=pilot.CapabilityV3Flag.V3_CORE,
+    )
+    assert not missing["valid"] and set(missing["errors"]) == {
+        "missing:summary.json", "missing:events.jsonl", "missing:final.patch",
+    }
+    control = pilot.control_canary._validate_capability_v3_artifact(
+        task_root=task_root, instance_id="example", treatment=pilot.CapabilityV3Flag.V2_CONTROL,
+    )
+    assert control["valid"] and control["required"] is False
 
 
 def test_task_run_identity_mismatches_and_cross_run_reuse_fail_closed_before_transport(

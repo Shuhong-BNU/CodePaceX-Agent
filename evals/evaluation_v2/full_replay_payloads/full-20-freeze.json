@@ -149,8 +149,9 @@
   },
   "runtime_contract": {
     "agent_dispatch_coverage_contract": "every-capability-terminal-requires-live-executor-provider-request-and-settlement-v1",
-    "agent_entrypoint": "Agent.run_to_completion",
+    "agent_entrypoint": "Agent.run (CLI stream-json)",
     "candidate_export_contract": "git-diff-binary-sha256-bound-v1",
+    "capability_v3_artifact_contract": "V3_CORE requires raw summary.json, nonempty events.jsonl, and selected final.patch at task-root/capability-v3-v1",
     "capability_v3_feature_flag": "V2_CONTROL",
     "host_runtime_integrity_contract": "before-after-runtime-fingerprint-equality-fail-closed-v1",
     "phase_transition_contract": "dispatch-evidenced-capability-terminals-continue-infrastructure-stop-v2",
@@ -158,7 +159,7 @@
     "provider_request_budget_bridge_ceiling": 40,
     "runtime_source_sha256": {
       ".github/workflows/evaluation-v2-full-20-replay.yml": "e72012b84b221db87305b326dd1bfe2f8367f7cb5fd7b28998d9b7547ccf8dfe",
-      "codepacex/agent.py": "2855a152fb852f31c2c4b021d08bdc03ec3e3f0cfaa790d3f8a18ba0ba8ae33d",
+      "codepacex/agent.py": "4ad73fbd249478918aae36258e6028d2bbd771d173b3556ffc8c882086c1623b",
       "codepacex/capability_v3/config.py": "ad810ab41bd4ff83608dbf1e1d307cff9c2ac69bcb7f30555f6bbc55d639970b",
       "codepacex/capability_v3/controller.py": "f80d7abbc57dbcb8d3942b093a3ffebb43fb8911aa6138e5d0021393bc763288",
       "codepacex/capability_v3/models.py": "b72e9d689742afa7a10e24022e4f190fc96618a2e628ec52a0eb2b14c8371beb",
@@ -166,8 +167,8 @@
       "codepacex/permissions/checker.py": "bab12d8cde66fac86bdb6df8e63c8540e0dba43dd8b2ae461047144afa380cd2",
       "codepacex/tools/edit_file.py": "495231404680b588a7ac14b2d2807aa156e832136c14459f923ac3276dab750f",
       "codepacex/tools/run_test.py": "19335d85dbd43ea6062e419bfcc089eb98da15c928bb1fcb6280705bc27b52fe",
-      "evals/evaluation_v2/control_canary.py": "d7c0dc532cabac4de69d7f081d8f5a5179d7787dc526a52acf7b1f819cd0dfe6",
-      "evals/evaluation_v2/full_replay.py": "66310fe810fd8802f944baf3d4df63dedaca2a8704e80cf71290a0287f548494",
+      "evals/evaluation_v2/control_canary.py": "32d8a722a6a686a0396903f82d739804eaa42e94ee90201912b477008b29e22c",
+      "evals/evaluation_v2/full_replay.py": "3ea3ce043361c9b432c057f2536f431caa41e8463a83038fe602d82c648b3240",
       "evals/paid_gate.py": "4da3de55958ea4140bf04d66056e104a50a10d2eb912a48c83365b370857c68c",
       "evals/pilot.py": "22884f7b7285135be7fb349801a35760721a1093bb0d0fe12017f13e5ad77c9d"
     },
@@ -176,7 +177,7 @@
     "task_python_isolation_contract": "fresh-no-system-site-packages-venv-path-bound-python-python3-pip-pip3-v1",
     "tool_schemas_sha256": "72ae1262c5acd1a8b21c3f0964cdcb210508f1b780590b79b0ec2cc2eba07aea"
   },
-  "runtime_contract_sha256": "a30b99f40cf392521b21d3662121f6ae7ffd6fd88b68936134d8f190761ba7c7",
+  "runtime_contract_sha256": "eb0c719cb443656c1fb58dd5a0c46118bee65c3a2caaef4f4e86d1f5ad3c693e",
   "schema_version": 1,
   "selection_manifest_sha256": "3efa2694627f699324c78b3c8dd09f208330eebb77fecd9d807bfd509529935e",
   "status": "frozen_pending_single_full_20_authorization"
