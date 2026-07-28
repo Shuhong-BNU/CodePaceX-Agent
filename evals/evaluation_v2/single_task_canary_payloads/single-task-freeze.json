@@ -41,14 +41,14 @@
     "repository": "https://github.com/microsoft/SWE-bench-Live",
     "split": "lite"
   },
-  "parent_checkout": "0927c92264d8ebf6e042e2ebc7165d07bbaf1eb3",
+  "parent_checkout": "ff1d8eac59a3106464f2e8381289aaabb736b87d",
   "parent_readiness": {
-    "artifact_digest": "sha256:1256700266cfa3195589548f526bf2e46f418239d42aa0b72b6ca30fbac5b236",
-    "artifact_id": 8621081736,
-    "freeze_sha256": "2a7a8c7f22c0d1c76bd4955acdafe74eed13e4f37f050735eacb7c7ad73f829e",
+    "artifact_digest": "sha256:1531cd29ca88d3046297589e00dacf12769c125f86e2299a10f7511cb5dd8d71",
+    "artifact_id": 8688735665,
+    "freeze_sha256": "9d50c484fbd08c61d09f947a4e0b622cda5694bb00e904000c7cfa6f2da145dd",
     "pricing_snapshot_sha256": "a09eb6e6955b9fb68d3e011771c948f7a14b7bbca5316a2433cab099d0b643d3",
-    "run_id": 30163373235,
-    "runtime_contract_sha256": "eb0c719cb443656c1fb58dd5a0c46118bee65c3a2caaef4f4e86d1f5ad3c693e"
+    "run_id": 30358886445,
+    "runtime_contract_sha256": "9457eaaf563b8c7f053bea04bb9354633db89270b14e765b7af883264294177e"
   },
   "provider_contract": {
     "base_url": "https://llm-ipge9fy38w648m28.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
@@ -68,12 +68,12 @@
       ".github/workflows/evaluation-v2-single-task-paid-canary.yml": "57ad04555afcdc94e5724f5ade57f5a27ad484b1e8e49bb3912e9e34a059128f",
       "evals/evaluation_v2/control_canary.py": "32d8a722a6a686a0396903f82d739804eaa42e94ee90201912b477008b29e22c",
       "evals/evaluation_v2/full_replay.py": "3ea3ce043361c9b432c057f2536f431caa41e8463a83038fe602d82c648b3240",
-      "evals/evaluation_v2/single_task_canary.py": "88761a22765134da4c85d5e8ad7c86a69ae729966918195c95fb5ce083d4b71c",
-      "evals/paid_gate.py": "4da3de55958ea4140bf04d66056e104a50a10d2eb912a48c83365b370857c68c"
+      "evals/evaluation_v2/single_task_canary.py": "68fc4380b615878196ac0c48c2dc494855696a29f076966a8e37d26e24aa7185",
+      "evals/paid_gate.py": "b31eae3c615de70fa25d489ac984d3741a902a7ada1b47283bfd3c6801c46146"
     },
     "usage_contract_terminal": "provider_usage_contract_violation"
   },
-  "runtime_contract_hash": "ffff0028b0c42e11d56273057ac2bf805391f028ff92898deb0b390c59f1777d",
+  "runtime_contract_hash": "c1c1cc32fd4a29af99b2e5955c10bccfbefd51bc589449221375387d53a4be97",
   "schema_version": 1,
   "status": "frozen_pending_explicit_single_task_authorization",
   "task": {
