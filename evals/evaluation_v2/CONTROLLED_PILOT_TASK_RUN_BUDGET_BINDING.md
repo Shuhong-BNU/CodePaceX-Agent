@@ -12,7 +12,11 @@ trial ID must agree.  A missing or mismatched value records a budget block and
 fails closed before the Provider call.
 
 Every task-run has a theoretical ceiling of CNY 73.236480.  The twelve
-ceilings total CNY 878.837760, while the parent remains jointly constrained by
-the CNY 878.837759 spendable amount and CNY 0.000001 safety reserve.  A
-reservation, charge, settlement, cancellation, and block carries the
-task-run allocation identity when the Controlled Pilot contract is active.
+ceilings total CNY 878.837760 and remain a risk-display maximum, not a
+pre-allocation.  A formal Phase A Freeze may authorize a lower parent hard
+cap; its CNY spendable amount plus the CNY 0.000001 safety reserve is enforced
+for every rolling reservation before Provider transport.  Therefore child
+ceilings may sum above the parent hard cap without creating twelve funds or
+reserving unused capacity.  A reservation, charge, settlement, cancellation,
+and block carries the task-run allocation identity when the Controlled Pilot
+contract is active.

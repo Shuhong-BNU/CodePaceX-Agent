@@ -322,6 +322,7 @@ class StageCBudgetAllocation(BaseModel):
     spendable_total_cny: Decimal = Field(gt=0)
     category_limits_cny: dict[BudgetCategory, Decimal]
     task_run_allocations: list[TaskRunBudgetAllocation] = Field(default_factory=list)
+    aggregate_child_ceiling_exposure: bool = False
 
     @model_validator(mode="after")
     def validate_limits(self) -> StageCBudgetAllocation:
@@ -338,7 +339,10 @@ class StageCBudgetAllocation(BaseModel):
         theoretical_total = sum(
             (item.theoretical_ceiling_cny for item in self.task_run_allocations), Decimal("0"),
         )
-        if theoretical_total > self.spendable_total_cny + self.safety_reserve_cny:
+        if (
+            theoretical_total > self.spendable_total_cny + self.safety_reserve_cny
+            and not self.aggregate_child_ceiling_exposure
+        ):
             raise ValueError("Stage C task-run theoretical ceilings exceed the parent authorization")
         return self
 
@@ -823,6 +827,14 @@ class PaidRunGate:
         stage_limit = self.authorization.stage_limits_cny[self.stage]
         remaining = stage_limit - ledger.spent_cny
         if remaining < amount:
+            if (
+                self.allocation is not None
+                and ledger.spent_cny + amount > self.allocation.spendable_total_cny
+            ):
+                self._record_budget_block(
+                    ledger, trial_id=trial_id, amount=amount, reason="safety_reserve",
+                )
+                raise ValueError("Stage C safety reserve prevents the worst next trial")
             self._record_budget_block(
                 ledger, trial_id=trial_id, amount=amount, reason="stage_limit",
             )

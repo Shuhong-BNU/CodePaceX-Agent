@@ -33,6 +33,24 @@ def test_frozen_budget_is_exact_and_hard_limited() -> None:
     assert Decimal(budget["per_request_theoretical_exposure_cny"]) == Decimal("1.830912")
     assert Decimal(budget["per_run_theoretical_exposure_cny"]) == Decimal("73.236480")
     assert Decimal(budget["total_theoretical_exposure_cny"]) == Decimal("878.837760")
+    assert Decimal(budget["approved_total_hard_cap_cny"]) == Decimal("878.837760")
+
+
+def test_aggregate_parent_hard_cap_is_distinct_from_theoretical_exposure() -> None:
+    payload = pilot.freeze_payload(
+        ROOT, run_id="aggregate-parent-cap-pilot",
+        approved_total_hard_cap_cny="250.000000",
+    )
+    budget = payload["budget_contract"]
+    binding = payload["allocation_binding"]
+    assert Decimal(budget["approved_total_hard_cap_cny"]) == Decimal("250.000000")
+    assert Decimal(budget["theoretical_maximum_exposure_cny"]) == Decimal("878.837760")
+    assert Decimal(binding["spendable_total_cny"]) == Decimal("249.999999")
+    assert Decimal(binding["safety_reserve_cny"]) == Decimal("0.000001")
+    assert sum(
+        Decimal(item["theoretical_ceiling_cny"])
+        for item in binding["task_run_allocations"]
+    ) == Decimal("878.837760")
 
 
 def test_frozen_task_run_allocations_are_unique_and_remain_parent_ceiling_bindings() -> None:
@@ -213,6 +231,85 @@ def test_task_run_ceiling_and_serial_handoff_are_enforced_without_provider(
     assert ledger["active_reservation"] is None
     assert ledger["spent_cny"] == "73.236480"
     assert ledger["budget_blocks"][-1]["reason"] == "task_run_ceiling"
+
+
+def test_aggregate_parent_cap_blocks_before_transport_without_preallocating_children(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("evals.paid_gate._git_is_clean", lambda _root: True)
+    freeze = tmp_path / "freeze"
+    identities = pilot.write_freeze(
+        ROOT, freeze, run_id="aggregate-parent-cap-pilot",
+        approved_total_hard_cap_cny="250.000000",
+    )
+    frozen = json.loads((freeze / pilot.FREEZE_NAME).read_text(encoding="utf-8"))
+    gate = pilot._fresh_gate(ROOT, freeze, tmp_path / "entry", "test", run_id="aggregate-parent-cap-pilot")
+    ledger_path = tmp_path / "entry" / "ledger.json"
+    initial = json.loads(ledger_path.read_text(encoding="utf-8"))
+    assert initial["spent_cny"] == "0" and initial["active_reservation"] is None
+    assert initial["request_charges"] == [] and initial["settlements"] == []
+    task_identities = [pilot._task_run_identity(item) for item in frozen["allocation_binding"]["task_run_allocations"]]
+    for index, identity in enumerate(task_identities[:3], start=1):
+        trial_id = f"swe/v2-full-20/aggregate-parent-cap-pilot-{index:02d}-{identity.treatment}/{identity.instance_id}"
+        for _ in range(40):
+            reservation = gate.reserve(
+                trial_id, maximum_requests=1,
+                maximum_input_tokens_per_request=pilot.full_replay.MAX_INPUT_TOKENS,
+                maximum_output_tokens_per_request=pilot.full_replay.MAX_OUTPUT_TOKENS,
+                task_run_identity=identity,
+            )
+            gate.settle(reservation, request_usages=[
+                (pilot.full_replay.MAX_INPUT_TOKENS, pilot.full_replay.MAX_OUTPUT_TOKENS),
+            ])
+    fourth = task_identities[3]
+    fourth_trial = f"swe/v2-full-20/aggregate-parent-cap-pilot-04-{fourth.treatment}/{fourth.instance_id}"
+    for _ in range(16):
+        reservation = gate.reserve(
+            fourth_trial, maximum_requests=1,
+            maximum_input_tokens_per_request=pilot.full_replay.MAX_INPUT_TOKENS,
+            maximum_output_tokens_per_request=pilot.full_replay.MAX_OUTPUT_TOKENS,
+            task_run_identity=fourth,
+        )
+        gate.settle(reservation, request_usages=[
+            (pilot.full_replay.MAX_INPUT_TOKENS, pilot.full_replay.MAX_OUTPUT_TOKENS),
+        ])
+    with pytest.raises(ValueError, match="safety reserve prevents"):
+        gate.reserve(
+            fourth_trial, maximum_requests=1,
+            maximum_input_tokens_per_request=pilot.full_replay.MAX_INPUT_TOKENS,
+            maximum_output_tokens_per_request=pilot.full_replay.MAX_OUTPUT_TOKENS,
+            task_run_identity=fourth,
+        )
+    later = task_identities[4]
+    with pytest.raises(ValueError, match="safety reserve prevents"):
+        gate.reserve(
+            f"swe/v2-full-20/aggregate-parent-cap-pilot-05-{later.treatment}/{later.instance_id}",
+            maximum_requests=1,
+            maximum_input_tokens_per_request=pilot.full_replay.MAX_INPUT_TOKENS,
+            maximum_output_tokens_per_request=pilot.full_replay.MAX_OUTPUT_TOKENS,
+            task_run_identity=later,
+        )
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    assert ledger["active_reservation"] is None
+    assert len(ledger["request_charges"]) == len(ledger["settlements"]) == 136
+    assert Decimal(ledger["spent_cny"]) < Decimal("249.999999")
+    assert ledger["budget_blocks"][-1]["reason"] == "safety_reserve"
+    assert identities["allocation_hash"] == ledger["allocation_hash"]
+
+
+def test_paid_entry_requires_aggregate_parent_cap_not_theoretical_exposure(tmp_path: Path) -> None:
+    freeze = tmp_path / "freeze"
+    identities = pilot.write_freeze(
+        ROOT, freeze, run_id="aggregate-entry-pilot",
+        approved_total_hard_cap_cny="250.000000",
+    )
+    with pytest.raises(ValueError, match="hard cap"):
+        pilot.run_paid_pilot(
+            ROOT, freeze, tmp_path / "paid", expected_freeze_sha256=identities["freeze_sha256"],
+            expected_allocation_hash=identities["allocation_hash"], approved_total_hard_cap_cny="878.837760",
+            authorization_acknowledgement="test", run_id="aggregate-entry-pilot",
+        )
+    assert not (tmp_path / "paid").exists()
 
 
 def test_child_request_budget_receives_complete_explicit_task_run_contract(

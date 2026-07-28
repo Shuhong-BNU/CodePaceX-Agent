@@ -96,7 +96,21 @@ def _common_runtime(root: Path) -> dict[str, Any]:
     return runtime
 
 
-def budget_contract(root: Path) -> dict[str, Any]:
+def _approved_parent_hard_cap(
+    *, theoretical_maximum_exposure_cny: Decimal,
+    approved_total_hard_cap_cny: str | None,
+) -> Decimal:
+    if approved_total_hard_cap_cny is None:
+        return theoretical_maximum_exposure_cny
+    approved = Decimal(approved_total_hard_cap_cny)
+    if approved <= ALLOCATION_SAFETY_RESERVE_CNY:
+        raise ValueError("controlled Pilot parent hard cap must exceed the safety reserve")
+    if approved > theoretical_maximum_exposure_cny:
+        raise ValueError("controlled Pilot parent hard cap cannot exceed theoretical maximum exposure")
+    return approved
+
+
+def budget_contract(root: Path, *, approved_total_hard_cap_cny: str | None = None) -> dict[str, Any]:
     pricing = load_pricing(root / full_replay.PRICING_PATH)
     one = worst_case_reservation(
         pricing, maximum_requests=1,
@@ -104,14 +118,20 @@ def budget_contract(root: Path) -> dict[str, Any]:
         maximum_output_tokens_per_request=full_replay.MAX_OUTPUT_TOKENS,
     )
     per_run = one * full_replay.MAX_REQUESTS_PER_TASK
-    total = per_run * len(PILOT_TASK_IDS) * len(TREATMENTS)
+    theoretical_total = per_run * len(PILOT_TASK_IDS) * len(TREATMENTS)
+    approved_total = _approved_parent_hard_cap(
+        theoretical_maximum_exposure_cny=theoretical_total,
+        approved_total_hard_cap_cny=approved_total_hard_cap_cny,
+    )
     return {
         "currency": "CNY",
         "pricing_snapshot_path": str(full_replay.PRICING_PATH),
         "pricing_snapshot_sha256": pricing_snapshot_hash(pricing),
         "per_request_theoretical_exposure_cny": str(one),
         "per_run_theoretical_exposure_cny": str(per_run),
-        "total_theoretical_exposure_cny": str(total),
+        "total_theoretical_exposure_cny": str(theoretical_total),
+        "theoretical_maximum_exposure_cny": str(theoretical_total),
+        "approved_total_hard_cap_cny": str(approved_total),
         "provider_request_ceiling_per_run": full_replay.MAX_REQUESTS_PER_TASK,
         "maximum_input_tokens_per_request": full_replay.MAX_INPUT_TOKENS,
         "maximum_output_tokens_per_request": full_replay.MAX_OUTPUT_TOKENS,
@@ -136,7 +156,7 @@ def _task_run_identity(value: Mapping[str, Any]) -> TaskRunBudgetIdentity:
 
 
 def _authorization(frozen: Mapping[str, Any], pricing_hash: str, commit: str) -> BudgetAuthorization:
-    total = Decimal(str(frozen["budget_contract"]["total_theoretical_exposure_cny"]))
+    total = Decimal(str(frozen["budget_contract"]["approved_total_hard_cap_cny"]))
     return BudgetAuthorization(
         authorized_total_cny=total, stage_limits_cny={"A": total, "B": total, "C": total},
         pricing_snapshot_hash=pricing_hash, experiment_commit=commit,
@@ -146,7 +166,7 @@ def _authorization(frozen: Mapping[str, Any], pricing_hash: str, commit: str) ->
 
 def _allocation_binding(frozen: Mapping[str, Any], *, run_id: str) -> tuple[BudgetAuthorization, BudgetLedger, StageCBudgetAllocation, dict[str, Any]]:
     run_id = _safe_run_id(run_id)
-    total = Decimal(str(frozen["budget_contract"]["total_theoretical_exposure_cny"]))
+    total = Decimal(str(frozen["budget_contract"]["approved_total_hard_cap_cny"]))
     pricing_hash = str(frozen["budget_contract"]["pricing_snapshot_sha256"])
     authorization = _authorization(frozen, pricing_hash, str(frozen["bound_main_commit"]))
     ledger = BudgetLedger(
@@ -183,6 +203,7 @@ def _allocation_binding(frozen: Mapping[str, Any], *, run_id: str) -> tuple[Budg
             "multi_agent": Decimal("0"), "long_session": Decimal("0"),
         },
         task_run_allocations=task_run_allocations,
+        aggregate_child_ceiling_exposure=True,
     )
     binding = {
         "allocation_id": allocation.allocation_id,
@@ -194,6 +215,10 @@ def _allocation_binding(frozen: Mapping[str, Any], *, run_id: str) -> tuple[Budg
         "task_list_sha256": frozen["task_list_sha256"],
         "task_runs_sha256": frozen["task_runs_sha256"],
         "authorized_total_cny": str(total),
+        "approved_total_hard_cap_cny": str(total),
+        "theoretical_maximum_exposure_cny": str(
+            frozen["budget_contract"]["theoretical_maximum_exposure_cny"]
+        ),
         "spendable_total_cny": str(allocation.spendable_total_cny),
         "safety_reserve_cny": str(allocation.safety_reserve_cny),
         "allocation_path": "controlled-pilot-stage-c-allocation.json",
@@ -207,7 +232,10 @@ def _allocation_binding(frozen: Mapping[str, Any], *, run_id: str) -> tuple[Budg
     return authorization, ledger, allocation, binding
 
 
-def freeze_payload(root: Path, *, bound_main_commit: str | None = None, run_id: str) -> dict[str, Any]:
+def freeze_payload(
+    root: Path, *, bound_main_commit: str | None = None, run_id: str,
+    approved_total_hard_cap_cny: str | None = None,
+) -> dict[str, Any]:
     head = current_git_commit(root)
     bound = bound_main_commit or head
     if not COMMIT.fullmatch(bound):
@@ -256,7 +284,9 @@ def freeze_payload(root: Path, *, bound_main_commit: str | None = None, run_id: 
             "retry": 0,
             "strict_serial": True,
         },
-        "budget_contract": budget_contract(root),
+        "budget_contract": budget_contract(
+            root, approved_total_hard_cap_cny=approved_total_hard_cap_cny,
+        ),
         "paid_execution_default": False,
         "provider_secret_presence_only": True,
         "gold_hidden_access_forbidden": True,
@@ -266,8 +296,14 @@ def freeze_payload(root: Path, *, bound_main_commit: str | None = None, run_id: 
     return payload
 
 
-def write_freeze(root: Path, output: Path, *, run_id: str) -> dict[str, str]:
-    payload = freeze_payload(root, run_id=run_id)
+def write_freeze(
+    root: Path, output: Path, *, run_id: str,
+    approved_total_hard_cap_cny: str | None = None,
+) -> dict[str, str]:
+    payload = freeze_payload(
+        root, run_id=run_id,
+        approved_total_hard_cap_cny=approved_total_hard_cap_cny,
+    )
     output.mkdir(parents=True, exist_ok=False)
     _write_json(output / FREEZE_NAME, payload)
     pricing = root / full_replay.PRICING_PATH
@@ -289,6 +325,9 @@ def validate_freeze(root: Path, freeze: Path) -> dict[str, Any]:
     expected = freeze_payload(
         root, bound_main_commit=str(actual.get("bound_main_commit", "")),
         run_id=str(binding.get("internal_run_id", "")),
+        approved_total_hard_cap_cny=str(
+            actual.get("budget_contract", {}).get("approved_total_hard_cap_cny", "")
+        ),
     )
     if actual != expected:
         raise ValueError("controlled Pilot Freeze differs from its canonical contract")
@@ -509,7 +548,7 @@ def run_paid_pilot(root: Path, freeze: Path, artifact_root: Path, *, expected_fr
     """Future-only serial executor; no caller reaches it without explicit confirmation."""
     identities = validate_freeze(root, freeze)
     frozen = _read_json(freeze / FREEZE_NAME)
-    total = Decimal(str(frozen["budget_contract"]["total_theoretical_exposure_cny"]))
+    total = Decimal(str(frozen["budget_contract"]["approved_total_hard_cap_cny"]))
     binding = frozen["allocation_binding"]
     if expected_freeze_sha256 != identities["freeze_sha256"] or Decimal(approved_total_hard_cap_cny) != total:
         raise ValueError("paid authorization does not match the controlled Pilot Freeze and hard cap")
@@ -564,14 +603,14 @@ def run_paid_pilot(root: Path, freeze: Path, artifact_root: Path, *, expected_fr
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Capability V3 controlled Pilot contracts")
     sub = parser.add_subparsers(dest="command", required=True)
-    freeze = sub.add_parser("freeze"); freeze.add_argument("--root", type=Path, required=True); freeze.add_argument("--output", type=Path, required=True); freeze.add_argument("--run-id", required=True)
+    freeze = sub.add_parser("freeze"); freeze.add_argument("--root", type=Path, required=True); freeze.add_argument("--output", type=Path, required=True); freeze.add_argument("--run-id", required=True); freeze.add_argument("--approved-total-hard-cap-cny")
     validate = sub.add_parser("validate"); validate.add_argument("--root", type=Path, required=True); validate.add_argument("--freeze", type=Path, required=True)
     preflight = sub.add_parser("preflight"); preflight.add_argument("--root", type=Path, required=True); preflight.add_argument("--freeze", type=Path, required=True); preflight.add_argument("--artifact-root", type=Path, required=True)
     rehearsal = sub.add_parser("rehearse"); rehearsal.add_argument("--root", type=Path, required=True); rehearsal.add_argument("--freeze", type=Path, required=True); rehearsal.add_argument("--preflight-summary", type=Path, required=True); rehearsal.add_argument("--artifact-root", type=Path, required=True)
     entry = sub.add_parser("rehearse-execution-entry"); entry.add_argument("--root", type=Path, required=True); entry.add_argument("--freeze", type=Path, required=True); entry.add_argument("--preflight-summary", type=Path, required=True); entry.add_argument("--artifact-root", type=Path, required=True)
     paid = sub.add_parser("paid-run"); paid.add_argument("--root", type=Path, required=True); paid.add_argument("--freeze", type=Path, required=True); paid.add_argument("--artifact-root", type=Path, required=True); paid.add_argument("--expected-freeze-sha256", required=True); paid.add_argument("--expected-allocation-hash", required=True); paid.add_argument("--approved-total-hard-cap-cny", required=True); paid.add_argument("--authorization-acknowledgement", required=True); paid.add_argument("--run-id", required=True); paid.add_argument("--confirm-paid-execution", action="store_true")
     args = parser.parse_args(argv)
-    if args.command == "freeze": result = write_freeze(args.root.resolve(), args.output.resolve(), run_id=args.run_id)
+    if args.command == "freeze": result = write_freeze(args.root.resolve(), args.output.resolve(), run_id=args.run_id, approved_total_hard_cap_cny=args.approved_total_hard_cap_cny)
     elif args.command == "validate": result = validate_freeze(args.root.resolve(), args.freeze.resolve())
     elif args.command == "preflight": result = run_preflight(args.root.resolve(), args.freeze.resolve(), args.artifact_root.resolve())
     elif args.command == "rehearse": result = rehearse(args.root.resolve(), args.freeze.resolve(), args.preflight_summary.resolve(), args.artifact_root.resolve())
