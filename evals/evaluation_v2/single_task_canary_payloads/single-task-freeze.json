@@ -45,10 +45,10 @@
   "parent_readiness": {
     "artifact_digest": "sha256:1256700266cfa3195589548f526bf2e46f418239d42aa0b72b6ca30fbac5b236",
     "artifact_id": 8621081736,
-    "freeze_sha256": "082a06f7bfcbe2f88b438ce609700b17043cec4017e37d3750a906188256b931",
+    "freeze_sha256": "6fe680e5e289be81fe700cf2aa27dde835e763219bb8f8bfaef3d81905d9a994",
     "pricing_snapshot_sha256": "a09eb6e6955b9fb68d3e011771c948f7a14b7bbca5316a2433cab099d0b643d3",
     "run_id": 30163373235,
-    "runtime_contract_sha256": "4a102fb7022293109ad824d82b8356c2ab0c171018fab65f80eeb797ffa2a6c8"
+    "runtime_contract_sha256": "a30b99f40cf392521b21d3662121f6ae7ffd6fd88b68936134d8f190761ba7c7"
   },
   "provider_contract": {
     "base_url": "https://llm-ipge9fy38w648m28.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
@@ -66,14 +66,14 @@
     "schema_version": 1,
     "source_sha256": {
       ".github/workflows/evaluation-v2-single-task-paid-canary.yml": "57ad04555afcdc94e5724f5ade57f5a27ad484b1e8e49bb3912e9e34a059128f",
-      "evals/evaluation_v2/control_canary.py": "a2f650faa4c3ee7a615d77320952f652036b25fcad6635ffe3095bb16eed97f7",
-      "evals/evaluation_v2/full_replay.py": "6be5d49fa3202ae6658a1aab4bf3c1e1fa7ed2ed56faed0834abfc27231dd007",
-      "evals/evaluation_v2/single_task_canary.py": "3b47e5b9f9f5ed55233ef77700f120718361f4f763c78b2aa740dc6214c8e72e",
-      "evals/paid_gate.py": "c3cfc44dbd6f54e8b0a9eb3ce2d22d7827bc8bb3d7e1f5b34673f56b9a3f67c5"
+      "evals/evaluation_v2/control_canary.py": "d7c0dc532cabac4de69d7f081d8f5a5179d7787dc526a52acf7b1f819cd0dfe6",
+      "evals/evaluation_v2/full_replay.py": "66310fe810fd8802f944baf3d4df63dedaca2a8704e80cf71290a0287f548494",
+      "evals/evaluation_v2/single_task_canary.py": "be7b03ed088e81ee862bd3cc3f8441694f7413aec751cad9ad9d4a505b2569ea",
+      "evals/paid_gate.py": "4da3de55958ea4140bf04d66056e104a50a10d2eb912a48c83365b370857c68c"
     },
     "usage_contract_terminal": "provider_usage_contract_violation"
   },
-  "runtime_contract_hash": "dc48fdec990c2b2aa0a53cef02ee73b5a253b858e3ed80d3c154431e8ac1d2ea",
+  "runtime_contract_hash": "9f126a909bb761c4c72d15167c9eae0b69bbaf9661c551de29803f8715b91c2c",
   "schema_version": 1,
   "status": "frozen_pending_explicit_single_task_authorization",
   "task": {

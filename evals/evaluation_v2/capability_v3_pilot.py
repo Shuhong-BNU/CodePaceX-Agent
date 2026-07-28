@@ -22,7 +22,8 @@ from evals.costing import load_pricing, pricing_snapshot_hash
 from evals.evaluation_v2 import control_canary, full_replay
 from evals.paid_gate import (
     BudgetAuthorization, BudgetLedger, PaidRunGate, StageCBudgetAllocation,
-    allocation_hash, authorization_hash, ledger_fingerprint, worst_case_reservation,
+    TaskRunBudgetAllocation, TaskRunBudgetIdentity, allocation_hash, authorization_hash,
+    ledger_fingerprint, task_run_allocation_hash, worst_case_reservation,
 )
 
 
@@ -123,6 +124,13 @@ def _safe_run_id(run_id: str) -> str:
     return run_id
 
 
+def _task_run_identity(value: Mapping[str, Any]) -> TaskRunBudgetIdentity:
+    return TaskRunBudgetIdentity.model_validate({key: value[key] for key in (
+        "task_run_id", "task_run_allocation_id", "task_run_allocation_hash",
+        "instance_id", "treatment", "expected_artifact_path",
+    )})
+
+
 def _authorization(frozen: Mapping[str, Any], pricing_hash: str, commit: str) -> BudgetAuthorization:
     total = Decimal(str(frozen["budget_contract"]["total_theoretical_exposure_cny"]))
     return BudgetAuthorization(
@@ -140,8 +148,24 @@ def _allocation_binding(frozen: Mapping[str, Any], *, run_id: str) -> tuple[Budg
     ledger = BudgetLedger(
         authorization_hash=authorization_hash(authorization), updated_at="controlled-pilot-allocation-prepared",
     )
+    per_run = Decimal(str(frozen["budget_contract"]["per_run_theoretical_exposure_cny"]))
+    parent_allocation_id = f"capability-v3-{run_id}-stage-c"
+    task_run_allocations: list[TaskRunBudgetAllocation] = []
+    for run in frozen["task_runs"]:
+        canonical = {
+            "task_run_id": run["task_run_id"],
+            "task_run_allocation_id": f"{parent_allocation_id}-task-run-{run['ordinal']:02d}",
+            "instance_id": run["instance_id"],
+            "treatment": run["capability_v3_flag"],
+            "expected_artifact_path": run["expected_artifact_path"],
+            "execution_run_id": f"{run_id}-{run['ordinal']:02d}-{run['capability_v3_flag']}",
+            "theoretical_ceiling_cny": str(per_run),
+        }
+        task_run_allocations.append(TaskRunBudgetAllocation.model_validate({
+            **canonical, "task_run_allocation_hash": task_run_allocation_hash(canonical),
+        }))
     allocation = StageCBudgetAllocation(
-        allocation_id=f"capability-v3-{run_id}-stage-c",
+        allocation_id=parent_allocation_id,
         experiment_commit=str(frozen["bound_main_commit"]), pricing_snapshot_hash=pricing_hash,
         baseline_ledger_sha256=ledger_fingerprint(ledger),
         baseline_authorization_hash=authorization_hash(authorization),
@@ -154,6 +178,7 @@ def _allocation_binding(frozen: Mapping[str, Any], *, run_id: str) -> tuple[Budg
             "retention": Decimal("0"), "permission": Decimal("0"),
             "multi_agent": Decimal("0"), "long_session": Decimal("0"),
         },
+        task_run_allocations=task_run_allocations,
     )
     binding = {
         "allocation_id": allocation.allocation_id,
@@ -169,6 +194,11 @@ def _allocation_binding(frozen: Mapping[str, Any], *, run_id: str) -> tuple[Budg
         "safety_reserve_cny": str(allocation.safety_reserve_cny),
         "allocation_path": "controlled-pilot-stage-c-allocation.json",
         "ledger_binding": "allocation_hash is durable before the first reservation",
+        "task_run_allocations": [item.model_dump(mode="json") for item in task_run_allocations],
+        "task_run_binding": (
+            "each task-run identity is an explicit parent-allocation ceiling binding; "
+            "it is not a separate ledger or pre-funded pool"
+        ),
     }
     return authorization, ledger, allocation, binding
 
@@ -317,6 +347,7 @@ def _fresh_gate(root: Path, freeze: Path, artifact_root: Path, acknowledgement: 
     _write_json(artifact_root / "controlled-pilot-execution-contract.json", {
         "freeze_sha256": _sha256(freeze / FREEZE_NAME), "allocation_binding": binding,
         "allocation_hash": allocation_hash(allocation), "ledger_allocation_hash": ledger.allocation_hash,
+        "task_run_allocations": binding["task_run_allocations"],
         "paid_execution": False, "provider_requests": 0, "provider_secret_read": False,
     })
     return PaidRunGate(root=root, authorization_path=authorization_path, ledger_path=ledger_path,
@@ -333,6 +364,10 @@ def rehearse(root: Path, freeze: Path, preflight_summary: Path, artifact_root: P
         raise ValueError("refusing to overwrite controlled Pilot rehearsal Artifact")
     frozen = _read_json(freeze / FREEZE_NAME)
     artifact_root.mkdir(parents=True)
+    allocation_by_run = {
+        item["task_run_id"]: item
+        for item in frozen["allocation_binding"]["task_run_allocations"]
+    }
     run_artifacts = []
     for run in frozen["task_runs"]:
         location = artifact_root / run["expected_artifact_path"]
@@ -347,6 +382,7 @@ def rehearse(root: Path, freeze: Path, preflight_summary: Path, artifact_root: P
             "paid_execution": False, "provider_requests": 0, "usage": 0, "charge_cny": "0",
             "provider_secret_read": False, "candidate_sha256": None,
             "status": "zero_provider_rehearsal_only",
+            "task_run_allocation": allocation_by_run[run["task_run_id"]],
         }
         _write_json(location / "task-run-contract.json", artifact)
         run_artifacts.append({"task_run_id": run["task_run_id"], "artifact": str(location.relative_to(artifact_root))})
@@ -373,18 +409,26 @@ def rehearse_execution_entry(root: Path, freeze: Path, preflight_summary: Path, 
     run_id = str(frozen["allocation_binding"]["internal_run_id"])
     gate = _fresh_gate(root, freeze, artifact_root, "zero-provider-execution-entry-rehearsal", run_id=run_id)
     handoffs = []
+    allocation_by_run = {
+        item["task_run_id"]: _task_run_identity(item)
+        for item in frozen["allocation_binding"]["task_run_allocations"]
+    }
     for run in frozen["task_runs"]:
-        trial_id = f"swe/capability-v3-controlled-pilot/{run_id}/{run['task_run_id']}"
+        identity = allocation_by_run[run["task_run_id"]]
+        trial_id = f"swe/v2-full-20/{run_id}-{run['ordinal']:02d}-{run['capability_v3_flag']}/{run['instance_id']}"
         reservation = gate.reserve(
             trial_id, maximum_requests=1,
             maximum_input_tokens_per_request=full_replay.MAX_INPUT_TOKENS,
             maximum_output_tokens_per_request=full_replay.MAX_OUTPUT_TOKENS,
+            task_run_identity=identity,
         )
         settlement = gate.cancel(reservation, reason="provider_confirmed_not_submitted")
         handoffs.append({
             "task_run_id": run["task_run_id"], "capability_v3_flag": run["capability_v3_flag"],
             "trial_id": trial_id, "reservation_cny": str(reservation.reserved_cny),
             "settlement_cny": str(settlement.actual_cny), "status": settlement.status,
+            "task_run_allocation_id": identity.task_run_allocation_id,
+            "task_run_allocation_hash": identity.task_run_allocation_hash,
         })
     ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
     binding = frozen["allocation_binding"]
@@ -417,13 +461,29 @@ def run_paid_pilot(root: Path, freeze: Path, artifact_root: Path, *, expected_fr
     gate = _fresh_gate(root, freeze, artifact_root, authorization_acknowledgement, run_id=run_id)
     tasks = {item["instance_id"]: item for item in full_replay.load_tasks(root)}
     metadata = full_replay._task_environment_contract(root)
+    allocation_by_run = {
+        item["task_run_id"]: _task_run_identity(item)
+        for item in binding["task_run_allocations"]
+    }
     results = []
     for run in frozen["task_runs"]:
         run_root = artifact_root / "runs" / f"{run['ordinal']:02d}-{run['capability_v3_flag']}"
+        expected_location = Path(run["expected_artifact_path"])
+        actual_location = Path("runs") / f"{run['ordinal']:02d}-{run['capability_v3_flag']}" / "tasks" / run["instance_id"]
+        if actual_location != expected_location:
+            raise ValueError("controlled Pilot Artifact path does not match the frozen task-run allocation")
         runtime = {**frozen["runtime_contract"], "capability_v3_feature_flag": run["capability_v3_flag"]}
         execution_freeze = {"runtime_contract": runtime, "provider_contract": {**frozen["provider_contract"], "provider_secret_name": "BAILIAN_API_KEY"}}
-        result = full_replay._full_task_executor(root, execution_freeze, metadata, gate, run_root, f"{run_id}-{run['ordinal']:02d}-{run['capability_v3_flag']}", tasks[run["instance_id"]])
-        results.append({"task_run_id": run["task_run_id"], "capability_v3_flag": run["capability_v3_flag"], **asdict(result)})
+        task_run_identity = allocation_by_run[run["task_run_id"]]
+        result = full_replay._full_task_executor(
+            root, execution_freeze, metadata, gate, run_root,
+            f"{run_id}-{run['ordinal']:02d}-{run['capability_v3_flag']}",
+            tasks[run["instance_id"]], task_run_identity=task_run_identity,
+        )
+        results.append({
+            "task_run_id": run["task_run_id"], "capability_v3_flag": run["capability_v3_flag"],
+            "task_run_allocation": task_run_identity.model_dump(mode="json"), **asdict(result),
+        })
         ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
         if result.terminal_status not in full_replay.CAPABILITY_TERMINALS or ledger.active_reservation is not None:
             break
@@ -432,6 +492,7 @@ def run_paid_pilot(root: Path, freeze: Path, artifact_root: Path, *, expected_fr
         "schema_version": SCHEMA_VERSION, "paid_execution": True, "run_id": run_id,
         "freeze_sha256": identities["freeze_sha256"], "results": results,
         "allocation_id": binding["allocation_id"], "allocation_hash": binding["allocation_hash"],
+        "task_run_allocations": binding["task_run_allocations"],
         "provider_requests": len(ledger.request_charges), "usage": sum(item.input_tokens + item.output_tokens for item in ledger.request_charges),
         "charge_cny": str(ledger.spent_cny), "ledger_closed": ledger.active_reservation is None,
         "completed": len(results) == 12 and ledger.active_reservation is None,
