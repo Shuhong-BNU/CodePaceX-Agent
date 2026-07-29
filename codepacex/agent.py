@@ -690,14 +690,23 @@ class Agent:
             return
         self._capability_v3_finalized = True
         try:
-            selected = controller.finalize(reason)
             state_dir = controller.state_dir or Path(self.work_dir) / ".codepacex" / "capability_v3"
             state_dir.mkdir(parents=True, exist_ok=True)
+            fallback_patch, fallback_changed_files = (None, ())
+            if not any(item.restorable for item in controller.candidates):
+                fallback_patch, fallback_changed_files = self._capture_capability_v3_workspace_diff(state_dir)
+            selected = controller.finalize(
+                reason,
+                fallback_patch_path=fallback_patch,
+                fallback_changed_files=fallback_changed_files,
+            )
             final_patch = state_dir / "final.patch"
             if selected is not None and selected.patch_path:
                 candidate_path = Path(selected.patch_path)
                 if candidate_path.is_file():
                     final_patch.write_bytes(candidate_path.read_bytes())
+            elif fallback_patch is not None:
+                final_patch.write_bytes(fallback_patch.read_bytes())
             controller.write_artifact(state_dir)
         except Exception as exc:
             try:
@@ -705,6 +714,29 @@ class Agent:
                 controller.write_artifact(controller.state_dir or Path(self.work_dir) / ".codepacex" / "capability_v3")
             except Exception:
                 log.exception("Capability V3 finalization telemetry failed")
+
+    def _capture_capability_v3_workspace_diff(
+        self, state_dir: Path,
+    ) -> tuple[Path | None, tuple[str, ...]]:
+        """Retain a nonempty final workspace diff when V3 bookkeeping is absent.
+
+        This is intentionally an audit-only fallback: the controller records it as
+        such and does not turn it into a normal Candidate snapshot.
+        """
+        diff = subprocess.run(
+            ["git", "diff", "--binary", "--no-ext-diff"], cwd=self.work_dir,
+            text=True, capture_output=True, timeout=20, check=False,
+        )
+        if diff.returncode != 0 or not diff.stdout.strip():
+            return None, ()
+        names = subprocess.run(
+            ["git", "diff", "--name-only"], cwd=self.work_dir,
+            text=True, capture_output=True, timeout=10, check=False,
+        )
+        changed_files = tuple(line for line in names.stdout.splitlines() if line)
+        fallback = state_dir / "workspace-diff-fallback.patch"
+        fallback.write_text(diff.stdout, encoding="utf-8")
+        return fallback, changed_files
 
     @staticmethod
     def _validation_event_payload(event: ValidationTelemetryEvent) -> dict[str, Any]:
@@ -1925,6 +1957,11 @@ class Agent:
                 plan_mode=self.plan_mode,
                 plan_artifact_path=str(self._get_plan_path()) if self.plan_mode else None,
             )
+            # This method is the shared post-execution exit for sequential,
+            # parallel, direct, and noninteractive tool execution. Keep V3
+            # Candidate bookkeeping here so the CLI streaming path cannot miss
+            # successful edits or tests.
+            self._observe_capability_v3_tool_result(tc, tool, result)
         if result.is_error or tc.tool_name != "ReadFile":
             return
         path = tc.arguments.get("file_path") if isinstance(tc.arguments, dict) else None
@@ -2314,7 +2351,6 @@ class Agent:
                 output=f"Tool execution error: {e}", is_error=True
             )
 
-        self._observe_capability_v3_tool_result(tc, tool, result)
         self._snapshot_for_recovery(tc, result)
 
         if self.hook_engine and executed:

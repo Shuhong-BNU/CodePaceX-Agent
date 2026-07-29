@@ -347,12 +347,37 @@ class CapabilityV3Controller:
             self._fail_open("update_budget", exc)
             return self.budget
 
-    def finalize(self, reason: str) -> CandidateSnapshot | None:
+    def finalize(
+        self,
+        reason: str,
+        *,
+        fallback_patch_path: Path | None = None,
+        fallback_changed_files: Iterable[str] = (),
+    ) -> CandidateSnapshot | None:
         if not self.enabled:
             return None
         self._emit("FinalizationStarted", reason=reason)
         stable = [item for item in self.candidates if item.restorable]
         if not stable:
+            if (
+                fallback_patch_path is not None
+                and fallback_patch_path.is_file()
+                and fallback_patch_path.stat().st_size
+            ):
+                self._emit(
+                    "WorkspaceDiffFallbackRetained",
+                    reason="candidate_bookkeeping_missing",
+                    patch_path=str(fallback_patch_path),
+                    changed_files=tuple(fallback_changed_files),
+                    audit_only=True,
+                )
+                self._emit(
+                    "V3Completed",
+                    reason="workspace_diff_fallback_retained",
+                    exported_patch=str(fallback_patch_path),
+                    candidate_status="audit_only_workspace_diff",
+                )
+                return None
             self._emit("V3Completed", reason="no_stable_candidate", exported_patch="")
             return None
         selected = sorted(stable, key=lambda item: (-list(CandidateLevel).index(item.level),

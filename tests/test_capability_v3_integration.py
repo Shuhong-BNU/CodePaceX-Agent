@@ -14,6 +14,7 @@ from codepacex.tools import create_default_registry
 from codepacex.tools.base import StreamEnd, StreamEvent, TextDelta, ToolCallComplete
 from codepacex.tools.run_test import RunTest
 from codepacex.conversation import ConversationManager
+from evals.evaluation_v2 import control_canary
 
 
 class _SyntheticClient(LLMClient):
@@ -106,6 +107,68 @@ def test_v3_flag_drives_agent_lifecycle_and_artifact_without_provider(tmp_path: 
         ["git", "diff", "--binary", "--no-ext-diff"], cwd=workspace,
         check=True, capture_output=True, text=True,
     ).stdout
+
+
+def test_streaming_lifecycle_snapshots_edit_and_promotes_after_test(tmp_path: Path) -> None:
+    workspace = _git_workspace(tmp_path)
+    task_root = tmp_path / "task"
+    artifact_root = task_root / "capability-v3"
+    agent = _agent(_SyntheticClient(workspace, workspace / "source.py"), workspace, artifact_root)
+    conversation = ConversationManager()
+    conversation.add_user_message("Update source VALUE and validate it.")
+
+    async def consume() -> None:
+        async for _event in agent.run(conversation):
+            pass
+
+    asyncio.run(consume())
+
+    summary = json.loads((artifact_root / "summary.json").read_text(encoding="utf-8"))
+    event_types = [event["event_type"] for event in summary["events"]]
+    candidates = summary["derived_state"]["candidate_snapshots"]
+    assert "CandidateSnapshotCreated" in event_types
+    assert "CandidatePromoted" in event_types
+    assert [candidate["level"] for candidate in candidates] == ["C1", "C2"]
+    assert (artifact_root / "final.patch").read_text(encoding="utf-8").strip()
+    assert control_canary._validate_capability_v3_artifact(
+        task_root=task_root,
+        instance_id="synthetic-task",
+        treatment=CapabilityV3Flag.V3_CORE,
+    )["valid"] is True
+
+
+def test_streaming_finalization_retains_auditable_workspace_diff_when_bookkeeping_is_missing(
+    tmp_path: Path,
+) -> None:
+    workspace = _git_workspace(tmp_path)
+    (workspace / "source.py").write_text("VALUE = 1\n", encoding="utf-8")
+    task_root = tmp_path / "task"
+    artifact_root = task_root / "capability-v3"
+    agent = _agent(_DoneClient(), workspace, artifact_root)
+    conversation = ConversationManager()
+    conversation.add_user_message("Finish the already-applied workspace change.")
+
+    async def consume() -> None:
+        async for _event in agent.run(conversation):
+            pass
+
+    asyncio.run(consume())
+
+    summary = json.loads((artifact_root / "summary.json").read_text(encoding="utf-8"))
+    events = summary["events"]
+    fallback = next(event for event in events if event["event_type"] == "WorkspaceDiffFallbackRetained")
+    completed = next(event for event in reversed(events) if event["event_type"] == "V3Completed")
+    assert summary["derived_state"]["candidate_snapshots"] == []
+    assert fallback["payload"]["audit_only"] is True
+    assert fallback["payload"]["reason"] == "candidate_bookkeeping_missing"
+    assert completed["payload"]["candidate_status"] == "audit_only_workspace_diff"
+    assert (artifact_root / "workspace-diff-fallback.patch").read_text(encoding="utf-8").strip()
+    assert (artifact_root / "final.patch").read_text(encoding="utf-8").strip()
+    assert control_canary._validate_capability_v3_artifact(
+        task_root=task_root,
+        instance_id="synthetic-task",
+        treatment=CapabilityV3Flag.V3_CORE,
+    )["valid"] is True
 
 
 def test_streaming_agent_lifecycle_writes_raw_v3_artifact_without_provider(tmp_path: Path) -> None:
