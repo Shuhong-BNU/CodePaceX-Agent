@@ -770,22 +770,15 @@ class OpenAICompatClient(LLMClient):
                 failure_chain = []
                 failure: BaseException | None = e
                 seen: set[int] = set()
-                connect_timeout = False
                 while failure is not None and id(failure) not in seen:
                     seen.add(id(failure))
-                    connect_timeout = connect_timeout or isinstance(
-                        failure, httpx.ConnectTimeout,
-                    )
                     failure_chain.append(
                         f"{type(failure).__module__}.{type(failure).__name__}"
                     )
                     failure = failure.__cause__ or failure.__context__
-                if connect_timeout:
-                    request_budget.cancel_connect_timeout_before_transport(reservation)
-                else:
-                    request_budget.record_request_failure(
-                        reservation, failure_type="/".join(failure_chain)
-                    )
+                request_budget.conservatively_settle_transport_failure(
+                    reservation, failure_type="/".join(failure_chain),
+                )
             raise NetworkError(f"Network error: {e}") from e
         except _openai.APIStatusError as e:
             if request_budget is not None and reservation is not None:

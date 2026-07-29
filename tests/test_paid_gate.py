@@ -654,6 +654,38 @@ def test_connect_timeout_reconciliation_refuses_unproven_network_failure(tmp_pat
     assert not ledger.settlements
 
 
+def test_transport_failure_is_conservatively_settled_with_failure_evidence(tmp_path: Path) -> None:
+    gate = _gate(tmp_path)
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ):
+        reservation = gate.reserve(
+            "swe/run/transport-timeout", maximum_requests=1,
+            maximum_input_tokens_per_request=128_000,
+            maximum_output_tokens_per_request=8192,
+        )
+    budget = ProviderRequestBudget(
+        gate=gate, trial_id=reservation.trial_id,
+        maximum_input_tokens_per_request=128_000,
+        maximum_output_tokens_per_request=8192,
+    )
+    failure_type = "openai.APITimeoutError/httpx.ReadTimeout"
+    settlement = budget.conservatively_settle_transport_failure(
+        reservation, failure_type=failure_type,
+    )
+    ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
+    assert settlement.status == "conservative_settled"
+    assert settlement.settlement_method == "conservative_reserved_amount"
+    assert settlement.usage_status == "unknown"
+    assert settlement.actual_cny == reservation.reserved_cny
+    assert settlement.failure_type == failure_type
+    assert settlement.failure_recorded_at is not None
+    assert failure_type in settlement.evidence_gap
+    assert ledger.spent_cny == reservation.reserved_cny
+    assert ledger.active_reservation is None
+    assert not ledger.request_charges
+
+
 def test_unknown_usage_is_conservatively_settled_without_fabricating_tokens(tmp_path: Path) -> None:
     authorization_path = tmp_path / "authorization.json"
     _authorization(authorization_path)
