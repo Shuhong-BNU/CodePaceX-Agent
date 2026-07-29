@@ -6,6 +6,7 @@ on:
       - ".github/workflows/evaluation-v2-full-20-replay.yml"
       - "evals/evaluation_v2/full_replay.py"
       - "evals/evaluation_v2/capability_v3_pilot.py"
+      - "evals/evaluation_v2/v3_core_full20.py"
       - "evals/evaluation_v2/control_canary.py"
       - "evals/evaluation_v2/full_replay_payloads/**"
       - "tests/test_evaluation_v2_full_replay.py"
