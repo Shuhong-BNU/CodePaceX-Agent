@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-from evals.evaluation_v2 import full_replay
+from evals.evaluation_v2 import full_replay, v3_core_full20
 from evals.paid_gate import BudgetLedger
 
 
@@ -372,3 +372,18 @@ def test_full_replay_workflow_keeps_paid_path_explicit_and_zero_provider_path_co
     assert "v3-core-full20-paid-execution" in workflow
     assert "zero-provider-v3-core-full20-readiness" in workflow
     assert "inputs.controlled_pilot_paid_execution == false" in workflow
+
+
+def test_v3_core_full20_freeze_is_serial_v3_only_and_has_twenty_unique_allocations(
+    tmp_path: Path,
+) -> None:
+    result = v3_core_full20.write_freeze(ROOT, tmp_path / "freeze", run_id="v3-full20-test")
+    frozen = json.loads((tmp_path / "freeze" / v3_core_full20.FREEZE_NAME).read_text(encoding="utf-8"))
+    assert v3_core_full20.validate_freeze(ROOT, tmp_path / "freeze")["valid"] is True
+    assert frozen["execution_order"] == "strictly_serial_v3_core_only"
+    assert frozen["treatments"] == ["V3_CORE"]
+    assert len(frozen["task_runs"]) == 20
+    assert all(item["capability_v3_flag"] == "V3_CORE" for item in frozen["task_runs"])
+    allocation_ids = [item["task_run_allocation_id"] for item in frozen["allocation_binding"]["task_run_allocations"]]
+    assert len(allocation_ids) == len(set(allocation_ids)) == 20
+    assert result["allocation_hash"] == frozen["allocation_binding"]["allocation_hash"]
