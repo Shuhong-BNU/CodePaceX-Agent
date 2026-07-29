@@ -8,15 +8,25 @@ ProviderRequestBudget gate.  It adds no Provider transport to readiness paths.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import json
 import re
+import subprocess
+import tempfile
 from dataclasses import asdict
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, AsyncIterator, Mapping, Sequence
 
+from codepacex.agent import Agent, PermissionDecisionEvent
 from codepacex.capability_v3 import CapabilityV3Config, CapabilityV3Controller, CapabilityV3Flag
+from codepacex.client import LLMClient
+from codepacex.conversation import ConversationManager
+from codepacex.permissions import DangerousCommandDetector, PathSandbox, PermissionChecker, PermissionMode, RuleEngine
+from codepacex.tools import create_default_registry
+from codepacex.tools.base import StreamEnd, StreamEvent, TextDelta, ToolCallComplete
+from codepacex.tools.run_test import RunTest
 from evals.benchmark import canonical_hash, current_git_commit
 from evals.costing import load_pricing, pricing_snapshot_hash
 from evals.evaluation_v2 import control_canary, full_replay
@@ -45,6 +55,35 @@ RUN_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{2,80}$")
 ALLOCATION_SAFETY_RESERVE_CNY = Decimal("0.000001")
 FORMAL_PHASE_A_REGION = "cn-beijing"
 FORMAL_PHASE_A_WORKSPACE_ID = "ws-qes65f0ct128vtvl"
+
+
+class _SequentialRehearsalClient(LLMClient):
+    """Zero-provider stream that exercises the paid CLI's sequential tool path."""
+
+    def __init__(self, workspace: Path, source: Path) -> None:
+        self.workspace = workspace
+        self.source = source
+        self.calls = 0
+
+    async def stream(
+        self, _conversation: Any, system: str = "", tools: list[dict[str, Any]] | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        self.calls += 1
+        if self.calls == 1:
+            yield ToolCallComplete("read", "ReadFile", {
+                "file_path": str(self.source), "offset": 0, "limit": 10,
+            })
+        elif self.calls == 2:
+            yield ToolCallComplete("edit", "EditFile", {
+                "file_path": str(self.source), "old_string": "VALUE = 0", "new_string": "VALUE = 1",
+            })
+        elif self.calls == 3:
+            yield ToolCallComplete("test", "RunTest", {
+                "cwd": str(self.workspace), "argv": ["test_source.py"], "timeout_seconds": 30,
+            })
+        else:
+            yield TextDelta("zero-provider sequential rehearsal complete")
+        yield StreamEnd("end_turn")
 
 
 def _write_json(path: Path, value: Any) -> None:
@@ -407,11 +446,89 @@ def _fresh_gate(root: Path, freeze: Path, artifact_root: Path, acknowledgement: 
         allocation_path=allocation_path, pricing_path=freeze / "pricing-snapshot.json", pricing=pricing, stage="C")
 
 
+def _write_sequential_rehearsal_capability_v3_artifact(
+    location: Path, run: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Exercise the paid CLI's sequential post-tool observer without transport."""
+    root = location / "capability-v3"
+    with tempfile.TemporaryDirectory(prefix="codepacex-v3-sequential-rehearsal-") as workspace_text:
+        workspace = Path(workspace_text)
+        source = workspace / "source.py"
+        source.write_text("VALUE = 0\n", encoding="utf-8")
+        (workspace / "test_source.py").write_text(
+            "import source\n\ndef test_value():\n    assert source.VALUE == 1\n",
+            encoding="utf-8",
+        )
+        for command in (
+            ["git", "init"],
+            ["git", "config", "user.email", "zero-provider@example.test"],
+            ["git", "config", "user.name", "Zero Provider Rehearsal"],
+            ["git", "add", "source.py", "test_source.py"],
+            ["git", "commit", "-m", "base"],
+        ):
+            subprocess.run(command, cwd=workspace, check=True, capture_output=True, text=True)
+        registry = create_default_registry()
+        registry.register(RunTest())
+        checker = PermissionChecker(
+            DangerousCommandDetector(), PathSandbox(str(workspace)), RuleEngine(),
+            PermissionMode.DEFAULT, session_allow_all=True,
+        )
+        agent = Agent(
+            _SequentialRehearsalClient(workspace, source), registry, "openai-compat",
+            work_dir=str(workspace), permission_checker=checker,
+            capability_v3_config=CapabilityV3Config.from_flag(CapabilityV3Flag.V3_CORE),
+            capability_v3_flag=CapabilityV3Flag.V3_CORE.value,
+            capability_v3_artifact_root=root, capability_v3_task_id=str(run["instance_id"]),
+            capability_v3_base_commit=str(run["base_commit"]),
+        )
+        conversation = ConversationManager()
+        conversation.add_user_message("Edit source VALUE and validate it.")
+        decisions: list[PermissionDecisionEvent] = []
+
+        async def consume() -> None:
+            async for event in agent.run(conversation):
+                if isinstance(event, PermissionDecisionEvent):
+                    decisions.append(event)
+
+        asyncio.run(consume())
+
+    paths = {event.tool_name: event.execution_path for event in decisions}
+    if paths.get("EditFile") != "sequential" or paths.get("RunTest") != "sequential":
+        raise AssertionError("zero-provider rehearsal did not exercise sequential EditFile and RunTest")
+    summary = _read_json(root / "summary.json")
+    event_types = [event["event_type"] for event in summary["events"]]
+    if "CandidateSnapshotCreated" not in event_types or "CandidatePromoted" not in event_types:
+        raise AssertionError("sequential post-tool observer did not create and promote a Candidate")
+    candidates = summary["derived_state"]["candidate_snapshots"]
+    if not candidates:
+        raise AssertionError("sequential post-tool observer did not retain a Candidate")
+    candidate = Path(candidates[-1]["patch_path"])
+    fidelity = control_canary._validate_capability_v3_artifact(
+        task_root=location, instance_id=str(run["instance_id"]), treatment=CapabilityV3Flag.V3_CORE,
+    )
+    if not fidelity["valid"]:
+        raise AssertionError(f"sequential zero-provider V3 Artifact invalid: {fidelity['errors']}")
+    fidelity["candidate_sha256"] = _sha256(candidate)
+    fidelity["candidate_matches_final_patch"] = fidelity["candidate_sha256"] == fidelity["final_patch_sha256"]
+    fidelity["sequential_post_tool_observer"] = {
+        "exercised": True,
+        "edit_execution_path": paths["EditFile"],
+        "test_execution_path": paths["RunTest"],
+        "candidate_events": [
+            event_type for event_type in event_types
+            if event_type in {"CandidateSnapshotCreated", "CandidatePromoted"}
+        ],
+    }
+    if not fidelity["candidate_matches_final_patch"]:
+        raise AssertionError("sequential zero-provider Candidate differs from final.patch")
+    return fidelity
+
+
 def _write_rehearsal_capability_v3_artifact(location: Path, run: Mapping[str, Any]) -> dict[str, Any]:
     """Create deterministic raw V3 evidence at the same nested Artifact path.
 
-    This is an Artifact collection rehearsal, not an Agent or Provider run. The
-    streaming Agent lifecycle is separately covered by its zero-provider test.
+    This is an Artifact collection rehearsal, not an Agent or Provider run.
+    One V3 task per rehearsal additionally exercises the Agent lifecycle.
     """
     root = location / "capability-v3"
     controller = CapabilityV3Controller(
@@ -467,6 +584,7 @@ def rehearse(root: Path, freeze: Path, preflight_summary: Path, artifact_root: P
         for item in frozen["allocation_binding"]["task_run_allocations"]
     }
     run_artifacts = []
+    sequential_rehearsal_complete = False
     for run in frozen["task_runs"]:
         location = artifact_root / run["expected_artifact_path"]
         location.mkdir(parents=True)
@@ -483,7 +601,11 @@ def rehearse(root: Path, freeze: Path, preflight_summary: Path, artifact_root: P
             "task_run_allocation": allocation_by_run[run["task_run_id"]],
         }
         if run["capability_v3_flag"] == CapabilityV3Flag.V3_CORE.value:
-            artifact["capability_v3_treatment_fidelity"] = _write_rehearsal_capability_v3_artifact(location, run)
+            if not sequential_rehearsal_complete:
+                artifact["capability_v3_treatment_fidelity"] = _write_sequential_rehearsal_capability_v3_artifact(location, run)
+                sequential_rehearsal_complete = True
+            else:
+                artifact["capability_v3_treatment_fidelity"] = _write_rehearsal_capability_v3_artifact(location, run)
         _write_json(location / "task-run-contract.json", artifact)
         run_artifacts.append({"task_run_id": run["task_run_id"], "artifact": str(location.relative_to(artifact_root))})
     v3_coverage = [
@@ -492,6 +614,12 @@ def rehearse(root: Path, freeze: Path, preflight_summary: Path, artifact_root: P
     ]
     if len(v3_coverage) != len(PILOT_TASK_IDS) or not all(item["valid"] for item in v3_coverage):
         raise AssertionError("zero-provider rehearsal lacks complete V3 Artifact coverage")
+    sequential_coverage = [
+        item["sequential_post_tool_observer"]
+        for item in v3_coverage if item.get("sequential_post_tool_observer", {}).get("exercised")
+    ]
+    if len(sequential_coverage) != 1:
+        raise AssertionError("zero-provider rehearsal must exercise one sequential V3 post-tool observer")
     summary = {
         "schema_version": SCHEMA_VERSION, "paid_execution": False, "provider_requests": 0,
         "usage": 0, "charge_cny": "0", "provider_secret_read": False,
@@ -499,6 +627,8 @@ def rehearse(root: Path, freeze: Path, preflight_summary: Path, artifact_root: P
         "flag_handoffs_verified": [item.value for item in TREATMENTS],
         "v3_evidence_coverage": v3_coverage,
         "v3_evidence_coverage_count": len(v3_coverage),
+        "sequential_post_tool_observer_coverage": sequential_coverage,
+        "sequential_post_tool_observer_coverage_count": len(sequential_coverage),
         "completed": len(run_artifacts) == 12,
     }
     _write_json(artifact_root / "controlled-pilot-rehearsal-summary.json", summary)
