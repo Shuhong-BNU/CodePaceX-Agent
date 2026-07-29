@@ -372,6 +372,12 @@ def test_full_replay_workflow_keeps_paid_path_explicit_and_zero_provider_path_co
     assert "v3-core-full20-paid-execution" in workflow
     assert "zero-provider-v3-core-full20-readiness" in workflow
     assert "inputs.controlled_pilot_paid_execution == false" in workflow
+    v3_readiness = workflow[workflow.index("zero-provider-v3-core-full20-readiness"):workflow.index("v3-core-full20-paid-execution")]
+    v3_paid = workflow[workflow.index("v3-core-full20-paid-execution"):workflow.index("zero-provider-controlled-pilot-readiness")]
+    assert v3_readiness.count("Install project and frozen official evaluator") == 1
+    assert v3_paid.count("Install project and frozen official evaluator") == 1
+    assert "EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be" in v3_readiness
+    assert "EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be" in v3_paid
 
 
 def test_v3_core_full20_freeze_is_serial_v3_only_and_has_twenty_unique_allocations(
