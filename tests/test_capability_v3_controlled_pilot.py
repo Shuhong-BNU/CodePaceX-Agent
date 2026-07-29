@@ -124,6 +124,33 @@ def test_execution_entry_rehearsal_binds_unique_allocation_without_provider(
         pilot.rehearse_execution_entry(ROOT, freeze, preflight, artifact)
 
 
+def test_paid_terminal_contract_fails_partial_runs_but_accepts_unresolved_results(tmp_path: Path) -> None:
+    partial = tmp_path / "partial.json"
+    partial.write_text(json.dumps({
+        "completed": False, "ledger_closed": False, "results": [{}],
+    }), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="completed=false"):
+        pilot.assert_paid_pilot_terminal_contract(partial)
+    terminal = tmp_path / "terminal.json"
+    terminal.write_text(json.dumps({
+        "completed": True, "ledger_closed": True, "results": [
+            {"terminal_status": "unresolved"} for _ in range(12)
+        ],
+    }), encoding="utf-8")
+    assert pilot.assert_paid_pilot_terminal_contract(terminal) == {
+        "valid": True, "task_run_count": 12,
+    }
+
+
+def test_paid_workflow_uploads_failure_evidence_then_enforces_terminal_summary() -> None:
+    workflow = (ROOT / ".github/workflows/evaluation-v2-full-20-replay.yml").read_text(
+        encoding="utf-8",
+    )
+    assert "Verify controlled-Pilot paid terminal contract" in workflow
+    assert "assert-paid-terminal --summary" in workflow
+    assert "- name: Upload controlled-Pilot paid evidence\n        if: always()" in workflow
+
+
 def test_v3_treatment_fidelity_rejects_missing_or_mismatched_raw_artifact(tmp_path: Path) -> None:
     task_root = tmp_path / "task"
     task_root.mkdir()

@@ -332,6 +332,12 @@ jobs:
           python -m evals.evaluation_v2.capability_v3_pilot freeze --root . --output "$root/freeze" --run-id '${{ inputs.controlled_pilot_run_id }}' --approved-total-hard-cap-cny '${{ inputs.controlled_pilot_approved_total_hard_cap_cny }}' > "$root/freeze-result.json"
           python -m evals.evaluation_v2.capability_v3_pilot preflight --root . --freeze "$root/freeze" --artifact-root "$root/preflight" > "$root/preflight-result.json"
           python -m evals.evaluation_v2.capability_v3_pilot paid-run --confirm-paid-execution --root . --freeze "$root/freeze" --artifact-root "$root/paid" --expected-freeze-sha256 '${{ inputs.controlled_pilot_expected_freeze_sha256 }}' --expected-allocation-hash '${{ inputs.controlled_pilot_expected_allocation_hash }}' --approved-total-hard-cap-cny '${{ inputs.controlled_pilot_approved_total_hard_cap_cny }}' --authorization-acknowledgement '${{ inputs.controlled_pilot_authorization_acknowledgement }}' --run-id '${{ inputs.controlled_pilot_run_id }}' > "$root/paid-result.json"
+      - name: Verify controlled-Pilot paid terminal contract
+        if: always()
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/capability-v3-controlled-pilot-paid/${{ inputs.controlled_pilot_run_id }}"
+          python -m evals.evaluation_v2.capability_v3_pilot assert-paid-terminal --summary "$root/paid/controlled-pilot-paid-summary.json" > "$root/paid-terminal-contract.json"
       - name: Upload controlled-Pilot paid evidence
         if: always()
         uses: actions/upload-artifact@v4

@@ -158,18 +158,18 @@
     "pilot_config_max_iterations": 50,
     "provider_request_budget_bridge_ceiling": 40,
     "runtime_source_sha256": {
-      ".github/workflows/evaluation-v2-full-20-replay.yml": "3b64ba88f43b3a53f00acde18e39179a65b0bfa301da69c72f284e92e923218e",
+      ".github/workflows/evaluation-v2-full-20-replay.yml": "ab00e663f5922ff526a2a5d1e28c473e2611b32b6b1784f3d98f7042e6aa7d1c",
       "codepacex/agent.py": "4ad73fbd249478918aae36258e6028d2bbd771d173b3556ffc8c882086c1623b",
       "codepacex/capability_v3/config.py": "ad810ab41bd4ff83608dbf1e1d307cff9c2ac69bcb7f30555f6bbc55d639970b",
       "codepacex/capability_v3/controller.py": "f80d7abbc57dbcb8d3942b093a3ffebb43fb8911aa6138e5d0021393bc763288",
       "codepacex/capability_v3/models.py": "b72e9d689742afa7a10e24022e4f190fc96618a2e628ec52a0eb2b14c8371beb",
-      "codepacex/client.py": "205e40cf5629fdc9fca0b58edc43505bd5ac3ae8bfb69ebcd4dd73eed46fce0f",
+      "codepacex/client.py": "9c7bceb887e7a1dee1c3d72c84966c9f1ffc13f16120dc0d0c1184f3f5dcf467",
       "codepacex/permissions/checker.py": "bab12d8cde66fac86bdb6df8e63c8540e0dba43dd8b2ae461047144afa380cd2",
       "codepacex/tools/edit_file.py": "495231404680b588a7ac14b2d2807aa156e832136c14459f923ac3276dab750f",
       "codepacex/tools/run_test.py": "19335d85dbd43ea6062e419bfcc089eb98da15c928bb1fcb6280705bc27b52fe",
-      "evals/evaluation_v2/control_canary.py": "32d8a722a6a686a0396903f82d739804eaa42e94ee90201912b477008b29e22c",
+      "evals/evaluation_v2/control_canary.py": "eb2e327d19e505406d6d4c5bbd8d1540bdc5b4bc96ca77fcd19624081db8d0bc",
       "evals/evaluation_v2/full_replay.py": "3ea3ce043361c9b432c057f2536f431caa41e8463a83038fe602d82c648b3240",
-      "evals/paid_gate.py": "b31eae3c615de70fa25d489ac984d3741a902a7ada1b47283bfd3c6801c46146",
+      "evals/paid_gate.py": "d998b3dd2ddfad83dbbbb2708fa69be05384c1a1181b58481de0a58a14d5aa26",
       "evals/pilot.py": "22884f7b7285135be7fb349801a35760721a1093bb0d0fe12017f13e5ad77c9d"
     },
     "schema_version": 1,
@@ -177,7 +177,7 @@
     "task_python_isolation_contract": "fresh-no-system-site-packages-venv-path-bound-python-python3-pip-pip3-v1",
     "tool_schemas_sha256": "72ae1262c5acd1a8b21c3f0964cdcb210508f1b780590b79b0ec2cc2eba07aea"
   },
-  "runtime_contract_sha256": "9457eaaf563b8c7f053bea04bb9354633db89270b14e765b7af883264294177e",
+  "runtime_contract_sha256": "cc35b9989b3a4441d934b47e67e2794b5d3bef14842f33aeba75966b41431812",
   "schema_version": 1,
   "selection_manifest_sha256": "3efa2694627f699324c78b3c8dd09f208330eebb77fecd9d807bfd509529935e",
   "status": "frozen_pending_single_full_20_authorization"
