@@ -29,3 +29,9 @@ other ambiguous post-dispatch failures are not treated as access denials: they
 retain the existing conservative-settlement path. A paid workflow uploads its
 evidence even on failure, then fails its job when the paid summary is partial
 or leaves an active reservation.
+
+Formal Phase A uses the new `ws-qes65f0ct128vtvl` Beijing workspace endpoint.
+Every V2_CONTROL/V3_CORE pair uses that same account and endpoint. Goal 4 keeps
+its original workspace endpoint as immutable historical evidence, so it is a
+longitudinal cross-account/endpoint reference rather than a replacement for
+the current paired control.

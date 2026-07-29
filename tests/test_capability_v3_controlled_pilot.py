@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from evals.evaluation_v2 import capability_v3_pilot as pilot
+from evals.evaluation_v2 import control_canary, full_replay
 from evals.paid_gate import ProviderRequestBudget, provider_request_budget_environment
 
 
@@ -23,6 +24,15 @@ def test_frozen_pilot_has_six_adjacent_pairs_and_only_flag_differs() -> None:
     assert [item["instance_id"] for item in payload["task_runs"]][::2] == list(pilot.PILOT_TASK_IDS)
     assert payload["fairness_contract"]["only_treatment_difference"] == "capability_v3_flag"
     assert payload["goal4_source"]["accepted_baseline_modified"] is False
+    assert payload["provider_contract"]["base_url"] == pilot.FORMAL_PHASE_A_BASE_URL
+    assert payload["provider_account_audit"] == {
+        "current_region": "cn-beijing",
+        "current_workspace_id": "ws-qes65f0ct128vtvl",
+        "paired_treatments_share_account_and_endpoint": True,
+        "goal4_comparison": "historical longitudinal reference across the prior account and endpoint only",
+    }
+    assert control_canary._paid_pilot_config(payload).base_url == pilot.FORMAL_PHASE_A_BASE_URL
+    assert full_replay.freeze_payload(ROOT)["provider_contract"]["base_url"] == control_canary.PROVIDER_BASE_URL
     assert payload["allocation_binding"]["internal_run_id"] == "unit-controlled-pilot"
     assert payload["allocation_binding"]["allocation_id"] == "capability-v3-unit-controlled-pilot-stage-c"
 
