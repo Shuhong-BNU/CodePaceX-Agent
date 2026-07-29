@@ -115,6 +115,9 @@ def test_workflow_is_fixed_task_zero_provider_by_default() -> None:
     assert "inputs.paid_execution == false" in zero_provider
     assert "BAILIAN_API_KEY" not in zero_provider
     assert "aws-cloudformation__cfn-lint-3749" in workflow
+    assert "historical single-task parent fails closed before Provider transport" in workflow
+    assert "historical_parent_binding_mismatch" in workflow
+    assert "provider_transport_started" in workflow
     assert "paid_execution == true" in paid
     assert "evaluation-v2-full-20" not in workflow
     assert "retry" not in workflow.lower()
