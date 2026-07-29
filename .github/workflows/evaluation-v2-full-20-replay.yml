@@ -270,6 +270,10 @@ jobs:
           assert summary['provider_requests'] == summary['usage'] == 0
           assert summary['charge_cny'] == '0' and summary['provider_secret_read'] is False
           assert len(summary['run_artifacts']) == 12
+          assert summary['sequential_post_tool_observer_coverage_count'] == 1
+          sequential = summary['sequential_post_tool_observer_coverage'][0]
+          assert sequential['edit_execution_path'] == sequential['test_execution_path'] == 'sequential'
+          assert {'CandidateSnapshotCreated', 'CandidatePromoted'} <= set(sequential['candidate_events'])
           PY
       - name: Rehearse the real Stage C allocation execution entry without Provider transport
         run: |

@@ -158,7 +158,7 @@
     "pilot_config_max_iterations": 50,
     "provider_request_budget_bridge_ceiling": 40,
     "runtime_source_sha256": {
-      ".github/workflows/evaluation-v2-full-20-replay.yml": "ab00e663f5922ff526a2a5d1e28c473e2611b32b6b1784f3d98f7042e6aa7d1c",
+      ".github/workflows/evaluation-v2-full-20-replay.yml": "e3010343cbeae056e07e8b5357abd6532e117edf9ab6770bdd7da3c5d2e57a6f",
       "codepacex/agent.py": "f41a27f8533fe109d0f5a3f3c5f35c7b64e1d373bccf923d633863c89f4e2656",
       "codepacex/capability_v3/config.py": "ad810ab41bd4ff83608dbf1e1d307cff9c2ac69bcb7f30555f6bbc55d639970b",
       "codepacex/capability_v3/controller.py": "105aabb2473603c537266e85ddb20d618fefa2faf4270a070f2a3961a3e8f201",
@@ -177,7 +177,7 @@
     "task_python_isolation_contract": "fresh-no-system-site-packages-venv-path-bound-python-python3-pip-pip3-v1",
     "tool_schemas_sha256": "72ae1262c5acd1a8b21c3f0964cdcb210508f1b780590b79b0ec2cc2eba07aea"
   },
-  "runtime_contract_sha256": "06b1c30ed7699c15a8e4b6c11eed35e56edea24198657e8ee6ecd3c4db947e9f",
+  "runtime_contract_sha256": "705e0a043881b217eca47a8cfe233603e598a06f59328bf02e6ad5231d218020",
   "schema_version": 1,
   "selection_manifest_sha256": "3efa2694627f699324c78b3c8dd09f208330eebb77fecd9d807bfd509529935e",
   "status": "frozen_pending_single_full_20_authorization"
