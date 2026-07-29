@@ -366,7 +366,9 @@ def test_full_replay_workflow_keeps_paid_path_explicit_and_zero_provider_path_co
     assert "full_replay paid-run --confirm-paid-execution" in workflow
     assert "expected_freeze_sha256" in workflow
     assert "approved_total_hard_cap_cny" in workflow
-    assert workflow.count("python-version: '3.11'") == 4
+    assert workflow.count("python-version: '3.11'") == 6
     assert "zero-provider-controlled-pilot-readiness" in workflow
     assert "controlled-pilot-paid-execution" in workflow
+    assert "v3-core-full20-paid-execution" in workflow
+    assert "zero-provider-v3-core-full20-readiness" in workflow
     assert "inputs.controlled_pilot_paid_execution == false" in workflow
