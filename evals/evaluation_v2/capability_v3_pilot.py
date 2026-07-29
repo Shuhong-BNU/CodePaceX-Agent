@@ -20,6 +20,7 @@ from codepacex.capability_v3 import CapabilityV3Config, CapabilityV3Controller, 
 from evals.benchmark import canonical_hash, current_git_commit
 from evals.costing import load_pricing, pricing_snapshot_hash
 from evals.evaluation_v2 import control_canary, full_replay
+from evals.pilot import FORMAL_PHASE_A_BASE_URL
 from evals.paid_gate import (
     BudgetAuthorization, BudgetLedger, PaidRunGate, StageCBudgetAllocation,
     TaskRunBudgetAllocation, TaskRunBudgetIdentity, allocation_hash, authorization_hash,
@@ -42,6 +43,8 @@ FREEZE_NAME = "capability-v3-controlled-pilot-freeze.json"
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 RUN_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{2,80}$")
 ALLOCATION_SAFETY_RESERVE_CNY = Decimal("0.000001")
+FORMAL_PHASE_A_REGION = "cn-beijing"
+FORMAL_PHASE_A_WORKSPACE_ID = "ws-qes65f0ct128vtvl"
 
 
 def _write_json(path: Path, value: Any) -> None:
@@ -90,6 +93,7 @@ def _common_runtime(root: Path) -> dict[str, Any]:
     runtime = dict(full_replay.runtime_contract(root))
     runtime.pop("capability_v3_feature_flag", None)
     runtime["capability_v3_pilot_source_sha256"] = _sha256(root / "evals/evaluation_v2/capability_v3_pilot.py")
+    runtime["pilot_config_source_sha256"] = _sha256(root / "evals/pilot.py")
     runtime["capability_v3_artifact_fidelity_contract"] = (
         "V3_CORE raw controller Artifact is retained at the frozen task-root path and fail-closed before Candidate export-v1"
     )
@@ -257,6 +261,12 @@ def freeze_payload(
             "accepted_result": "4 resolved / 16 unresolved; 20/20 scorable",
             "accepted_baseline_modified": False,
         },
+        "provider_account_audit": {
+            "current_region": FORMAL_PHASE_A_REGION,
+            "current_workspace_id": FORMAL_PHASE_A_WORKSPACE_ID,
+            "paired_treatments_share_account_and_endpoint": True,
+            "goal4_comparison": "historical longitudinal reference across the prior account and endpoint only",
+        },
         "task_list": task_list,
         "task_list_sha256": canonical_hash(task_list),
         "task_runs": runs,
@@ -277,7 +287,7 @@ def freeze_payload(
         "provider_contract": {
             "provider": "bailian-qwen37-max",
             "protocol": "openai-compat",
-            "base_url": control_canary.PROVIDER_BASE_URL,
+            "base_url": FORMAL_PHASE_A_BASE_URL,
             "provider_secret_name": "BAILIAN_API_KEY",
             "model_id": "qwen3.7-max-2026-06-08",
             "fallback_enabled": False,

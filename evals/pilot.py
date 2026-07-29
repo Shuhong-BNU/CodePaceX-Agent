@@ -26,7 +26,12 @@ from evals.paid_gate import PaidRunGate, billable_request_usage, provider_reques
 
 FROZEN_PROVIDER = "bailian-qwen37-max"
 FROZEN_PROTOCOL = "openai-compat"
+# Historical Goal 4 remains bound to this original workspace endpoint.
 FROZEN_BASE_URL = "https://llm-ipge9fy38w648m28.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+# Formal Phase A is separately frozen to the new account workspace.  Both
+# endpoints are explicit immutable contracts, never environment overrides.
+FORMAL_PHASE_A_BASE_URL = "https://ws-qes65f0ct128vtvl.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+FROZEN_BASE_URLS = frozenset({FROZEN_BASE_URL, FORMAL_PHASE_A_BASE_URL})
 FROZEN_MODEL = "qwen3.7-max-2026-06-08"
 FROZEN_KEY_ENV = "BAILIAN_API_KEY"
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
@@ -84,10 +89,13 @@ class PilotConfig(BaseModel):
     def validate_frozen_primary(self) -> PilotConfig:
         if self.experiment_kind != "pilot":
             raise ValueError("only pilot schema version 2 is supported")
-        if (self.provider, self.protocol, self.base_url, self.api_key_env, self.model_id) != (
-            FROZEN_PROVIDER, FROZEN_PROTOCOL, FROZEN_BASE_URL, FROZEN_KEY_ENV, FROZEN_MODEL,
+        if (
+            (self.provider, self.protocol, self.api_key_env, self.model_id) != (
+                FROZEN_PROVIDER, FROZEN_PROTOCOL, FROZEN_KEY_ENV, FROZEN_MODEL,
+            )
+            or self.base_url not in FROZEN_BASE_URLS
         ):
-            raise ValueError("Pilot schema v1 only accepts the frozen Bailian/Qwen provider")
+            raise ValueError("Pilot schema v1 only accepts an explicitly frozen Bailian/Qwen workspace")
         if self.fallback_enabled or self.retry_budget != 0:
             raise ValueError("frozen Pilot configuration requires fallback=false and retry_budget=0")
         if self.model_parameters.temperature is not None or self.model_parameters.top_p is not None:

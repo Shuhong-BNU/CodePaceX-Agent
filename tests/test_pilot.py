@@ -96,6 +96,13 @@ def test_non_frozen_provider_and_fallback_are_rejected(tmp_path: Path) -> None:
         pilot.load_config(config_file(tmp_path, fallback_enabled=True))
 
 
+def test_formal_phase_a_workspace_is_an_explicit_frozen_endpoint(tmp_path: Path) -> None:
+    config = pilot.load_config(config_file(tmp_path, base_url=pilot.FORMAL_PHASE_A_BASE_URL))
+    assert config.base_url == pilot.FORMAL_PHASE_A_BASE_URL
+    with pytest.raises(ValueError, match="frozen"):
+        pilot.load_config(config_file(tmp_path, base_url="https://example.invalid/compatible-mode/v1"))
+
+
 def test_dry_run_creates_terminal_artifacts_without_client_or_network(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = pilot.load_config(config_file(tmp_path))
     monkeypatch.delenv("BAILIAN_API_KEY", raising=False)
