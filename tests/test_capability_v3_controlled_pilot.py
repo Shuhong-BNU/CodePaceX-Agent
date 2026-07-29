@@ -180,6 +180,99 @@ def test_v3_treatment_fidelity_rejects_missing_or_mismatched_raw_artifact(tmp_pa
     assert control["valid"] and control["required"] is False
 
 
+def test_v3_no_candidate_completion_with_empty_workspace_is_not_an_incomplete_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_root = tmp_path / "task"
+    workspace = task_root / "workspace"
+    v3 = task_root / "capability-v3"
+    workspace.mkdir(parents=True)
+    v3.mkdir()
+    events = [
+        {
+            "schema_version": 1, "sequence": 1, "event_type": "V3RunConfigured",
+            "payload": {"task_id": "example", "feature_flag": "V3_CORE"},
+        },
+        {
+            "schema_version": 1, "sequence": 2, "event_type": "V3Completed",
+            "payload": {"reason": "no_stable_candidate", "exported_patch": ""},
+        },
+    ]
+    (v3 / "events.jsonl").write_text(
+        "\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8",
+    )
+    (v3 / "summary.json").write_text(json.dumps({"events": events}), encoding="utf-8")
+    monkeypatch.setattr(pilot.control_canary, "_goal3_extract_patch", lambda _workspace: "")
+
+    result = pilot.control_canary._validate_capability_v3_artifact(
+        task_root=task_root, workspace=workspace, instance_id="example",
+        treatment=pilot.CapabilityV3Flag.V3_CORE,
+    )
+
+    assert result["valid"] is True
+    assert result["no_candidate_produced"] is True
+    assert result["workspace_diff_empty"] is True
+    assert result["final_patch_present"] is False
+    assert result["final_patch_sha256"] is None
+
+
+def test_zero_provider_read_only_agent_no_candidate_continues_all_twelve_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A coherent read-only Agent terminal is a capability outcome, not an infra stop."""
+    monkeypatch.setattr("evals.paid_gate._git_is_clean", lambda _root: True)
+    freeze = tmp_path / "freeze"
+    identities = pilot.write_freeze(
+        ROOT, freeze, run_id="read-only-no-candidate-pilot",
+        approved_total_hard_cap_cny="250.000000",
+    )
+    executed: list[str] = []
+
+    def read_only_agent(
+        _root: Path, _frozen: dict[str, object], _metadata: dict[str, object], _gate: object,
+        artifact_root: Path, _run_id: str, task: dict[str, str], **_kwargs: object,
+    ) -> control_canary.PaidTaskResult:
+        executed.append(task["instance_id"])
+        task_root = artifact_root / "tasks" / task["instance_id"]
+        task_root.mkdir(parents=True, exist_ok=True)
+        (task_root / "task-result.json").write_text(json.dumps({
+            "agent_tool_trace": ["ReadFile", "Grep"], "workspace_diff_empty": True,
+            "candidate_status": "not_exported", "failure_classification": "no_candidate_produced",
+            "terminal_status": "unresolved", "resolved": False,
+        }), encoding="utf-8")
+        return control_canary.PaidTaskResult(
+            instance_id=task["instance_id"], agent_status="completed_without_candidate",
+            candidate_status="not_exported", validation_status="executed",
+            evaluator_status="not_run", runner_status="completed", provider_status="completed",
+            terminal_status="unresolved", provider_requests=1, settlement_count=1,
+            live_executor_invoked=True, agent_dispatch_started=True,
+            provider_client_initialized=True, model_response_observed=True,
+            candidate_diff_identity=False, failure_classification="no_candidate_produced",
+            resolved=False,
+        )
+
+    monkeypatch.setattr(full_replay, "_full_task_executor", read_only_agent)
+    artifact = tmp_path / "paid"
+    summary = pilot.run_paid_pilot(
+        ROOT, freeze, artifact,
+        expected_freeze_sha256=identities["freeze_sha256"],
+        expected_allocation_hash=identities["allocation_hash"],
+        approved_total_hard_cap_cny="250.000000", authorization_acknowledgement="test",
+        run_id="read-only-no-candidate-pilot",
+    )
+
+    assert len(executed) == len(summary["results"]) == 12
+    assert summary["completed"] is True and summary["ledger_closed"] is True
+    assert summary["provider_requests"] == summary["usage"] == 0
+    assert summary["charge_cny"] == "0"
+    assert all(item["terminal_status"] == "unresolved" for item in summary["results"])
+    assert all(item["failure_classification"] == "no_candidate_produced" for item in summary["results"])
+    assert all(item["candidate_status"] == "not_exported" for item in summary["results"])
+    assert all(item["resolved"] is False for item in summary["results"])
+    ledger = json.loads((artifact / "ledger.json").read_text(encoding="utf-8"))
+    assert ledger["active_reservation"] is None and ledger["request_charges"] == []
+
+
 def test_task_run_identity_mismatches_and_cross_run_reuse_fail_closed_before_transport(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

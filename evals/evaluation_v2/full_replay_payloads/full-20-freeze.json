@@ -167,7 +167,7 @@
       "codepacex/permissions/checker.py": "bab12d8cde66fac86bdb6df8e63c8540e0dba43dd8b2ae461047144afa380cd2",
       "codepacex/tools/edit_file.py": "495231404680b588a7ac14b2d2807aa156e832136c14459f923ac3276dab750f",
       "codepacex/tools/run_test.py": "19335d85dbd43ea6062e419bfcc089eb98da15c928bb1fcb6280705bc27b52fe",
-      "evals/evaluation_v2/control_canary.py": "eb2e327d19e505406d6d4c5bbd8d1540bdc5b4bc96ca77fcd19624081db8d0bc",
+      "evals/evaluation_v2/control_canary.py": "2607ca8fb883b0705c4b7aa17d5f1bdaf38decea3830459283f309bdc4822f11",
       "evals/evaluation_v2/full_replay.py": "3ea3ce043361c9b432c057f2536f431caa41e8463a83038fe602d82c648b3240",
       "evals/paid_gate.py": "7406e79cf8e1e4827d347ca8cad4ff1d30cb83c4912c50910bf4d871a1c382b9",
       "evals/pilot.py": "855c4cba3a2bf379e9b5d325115e90c743a6e88f466605171ecf579f2620ecec"
@@ -177,7 +177,7 @@
     "task_python_isolation_contract": "fresh-no-system-site-packages-venv-path-bound-python-python3-pip-pip3-v1",
     "tool_schemas_sha256": "72ae1262c5acd1a8b21c3f0964cdcb210508f1b780590b79b0ec2cc2eba07aea"
   },
-  "runtime_contract_sha256": "705e0a043881b217eca47a8cfe233603e598a06f59328bf02e6ad5231d218020",
+  "runtime_contract_sha256": "9d0cdd7748eb30706ac0f0bfd02ba19528af16a22c9c207b67ce1ccb981a26c1",
   "schema_version": 1,
   "selection_manifest_sha256": "3efa2694627f699324c78b3c8dd09f208330eebb77fecd9d807bfd509529935e",
   "status": "frozen_pending_single_full_20_authorization"

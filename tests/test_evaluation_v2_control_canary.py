@@ -595,6 +595,87 @@ def test_live_executor_preserves_candidate_for_usage_contract_terminal(
     assert evaluator_called is False
 
 
+def test_live_executor_records_v3_read_only_agent_as_no_candidate_not_artifact_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    freeze = tmp_path / "freeze"
+    canary.write_freeze(root=root, output=freeze)
+    frozen = json.loads((freeze / "control-canary-freeze.json").read_text(encoding="utf-8"))
+    v3_frozen = {
+        **frozen,
+        "runtime_contract": {
+            **frozen["runtime_contract"], "capability_v3_feature_flag": "V3_CORE",
+        },
+    }
+    artifact = tmp_path / "paid"
+    monkeypatch.setattr("evals.paid_gate._git_is_clean", lambda _root: True)
+    gate = canary._fresh_paid_gate(root=root, freeze=freeze, artifact_root=artifact, acknowledgement="test")
+    task = canary.load_frozen_payloads(root)[0]
+    metadata = dict(canary.TASKS[0])
+    monkeypatch.setattr(canary, "_host_runtime_fingerprint", lambda: {"fingerprint_sha256": "a" * 64})
+    monkeypatch.setattr(canary, "_disk_usage_evidence", lambda *_args: {"venv_bytes": 0})
+    monkeypatch.setattr(canary, "_cleanup_task_environment", lambda _workspace: None)
+    monkeypatch.setattr(canary, "_goal3_materialize_instance", lambda _task, workspace: workspace.mkdir(parents=True))
+    monkeypatch.setattr(canary, "_bootstrap", lambda workspace, *_args, **_kwargs: (
+        workspace / ".evaluation-v2-preflight-venv" / "bin" / "python", [{"exit_code": 0}],
+    ))
+    monkeypatch.setattr(canary, "_run", lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "1 passed", ""))
+    monkeypatch.setattr(canary, "_agent_runtime_probe", lambda **_kwargs: subprocess.CompletedProcess([], 0, "", ""))
+    monkeypatch.setattr(canary, "_initialize_paid_agent_config", lambda **_kwargs: None)
+    monkeypatch.setattr(canary, "_task_tool_resolution", lambda _environment, _python: {
+        name: f"/isolated/{name}" for name in ("python", "python3", "pip", "pip3")
+    })
+    monkeypatch.setattr(canary, "_goal3_extract_patch", lambda _workspace: "")
+    monkeypatch.setattr(gate, "trial_accounting", lambda _trial_id: {
+        "request_count": 1, "actual_cny": "0.001000", "active_reservation": None,
+        "settlement_count": 1, "budget_blocked": False,
+        "provider_request_ceiling_blocked": False, "provider_usage_contract_violation": None,
+    })
+
+    def read_only_agent(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        environment = kwargs["env"]
+        assert isinstance(environment, dict)
+        v3 = Path(str(environment["CODEPACEX_CAPABILITY_V3_ARTIFACT_DIR"]))
+        v3.mkdir(parents=True)
+        events = [
+            {"schema_version": 1, "sequence": 1, "event_type": "V3RunConfigured", "payload": {
+                "task_id": task["instance_id"], "feature_flag": "V3_CORE",
+            }},
+            {"schema_version": 1, "sequence": 2, "event_type": "V3Completed", "payload": {
+                "reason": "no_stable_candidate", "exported_patch": "",
+            }},
+        ]
+        (v3 / "events.jsonl").write_text(
+            "\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8",
+        )
+        (v3 / "summary.json").write_text(json.dumps({"events": events}), encoding="utf-8")
+        trace = "\n".join((
+            json.dumps({"type": "runtime_manifest"}),
+            json.dumps({"type": "usage"}),
+            json.dumps({"type": "tool_use", "tool_name": "ReadFile"}),
+        ))
+        return subprocess.CompletedProcess(command, 0, trace, "")
+
+    monkeypatch.setattr(canary.subprocess, "run", read_only_agent)
+
+    result = canary._live_task_executor(
+        root=root, freeze_payload=v3_frozen, task=task, metadata=metadata, gate=gate,
+        artifact_root=artifact, run_id="v3-read-only", provider_secret_override="offline-test-key",
+        evaluator_runner=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("no Candidate to evaluate")),
+    )
+
+    task_result = json.loads((artifact / "tasks" / task["instance_id"] / "task-result.json").read_text())
+    assert result.terminal_status == "unresolved"
+    assert result.failure_classification == "no_candidate_produced"
+    assert result.resolved is False and result.candidate_status == "not_exported"
+    assert result.validation_status == "executed" and result.evaluator_status == "not_run"
+    assert result.candidate_sha256 is result.workspace_diff_sha256 is None
+    assert task_result["capability_v3"]["treatment_fidelity"]["no_candidate_produced"] is True
+    assert task_result["capability_v3"]["treatment_fidelity"]["errors"] == []
+    assert task_result["post_edit_test"]["exit_code"] == 0
+
+
 def test_host_runtime_fingerprint_drift_is_fail_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = Path(__file__).resolve().parents[1]
     freeze = tmp_path / "freeze"
