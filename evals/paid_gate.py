@@ -463,6 +463,8 @@ def _conservative_settlement(
         settlement_method="conservative_reserved_amount",
         usage_status="unknown", evidence_gap=evidence_gap,
         settled_at=_utc_now(),
+        failure_type=active.failure_type,
+        failure_recorded_at=active.failure_recorded_at,
         task_run_id=active.task_run_id,
         task_run_allocation_id=active.task_run_allocation_id,
         task_run_allocation_hash=active.task_run_allocation_hash,
@@ -1608,18 +1610,22 @@ class ProviderRequestBudget:
             reservation, failure_type=failure_type,
         )
 
-    def cancel_connect_timeout_before_transport(
-        self, reservation: Reservation,
+    def conservatively_settle_transport_failure(
+        self, reservation: Reservation, *, failure_type: str,
     ) -> Settlement:
-        """Close a reservation only for a TCP connection timeout.
+        """Fail closed after a transport failure with unknowable Provider Usage.
 
-        ``httpx.ConnectTimeout`` means the HTTP connection was not established,
-        so no Provider request could have reached the service.  Other transport
-        failures remain fail-closed with an active reservation because their
-        Provider Usage is not knowable from the client.
+        A client-side timeout or disconnect cannot prove the Provider did not
+        receive the request.  Preserve the failure evidence and debit the
+        complete reservation instead of recording a zero-cost cancellation.
         """
-        return self.gate.cancel(
-            reservation, reason="transport_connect_timeout",
+        self.record_request_failure(reservation, failure_type=failure_type)
+        return self.gate.conservatively_settle_unknown_usage(
+            reservation,
+            evidence_gap=(
+                "Provider transport failure has no durable Provider Usage, "
+                f"response, request ID, or billing evidence: {failure_type}"
+            ),
         )
 
     def cancel_deterministic_pre_usage_rejection(

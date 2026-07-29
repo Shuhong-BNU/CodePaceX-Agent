@@ -72,9 +72,13 @@ class _FakeBudget:
         assert "httpx.ConnectTimeout" in failure_type
         self.calls.append("failure")
 
-    def cancel_connect_timeout_before_transport(self, reservation: object) -> None:
+    def conservatively_settle_transport_failure(
+        self, reservation: object, *, failure_type: str,
+    ) -> None:
         assert reservation is self.reservation
-        self.calls.append("connect_timeout_cancel")
+        assert "openai.APITimeoutError" in failure_type
+        assert "httpx.ConnectTimeout" in failure_type
+        self.calls.append("transport_failure_conservative_settlement")
 
 
 class _DeterministicRejectionBudget(_FakeBudget):
@@ -223,7 +227,7 @@ async def test_compat_client_keeps_reservation_when_provider_returns_no_usage(mo
 
 
 @pytest.mark.asyncio
-async def test_compat_client_closes_reservation_without_retry_after_connect_timeout(monkeypatch) -> None:
+async def test_compat_client_conservatively_settles_connect_timeout_without_retry(monkeypatch) -> None:
     budget = _FakeBudget()
     client = _client()
     calls = 0
@@ -249,7 +253,7 @@ async def test_compat_client_closes_reservation_without_retry_after_connect_time
         async for _event in client.stream(conversation):
             pass
     assert calls == 1
-    assert budget.calls == ["reserve", "connect_timeout_cancel"]
+    assert budget.calls == ["reserve", "transport_failure_conservative_settlement"]
 
 
 @pytest.mark.asyncio
