@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-from codepacex.agent import Agent
+from codepacex.agent import Agent, PermissionDecisionEvent
 from codepacex.capability_v3 import CapabilityV3Config, CapabilityV3Controller, CapabilityV3Flag
 from codepacex.client import LLMClient
 from codepacex.permissions import DangerousCommandDetector, PathSandbox, PermissionChecker, PermissionMode, RuleEngine
@@ -117,9 +117,12 @@ def test_streaming_lifecycle_snapshots_edit_and_promotes_after_test(tmp_path: Pa
     conversation = ConversationManager()
     conversation.add_user_message("Update source VALUE and validate it.")
 
+    decisions: list[PermissionDecisionEvent] = []
+
     async def consume() -> None:
-        async for _event in agent.run(conversation):
-            pass
+        async for event in agent.run(conversation):
+            if isinstance(event, PermissionDecisionEvent):
+                decisions.append(event)
 
     asyncio.run(consume())
 
@@ -129,6 +132,9 @@ def test_streaming_lifecycle_snapshots_edit_and_promotes_after_test(tmp_path: Pa
     assert "CandidateSnapshotCreated" in event_types
     assert "CandidatePromoted" in event_types
     assert [candidate["level"] for candidate in candidates] == ["C1", "C2"]
+    execution_paths = {event.tool_name: event.execution_path for event in decisions}
+    assert execution_paths["EditFile"] == "sequential"
+    assert execution_paths["RunTest"] == "sequential"
     assert (artifact_root / "final.patch").read_text(encoding="utf-8").strip()
     assert control_canary._validate_capability_v3_artifact(
         task_root=task_root,

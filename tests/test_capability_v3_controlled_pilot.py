@@ -99,6 +99,10 @@ def test_freeze_validation_and_zero_provider_rehearsal_bind_both_flags(tmp_path:
     summary = json.loads((tmp_path / "rehearsal" / "controlled-pilot-rehearsal-summary.json").read_text())
     assert summary["v3_evidence_coverage_count"] == 6
     assert all(item["valid"] and item["candidate_matches_final_patch"] for item in summary["v3_evidence_coverage"])
+    assert summary["sequential_post_tool_observer_coverage_count"] == 1
+    sequential = summary["sequential_post_tool_observer_coverage"][0]
+    assert sequential["edit_execution_path"] == sequential["test_execution_path"] == "sequential"
+    assert {"CandidateSnapshotCreated", "CandidatePromoted"}.issubset(sequential["candidate_events"])
     for path in records:
         record = json.loads(path.read_text())
         v3_root = path.parent / "capability-v3"
