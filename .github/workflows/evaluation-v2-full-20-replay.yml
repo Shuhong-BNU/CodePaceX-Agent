@@ -277,7 +277,8 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.v3_core_full20_paid_execution == true && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 1440
-    env: { BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }} }
+    env:
+      BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
     steps:
       - uses: actions/checkout@v4
         with: { ref: main }
