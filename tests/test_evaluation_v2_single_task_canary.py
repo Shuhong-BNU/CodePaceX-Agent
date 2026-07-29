@@ -8,79 +8,44 @@ from pathlib import Path
 import pytest
 
 from evals.evaluation_v2 import single_task_canary as canary
+from evals.evaluation_v2 import full_replay
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_derived_freeze_is_fixed_to_the_approved_parent_and_single_task(tmp_path: Path) -> None:
+def test_historical_parent_refuses_new_derived_freeze_before_any_execution(tmp_path: Path) -> None:
+    """The committed single-task parent is historical and must never be rebound."""
     output = tmp_path / "single-task-freeze.json"
-    identity = canary.write_freeze(ROOT, output)
-    frozen = json.loads(output.read_text(encoding="utf-8"))
-
-    assert frozen["task"]["instance_id"] == canary.TASK_ID
-    assert frozen["parent_readiness"]["freeze_sha256"] == canary.PARENT_FREEZE_SHA256
-    assert frozen["parent_readiness"]["runtime_contract_sha256"] == canary.PARENT_RUNTIME_HASH
-    assert frozen["parent_readiness"]["pricing_snapshot_sha256"] == canary.PARENT_PRICING_HASH
-    assert frozen["parent_readiness"]["run_id"] == canary.READINESS_RUN_ID
-    assert frozen["parent_readiness"]["artifact_id"] == canary.READINESS_ARTIFACT_ID
-    assert identity["runtime_contract_hash"] != canary.PARENT_RUNTIME_HASH
-    assert frozen["budget_contract"]["single_task_spendable_cap_cny"] == "73.236480"
-    assert frozen["budget_contract"]["authorization_hard_cap_cny"] == "73.236481"
-    assert frozen["budget_contract"]["nonspendable_safety_reserve_cny"] == "0.000001"
+    parent = full_replay.validate_contract(ROOT)
+    assert parent["freeze_sha256"] != canary.PARENT_FREEZE_SHA256
+    assert parent["runtime_contract_sha256"] != canary.PARENT_RUNTIME_HASH
+    with pytest.raises(ValueError, match="parent full-20 identity differs.*runtime_contract_sha256.*freeze_sha256"):
+        canary.write_freeze(ROOT, output)
+    assert not output.exists()
 
 
-def test_committed_derived_freeze_validates() -> None:
-    result = canary.validate_freeze(ROOT)
-    assert result["valid"] is True
-    assert result["pricing_snapshot_hash"] == canary.PARENT_PRICING_HASH
+def test_historical_committed_freeze_fails_closed_on_current_parent_binding() -> None:
+    with pytest.raises(ValueError, match="parent full-20 identity differs"):
+        canary.validate_freeze(ROOT)
 
 
-def test_rehearsal_closes_each_ledger_and_preserves_exact_usage_violation(
+def test_historical_rehearsal_fails_closed_before_loopback_provider_dispatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("evals.paid_gate._git_is_clean", lambda _root: True)
-    monkeypatch.setattr(
-        canary, "_loopback_agent_provider_dispatch",
-        lambda *_args: (
-            canary.control_canary.PaidTaskResult(
-                canary.TASK_ID, "completed_without_candidate", "not_exported", "executed",
-                "not_run", "completed", "completed", terminal_status="agent_no_candidate",
-                provider_requests=1, live_executor_invoked=True, agent_dispatch_started=True,
-                provider_client_initialized=True, model_response_observed=True,
-            ),
-            1,
-        ),
-    )
+    dispatched = False
+    def no_dispatch(*_args):
+        nonlocal dispatched
+        dispatched = True
+        raise AssertionError("historical parent rejection must precede loopback dispatch")
+    monkeypatch.setattr(canary, "_loopback_agent_provider_dispatch", no_dispatch)
     preflight = tmp_path / "preflight-summary.json"
     preflight.write_text(json.dumps({"passed": True}), encoding="utf-8")
-
-    result = canary.rehearse(ROOT, preflight, tmp_path / "rehearsal", "single-task-rehearsal-001")
-
-    assert result["formal_trial_count"] == 0
-    assert result["task"] == canary.TASK_ID
-    assert result["provider_task_coverage"] == "1/1"
-    assert result["provider_transport"] == "loopback_fake_openai_compatible"
-    assert result["external_provider_transport"] is False
-    assert result["loopback_simulated_provider_requests"] == 1
-    assert result["external_provider_requests"] == result["provider_requests"] == result["usage"] == 0
-    assert result["charge_cny"] == "0"
-    assert result["ledger_closed"] is True and result["active_reservation"] is None
-    violation = result["usage_contract_violation"]
-    assert violation["terminal_status"] == "provider_usage_contract_violation"
-    assert violation["candidate_status"] == "exported_nonempty"
-    assert violation["evaluator_status"] == "not_run"
-    diagnostics = violation["provider_usage_contract_violation"]["diagnostics"]
-    assert diagnostics["raw_completion_tokens"] == diagnostics["raw_text_tokens"] == 8197
-    assert diagnostics["raw_reasoning_tokens"] == 6144
-    assert diagnostics["exceeded_by"] == {"completion_tokens": 5}
-
-    for scenario in ("normal", "usage-contract-violation"):
-        ledger = canary.BudgetLedger.model_validate_json(
-            (tmp_path / "rehearsal" / scenario / "ledger.json").read_text(encoding="utf-8")
-        )
-        assert ledger.active_reservation is None
-        assert len(ledger.request_charges) == len(ledger.settlements) == 1
+    with pytest.raises(ValueError, match="parent full-20 identity differs"):
+        canary.rehearse(ROOT, preflight, tmp_path / "rehearsal", "single-task-rehearsal-001")
+    assert dispatched is False
+    assert not (tmp_path / "rehearsal").exists()
 
 
 def test_single_task_allocation_cannot_increase_spendable_contract(
@@ -127,11 +92,20 @@ def test_loopback_dispatch_uses_the_fixed_safe_payload(
     assert captured["trial_namespace"] == "v2-single-task-zero-provider"
 
 
-def test_paid_entry_rejects_wrong_freeze_before_any_executor(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="Freeze SHA"):
+def test_historical_paid_entry_rejects_before_any_provider_executor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executor_called = False
+    def no_executor(**_kwargs):
+        nonlocal executor_called
+        executor_called = True
+        raise AssertionError("historical parent rejection must precede provider executor")
+    monkeypatch.setattr(canary.control_canary, "_live_task_executor", no_executor)
+    with pytest.raises(ValueError, match="parent full-20 identity differs"):
         canary.run_paid(
             ROOT, tmp_path / "paid", "0" * 64, "73.236481", "test-only", "single-task-paid-001",
         )
+    assert executor_called is False
     assert not (tmp_path / "paid").exists()
 
 
@@ -141,6 +115,9 @@ def test_workflow_is_fixed_task_zero_provider_by_default() -> None:
     assert "inputs.paid_execution == false" in zero_provider
     assert "BAILIAN_API_KEY" not in zero_provider
     assert "aws-cloudformation__cfn-lint-3749" in workflow
+    assert "historical single-task parent fails closed before Provider transport" in workflow
+    assert "historical_parent_binding_mismatch" in workflow
+    assert "provider_transport_started" in workflow
     assert "paid_execution == true" in paid
     assert "evaluation-v2-full-20" not in workflow
     assert "retry" not in workflow.lower()

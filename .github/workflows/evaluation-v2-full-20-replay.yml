@@ -274,6 +274,16 @@ jobs:
           sequential = summary['sequential_post_tool_observer_coverage'][0]
           assert sequential['edit_execution_path'] == sequential['test_execution_path'] == 'sequential'
           assert {'CandidateSnapshotCreated', 'CandidatePromoted'} <= set(sequential['candidate_events'])
+          selection = summary['candidate_selection_rehearsal']
+          assert selection['exercised'] is True
+          assert selection['selected_candidate_id'] != selection['early_narrow_candidate_id']
+          assert len(selection['early_narrow_changed_files']) == 1
+          assert len(selection['selected_candidate_changed_files']) >= 2
+          assert selection['selected_candidate_test_evidence_ids']
+          assert 'expected_or_fixture_changed' in selection['selected_candidate_oracle_risks']
+          assert selection['selection_reason'] == 'evidence_weighted_finalization'
+          selected = next(item for item in selection['selection_candidates'] if item['candidate_id'] == selection['selected_candidate_id'])
+          assert selected['score'] == selection['selected_candidate_score']
           PY
       - name: Rehearse the real Stage C allocation execution entry without Provider transport
         run: |

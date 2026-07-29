@@ -158,16 +158,16 @@
     "pilot_config_max_iterations": 50,
     "provider_request_budget_bridge_ceiling": 40,
     "runtime_source_sha256": {
-      ".github/workflows/evaluation-v2-full-20-replay.yml": "e3010343cbeae056e07e8b5357abd6532e117edf9ab6770bdd7da3c5d2e57a6f",
+      ".github/workflows/evaluation-v2-full-20-replay.yml": "91c6aa1257a4d07c4a5285d2b338888f356fc1c72eff8fcd77c52d059b9c51cf",
       "codepacex/agent.py": "f41a27f8533fe109d0f5a3f3c5f35c7b64e1d373bccf923d633863c89f4e2656",
       "codepacex/capability_v3/config.py": "ad810ab41bd4ff83608dbf1e1d307cff9c2ac69bcb7f30555f6bbc55d639970b",
-      "codepacex/capability_v3/controller.py": "105aabb2473603c537266e85ddb20d618fefa2faf4270a070f2a3961a3e8f201",
+      "codepacex/capability_v3/controller.py": "f7379626ac77377d972bb153a8907dffefed515b3f66acb64a6b92779b4e853b",
       "codepacex/capability_v3/models.py": "b72e9d689742afa7a10e24022e4f190fc96618a2e628ec52a0eb2b14c8371beb",
       "codepacex/client.py": "09bc2c696628f1431e9eadd890947b9c798798b200002f0557f224dfcf1e7a5a",
       "codepacex/permissions/checker.py": "bab12d8cde66fac86bdb6df8e63c8540e0dba43dd8b2ae461047144afa380cd2",
       "codepacex/tools/edit_file.py": "495231404680b588a7ac14b2d2807aa156e832136c14459f923ac3276dab750f",
       "codepacex/tools/run_test.py": "19335d85dbd43ea6062e419bfcc089eb98da15c928bb1fcb6280705bc27b52fe",
-      "evals/evaluation_v2/control_canary.py": "eb2e327d19e505406d6d4c5bbd8d1540bdc5b4bc96ca77fcd19624081db8d0bc",
+      "evals/evaluation_v2/control_canary.py": "2607ca8fb883b0705c4b7aa17d5f1bdaf38decea3830459283f309bdc4822f11",
       "evals/evaluation_v2/full_replay.py": "3ea3ce043361c9b432c057f2536f431caa41e8463a83038fe602d82c648b3240",
       "evals/paid_gate.py": "7406e79cf8e1e4827d347ca8cad4ff1d30cb83c4912c50910bf4d871a1c382b9",
       "evals/pilot.py": "855c4cba3a2bf379e9b5d325115e90c743a6e88f466605171ecf579f2620ecec"
@@ -177,7 +177,7 @@
     "task_python_isolation_contract": "fresh-no-system-site-packages-venv-path-bound-python-python3-pip-pip3-v1",
     "tool_schemas_sha256": "72ae1262c5acd1a8b21c3f0964cdcb210508f1b780590b79b0ec2cc2eba07aea"
   },
-  "runtime_contract_sha256": "705e0a043881b217eca47a8cfe233603e598a06f59328bf02e6ad5231d218020",
+  "runtime_contract_sha256": "f7eb73af70ead77aae48762e516ae8877c00266903ed2c80ed9265b9893400be",
   "schema_version": 1,
   "selection_manifest_sha256": "3efa2694627f699324c78b3c8dd09f208330eebb77fecd9d807bfd509529935e",
   "status": "frozen_pending_single_full_20_authorization"

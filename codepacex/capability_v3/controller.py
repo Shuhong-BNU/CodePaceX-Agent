@@ -202,8 +202,17 @@ class CapabilityV3Controller:
             risks: list[OracleRisk] = []
             if re.search(r"^\+\s*(def|class)\s+", diff_text, re.M) and not (self.evidence and self.evidence.target_symbols):
                 risks.append(OracleRisk("unanchored_public_api", "high", "new public API lacks repository anchor"))
-            if any("test" in path.lower() or "golden" in path.lower() for path in changed_files):
-                risks.append(OracleRisk("expected_or_fixture_changed", "warning", "changed test or expected fixture requires review"))
+            paths = tuple(str(path).lower() for path in changed_files)
+            if any(any(marker in path for marker in ("gold", "evaluator", "swe-bench")) for path in paths):
+                risks.append(OracleRisk(
+                    "evaluator_or_gold_modified", "high",
+                    "changed evaluator or gold material requires strong review",
+                ))
+            elif any("test" in path or "fixture" in path for path in paths):
+                risks.append(OracleRisk(
+                    "expected_or_fixture_changed", "warning",
+                    "changed project test or fixture requires review",
+                ))
             if "except" in source and ("pass" in source or "return none" in source):
                 risks.append(OracleRisk("silent_exception", "high", "patch may weaken an exception contract"))
             if "default" in source and not (self.evidence and self.evidence.defaults_and_config):
@@ -280,16 +289,18 @@ class CapabilityV3Controller:
         if not (self.enabled and self.config.candidate_snapshot_enabled):
             return None
         try:
+            changed = tuple(changed_files)
             diff_sha = self._hash(diff_text)
-            self.inspect_oracle(changed_files=changed_files, diff_text=diff_text)
+            risks = self.inspect_oracle(changed_files=changed, diff_text=diff_text)
             return self.snapshot_candidate(CandidateLevel.C1, diff_sha=diff_sha, patch_path=patch_path,
-                                           changed_files=tuple(changed_files))
+                                           changed_files=changed, oracle_risks=risks)
         except Exception as exc:
             self._fail_open("observe_diff", exc)
             return None
 
     def snapshot_candidate(self, level: CandidateLevel, *, diff_sha: str, patch_path: Path | None,
-                           changed_files: tuple[str, ...], test_evidence_ids: Iterable[str] = ()) -> CandidateSnapshot | None:
+                           changed_files: tuple[str, ...], test_evidence_ids: Iterable[str] = (),
+                           oracle_risks: Iterable[OracleRisk] | None = None) -> CandidateSnapshot | None:
         if not diff_sha or level is CandidateLevel.C0:
             return None
         candidate = CandidateSnapshot(
@@ -298,7 +309,13 @@ class CapabilityV3Controller:
             created_request=self.budget.requests_used, changed_files=tuple(sorted(set(changed_files))),
             impact_slice_id=self.impact.diff_sha if self.impact else None,
             evidence_packet_id=self.evidence.packet_id if self.evidence else None,
-            test_evidence_ids=tuple(test_evidence_ids), oracle_risks=tuple(r.risk_type for r in self.oracle_risks),
+            test_evidence_ids=tuple(test_evidence_ids),
+            # A snapshot owns only risks observed for its own diff.  Retaining all
+            # prior global observations made later candidates look artificially
+            # risky and was the reason a narrow first C1 could win finalization.
+            oracle_risks=tuple(
+                risk.risk_type for risk in (self.oracle_risks if oracle_risks is None else oracle_risks)
+            ),
             restorable=bool(patch_path),
         )
         self.candidates.append(candidate)
@@ -313,6 +330,16 @@ class CapabilityV3Controller:
         if not (self.enabled and self.candidates):
             return None
         latest = self.candidates[-1]
+        if not passed and test_evidence_id:
+            failed = CandidateSnapshot(**{
+                **latest.__dict__,
+                "candidate_id": f"candidate-{len(self.candidates)+1:03d}",
+                "known_failures": tuple(sorted(set(latest.known_failures + (test_evidence_id,)))),
+            })
+            self.candidates.append(failed)
+            self.budget = BudgetState(**{**self.budget.__dict__, "current_candidate_id": failed.candidate_id})
+            self._emit("CandidateValidationFailed", candidate=failed, test_evidence_id=test_evidence_id)
+            return failed
         level = latest.level
         if passed and (reproducer_status is ReproducerStatus.PRE_FAIL_POST_PASS or test_evidence_id):
             level = max(level, CandidateLevel.C2, key=lambda item: list(CandidateLevel).index(item))
@@ -380,11 +407,97 @@ class CapabilityV3Controller:
                 return None
             self._emit("V3Completed", reason="no_stable_candidate", exported_patch="")
             return None
-        selected = sorted(stable, key=lambda item: (-list(CandidateLevel).index(item.level),
-            len(item.oracle_risks), len(item.changed_files), -item.created_request, item.candidate_id))[0]
+        try:
+            selected, selection = self._select_final_candidate(stable)
+            self._emit("CandidateSelectionEvaluated", selected_candidate_id=selected.candidate_id,
+                       reason="evidence_weighted_finalization", candidates=selection)
+        except Exception as exc:
+            self._fail_open("select_final_candidate", exc)
+            selected = sorted(stable, key=lambda item: (
+                -list(CandidateLevel).index(item.level), -item.created_request, item.candidate_id,
+            ))[0]
+            self._emit("CandidateSelectionFallback", selected_candidate_id=selected.candidate_id,
+                       reason="selection_bookkeeping_error", audit_only=True)
         self._emit("CandidateRestored", candidate=selected, reason=reason)
         self._emit("V3Completed", reason=reason, exported_patch=selected.patch_path)
         return selected
+
+    @staticmethod
+    def _oracle_risk_penalty(risks: Iterable[str]) -> int:
+        """Return a graded advisory penalty without turning risks into vetoes."""
+        weights = {
+            "evaluator_or_gold_modified": 30,
+            "silent_exception": 12,
+            "unanchored_public_api": 5,
+            "default_without_evidence": 3,
+            "expected_or_fixture_changed": 1,
+        }
+        return sum(weights.get(risk, 4) for risk in risks)
+
+    def _candidate_selection_components(self, candidate: CandidateSnapshot) -> dict[str, Any]:
+        """Explain a generic, evidence-first final Candidate choice.
+
+        Passing tests and higher validation levels dominate, while recency and
+        changed-file coverage break ties.  Oracle observations are graded rather
+        than treated as a blanket veto: evaluator/gold edits are a strong warning,
+        normal project tests/fixtures are not.  Existing failures remain a
+        regression penalty.
+        """
+        level = list(CandidateLevel).index(candidate.level)
+        evidence = len(candidate.test_evidence_ids)
+        regression_count = len(candidate.known_failures)
+        risk_penalty = self._oracle_risk_penalty(candidate.oracle_risks)
+        coverage = len(candidate.changed_files)
+        score = (
+            evidence * 100
+            + level * 20
+            + min(coverage, 12) * 2
+            + min(candidate.created_request, 40)
+            - regression_count * 15
+            - risk_penalty
+        )
+        return {
+            "candidate_id": candidate.candidate_id,
+            "score": score,
+            "validation_evidence_count": evidence,
+            "candidate_level": candidate.level.value,
+            "regression_count": regression_count,
+            "oracle_risks": candidate.oracle_risks,
+            "oracle_risk_penalty": risk_penalty,
+            "changed_file_coverage": coverage,
+            "created_request": candidate.created_request,
+        }
+
+    def _select_final_candidate(
+        self, stable: Iterable[CandidateSnapshot],
+    ) -> tuple[CandidateSnapshot, tuple[dict[str, Any], ...]]:
+        """Select a restorable Candidate and retain every decision component."""
+        snapshots = tuple(stable)
+        latest_by_diff: dict[str, CandidateSnapshot] = {}
+        for candidate in snapshots:
+            # A later validation result is authoritative for the same patch.
+            latest_by_diff[candidate.diff_sha] = candidate
+        evaluated_rows: list[dict[str, Any]] = []
+        for candidate in snapshots:
+            components = self._candidate_selection_components(candidate)
+            authoritative = latest_by_diff[candidate.diff_sha]
+            components["selection_eligible"] = candidate.candidate_id == authoritative.candidate_id
+            if not components["selection_eligible"]:
+                components["superseded_by"] = authoritative.candidate_id
+            evaluated_rows.append(components)
+        evaluated = tuple(evaluated_rows)
+        by_id = {item.candidate_id: item for item in latest_by_diff.values()}
+        selected_components = sorted(
+            (item for item in evaluated if item["selection_eligible"]),
+            key=lambda item: (
+                -int(item["score"]),
+                -int(item["validation_evidence_count"]),
+                -int(item["created_request"]),
+                -int(item["changed_file_coverage"]),
+                str(item["candidate_id"]),
+            ),
+        )[0]
+        return by_id[str(selected_components["candidate_id"])], evaluated
 
     def attribute_failures(self, baseline: Iterable[FailureRecord] | None, post: Iterable[FailureRecord], *,
                            baseline_identity: ComparableRunIdentity | None, post_identity: ComparableRunIdentity) -> FailureAttribution:

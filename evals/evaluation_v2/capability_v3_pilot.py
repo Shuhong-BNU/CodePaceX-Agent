@@ -21,6 +21,7 @@ from typing import Any, AsyncIterator, Mapping, Sequence
 
 from codepacex.agent import Agent, PermissionDecisionEvent
 from codepacex.capability_v3 import CapabilityV3Config, CapabilityV3Controller, CapabilityV3Flag
+from codepacex.capability_v3.models import CandidateLevel
 from codepacex.client import LLMClient
 from codepacex.conversation import ConversationManager
 from codepacex.permissions import DangerousCommandDetector, PathSandbox, PermissionChecker, PermissionMode, RuleEngine
@@ -524,6 +525,77 @@ def _write_sequential_rehearsal_capability_v3_artifact(
     return fidelity
 
 
+def _write_candidate_selection_rehearsal(location: Path, run: Mapping[str, Any]) -> dict[str, Any]:
+    """Exercise evidence-weighted finalization without an Agent or Provider.
+
+    The real Agent observer remains covered by the adjacent sequential rehearsal.
+    This deterministic controller-only path makes the selection contract auditable:
+    a later, broader Candidate with successful test evidence and a nonfatal
+    project-test risk must supersede an early narrow Candidate.
+    """
+    root = location / "candidate-selection-rehearsal"
+    root.mkdir(parents=True, exist_ok=True)
+    early_patch, later_patch = root / "early.patch", root / "later.patch"
+    early_patch.write_text("diff --git a/src/narrow.py b/src/narrow.py\n+early\n", encoding="utf-8")
+    later_patch.write_text("diff --git a/src/api.py b/src/api.py\n+later\n", encoding="utf-8")
+    controller = CapabilityV3Controller(
+        CapabilityV3Config.from_flag(CapabilityV3Flag.V3_CORE),
+        task_id=str(run["instance_id"]), base_commit=str(run["base_commit"]), state_dir=root,
+    )
+    controller.begin_run(
+        task_id=str(run["instance_id"]), base_commit=str(run["base_commit"]),
+        feature_flag=CapabilityV3Flag.V3_CORE.value,
+    )
+    controller.update_budget(3)
+    early = controller.snapshot_candidate(
+        CandidateLevel.C1, diff_sha="selection-early", patch_path=early_patch,
+        changed_files=("src/narrow.py",), oracle_risks=(),
+    )
+    controller.update_budget(18)
+    risks = controller.inspect_oracle(changed_files=("tests/test_api.py",), diff_text="")
+    later = controller.snapshot_candidate(
+        CandidateLevel.C1, diff_sha="selection-later", patch_path=later_patch,
+        changed_files=("src/api.py", "src/adapter.py", "tests/test_api.py"), oracle_risks=risks,
+    )
+    if early is None or later is None:
+        raise AssertionError("selection rehearsal did not create both Candidates")
+    tested_later = controller.observe_test_result(passed=True, test_evidence_id="RunTest-later")
+    selected = controller.finalize("zero_provider_candidate_selection")
+    controller.write_artifact(root)
+    if selected is None or tested_later is None or selected.candidate_id != tested_later.candidate_id:
+        raise AssertionError("Candidate finalization did not choose the later successfully tested Candidate")
+    event = next(
+        (item for item in controller.events if item["event_type"] == "CandidateSelectionEvaluated"), None,
+    )
+    if event is None:
+        raise AssertionError("Candidate selection rehearsal did not retain CandidateSelectionEvaluated")
+    selection = event["payload"]
+    evaluated = {item["candidate_id"]: item for item in selection["candidates"]}
+    selected_evidence = evaluated.get(selected.candidate_id)
+    if (
+        selection.get("reason") != "evidence_weighted_finalization"
+        or selected.candidate_id == early.candidate_id
+        or selected_evidence is None
+        or not selected.test_evidence_ids
+        or len(selected.changed_files) < 2
+        or "expected_or_fixture_changed" not in selected.oracle_risks
+    ):
+        raise AssertionError("Candidate selection rehearsal lacks required evidence-weighted selection")
+    return {
+        "exercised": True,
+        "artifact_path": str(root.relative_to(location)),
+        "early_narrow_candidate_id": early.candidate_id,
+        "early_narrow_changed_files": early.changed_files,
+        "selected_candidate_id": selected.candidate_id,
+        "selected_candidate_changed_files": selected.changed_files,
+        "selected_candidate_test_evidence_ids": selected.test_evidence_ids,
+        "selected_candidate_oracle_risks": selected.oracle_risks,
+        "selection_reason": selection["reason"],
+        "selected_candidate_score": selected_evidence["score"],
+        "selection_candidates": selection["candidates"],
+    }
+
+
 def _write_rehearsal_capability_v3_artifact(location: Path, run: Mapping[str, Any]) -> dict[str, Any]:
     """Create deterministic raw V3 evidence at the same nested Artifact path.
 
@@ -585,6 +657,7 @@ def rehearse(root: Path, freeze: Path, preflight_summary: Path, artifact_root: P
     }
     run_artifacts = []
     sequential_rehearsal_complete = False
+    candidate_selection_rehearsal: dict[str, Any] | None = None
     for run in frozen["task_runs"]:
         location = artifact_root / run["expected_artifact_path"]
         location.mkdir(parents=True)
@@ -604,6 +677,7 @@ def rehearse(root: Path, freeze: Path, preflight_summary: Path, artifact_root: P
             if not sequential_rehearsal_complete:
                 artifact["capability_v3_treatment_fidelity"] = _write_sequential_rehearsal_capability_v3_artifact(location, run)
                 sequential_rehearsal_complete = True
+                candidate_selection_rehearsal = _write_candidate_selection_rehearsal(location, run)
             else:
                 artifact["capability_v3_treatment_fidelity"] = _write_rehearsal_capability_v3_artifact(location, run)
         _write_json(location / "task-run-contract.json", artifact)
@@ -620,6 +694,8 @@ def rehearse(root: Path, freeze: Path, preflight_summary: Path, artifact_root: P
     ]
     if len(sequential_coverage) != 1:
         raise AssertionError("zero-provider rehearsal must exercise one sequential V3 post-tool observer")
+    if candidate_selection_rehearsal is None:
+        raise AssertionError("zero-provider rehearsal must exercise Candidate selection")
     summary = {
         "schema_version": SCHEMA_VERSION, "paid_execution": False, "provider_requests": 0,
         "usage": 0, "charge_cny": "0", "provider_secret_read": False,
@@ -629,6 +705,7 @@ def rehearse(root: Path, freeze: Path, preflight_summary: Path, artifact_root: P
         "v3_evidence_coverage_count": len(v3_coverage),
         "sequential_post_tool_observer_coverage": sequential_coverage,
         "sequential_post_tool_observer_coverage_count": len(sequential_coverage),
+        "candidate_selection_rehearsal": candidate_selection_rehearsal,
         "completed": len(run_artifacts) == 12,
     }
     _write_json(artifact_root / "controlled-pilot-rehearsal-summary.json", summary)

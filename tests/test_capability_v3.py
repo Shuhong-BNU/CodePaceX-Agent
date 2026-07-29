@@ -69,6 +69,73 @@ def test_impact_matrix_reproducer_and_candidate_finalization(tmp_path: Path) -> 
     assert controller.finalize("request_ceiling").level is CandidateLevel.C3
 
 
+def test_finalization_prefers_later_tested_candidate_over_early_narrow_risk_free_candidate(tmp_path: Path) -> None:
+    """Finalization is evidence-weighted, not an accidental restoration of C1."""
+    early_patch = tmp_path / "early.patch"; early_patch.write_text("early")
+    later_patch = tmp_path / "later.patch"; later_patch.write_text("later")
+    controller = _controller()
+    controller.update_budget(3)
+    early = controller.snapshot_candidate(
+        CandidateLevel.C1, diff_sha="early", patch_path=early_patch,
+        changed_files=("src/narrow.py",),
+        oracle_risks=(),
+    )
+    assert early is not None
+    controller.update_budget(18)
+    later = controller.snapshot_candidate(
+        CandidateLevel.C1, diff_sha="later", patch_path=later_patch,
+        changed_files=("src/api.py", "src/adapter.py", "tests/test_api.py"),
+        test_evidence_ids=("RunTest-later",),
+        oracle_risks=(
+            controller.inspect_oracle(
+                changed_files=["tests/test_api.py"], diff_text="",
+            )[0],
+        ),
+    )
+    assert later is not None
+    selected = controller.finalize("request_ceiling")
+    assert selected is not None and selected.candidate_id == later.candidate_id
+    event = next(event for event in controller.events if event["event_type"] == "CandidateSelectionEvaluated")
+    by_id = {item["candidate_id"]: item for item in event["payload"]["candidates"]}
+    assert by_id[later.candidate_id]["validation_evidence_count"] == 1
+    assert by_id[later.candidate_id]["oracle_risk_penalty"] == 1
+    assert by_id[early.candidate_id]["changed_file_coverage"] == 1
+
+
+def test_oracle_risk_grading_distinguishes_project_tests_from_evaluator_gold() -> None:
+    controller = _controller()
+    project_risk = controller.inspect_oracle(changed_files=["tests/test_feature.py"], diff_text="")
+    evaluator_risk = controller.inspect_oracle(changed_files=["evals/gold/expected.json"], diff_text="")
+    assert [(risk.risk_type, risk.level) for risk in project_risk] == [("expected_or_fixture_changed", "warning")]
+    assert [(risk.risk_type, risk.level) for risk in evaluator_risk] == [("evaluator_or_gold_modified", "high")]
+
+
+def test_failed_test_evidence_supersedes_the_same_patch_for_final_selection(tmp_path: Path) -> None:
+    early_patch = tmp_path / "early.patch"; early_patch.write_text("early")
+    later_patch = tmp_path / "later.patch"; later_patch.write_text("later")
+    controller = _controller()
+    controller.update_budget(2)
+    early = controller.snapshot_candidate(
+        CandidateLevel.C1, diff_sha="early", patch_path=early_patch,
+        changed_files=("src/early.py",), test_evidence_ids=("RunTest-early",),
+    )
+    assert early is not None
+    controller.update_budget(16)
+    later = controller.snapshot_candidate(
+        CandidateLevel.C1, diff_sha="later", patch_path=later_patch,
+        changed_files=("src/later.py", "src/more.py"),
+    )
+    assert later is not None
+    failed = controller.observe_test_result(passed=False, test_evidence_id="RunTest-regression")
+    assert failed is not None and failed.known_failures == ("RunTest-regression",)
+    assert controller.finalize("request_ceiling").candidate_id == early.candidate_id
+    event = next(event for event in controller.events if event["event_type"] == "CandidateSelectionEvaluated")
+    by_id = {item["candidate_id"]: item for item in event["payload"]["candidates"]}
+    assert by_id[later.candidate_id]["selection_eligible"] is False
+    assert by_id[later.candidate_id]["superseded_by"] == failed.candidate_id
+    assert by_id[failed.candidate_id]["regression_count"] == 1
+
+
 def test_no_candidate_never_exports_wip_and_differential_preserves_unknown() -> None:
     controller = _controller()
     assert controller.finalize("request_ceiling") is None

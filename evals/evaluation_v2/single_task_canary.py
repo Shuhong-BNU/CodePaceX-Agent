@@ -135,7 +135,13 @@ def freeze_payload(root: Path) -> dict[str, Any]:
     root = root.resolve()
     parent = full_replay.validate_contract(root)
     if parent["freeze_sha256"] != PARENT_FREEZE_SHA256 or parent["runtime_contract_sha256"] != PARENT_RUNTIME_HASH:
-        raise ValueError("parent full-20 identity differs from the approved readiness contract")
+        raise ValueError(
+            "parent full-20 identity differs from the approved readiness contract: "
+            f"runtime_contract_sha256 expected={PARENT_RUNTIME_HASH} "
+            f"actual={parent['runtime_contract_sha256']}; "
+            f"freeze_sha256 expected={PARENT_FREEZE_SHA256} "
+            f"actual={parent['freeze_sha256']}"
+        )
     budget = _budget_contract(root)
     if budget["pricing_snapshot_hash"] != PARENT_PRICING_HASH:
         raise ValueError("pricing identity differs from the approved parent contract")
