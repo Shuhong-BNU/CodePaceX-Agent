@@ -98,7 +98,7 @@ permissions:
 
 jobs:
   zero-provider-full-readiness:
-    if: ${{ github.event_name == 'pull_request' || inputs.paid_execution == false }}
+    if: ${{ github.event_name == 'pull_request' || (inputs.paid_execution == false && inputs.controlled_pilot_paid_execution == false && inputs.v3_core_full20_paid_execution == false) }}
     runs-on: ubuntu-22.04
     timeout-minutes: 360
     env:
@@ -239,7 +239,7 @@ jobs:
           if-no-files-found: warn
 
   zero-provider-v3-core-full20-readiness:
-    if: ${{ github.event_name == 'pull_request' || inputs.v3_core_full20_paid_execution == false }}
+    if: ${{ github.event_name == 'pull_request' || (inputs.paid_execution == false && inputs.controlled_pilot_paid_execution == false && inputs.v3_core_full20_paid_execution == false) }}
     runs-on: ubuntu-22.04
     timeout-minutes: 1440
     env:
@@ -320,7 +320,7 @@ jobs:
           path: ${{ runner.temp }}/v3-core-full20-paid/${{ inputs.v3_core_full20_run_id }}
 
   zero-provider-controlled-pilot-readiness:
-    if: ${{ github.event_name == 'pull_request' || inputs.controlled_pilot_paid_execution == false }}
+    if: ${{ github.event_name == 'pull_request' || (inputs.paid_execution == false && inputs.controlled_pilot_paid_execution == false && inputs.v3_core_full20_paid_execution == false) }}
     runs-on: ubuntu-22.04
     timeout-minutes: 360
     env:

@@ -359,7 +359,7 @@ def test_usage_contract_violation_is_an_infrastructure_stop() -> None:
 
 def test_full_replay_workflow_keeps_paid_path_explicit_and_zero_provider_path_complete() -> None:
     workflow = (ROOT / full_replay.WORKFLOW_PATH).read_text(encoding="utf-8")
-    assert "inputs.paid_execution == false" in workflow
+    assert "inputs.paid_execution == false && inputs.controlled_pilot_paid_execution == false && inputs.v3_core_full20_paid_execution == false" in workflow
     assert "BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}" in workflow
     assert "full_replay preflight" in workflow
     assert "full_replay shadow" in workflow
@@ -371,7 +371,7 @@ def test_full_replay_workflow_keeps_paid_path_explicit_and_zero_provider_path_co
     assert "controlled-pilot-paid-execution" in workflow
     assert "v3-core-full20-paid-execution" in workflow
     assert "zero-provider-v3-core-full20-readiness" in workflow
-    assert "inputs.controlled_pilot_paid_execution == false" in workflow
+    assert "inputs.controlled_pilot_paid_execution == false && inputs.v3_core_full20_paid_execution == false" in workflow
     v3_readiness = workflow[workflow.index("zero-provider-v3-core-full20-readiness"):workflow.index("v3-core-full20-paid-execution")]
     v3_paid = workflow[workflow.index("v3-core-full20-paid-execution"):workflow.index("zero-provider-controlled-pilot-readiness")]
     assert v3_readiness.count("Install project and frozen official evaluator") == 1
