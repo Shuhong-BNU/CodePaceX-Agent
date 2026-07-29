@@ -752,6 +752,10 @@ class OpenAICompatClient(LLMClient):
                 )
 
         except _openai.AuthenticationError as e:
+            if request_budget is not None and reservation is not None:
+                request_budget.cancel_deterministic_pre_usage_rejection(
+                    reservation, failure_type="provider_authentication_error",
+                )
             raise AuthenticationError(f"Invalid API key: {e}") from e
         except _openai.RateLimitError as e:
             retry = None
@@ -784,6 +788,19 @@ class OpenAICompatClient(LLMClient):
                     )
             raise NetworkError(f"Network error: {e}") from e
         except _openai.APIStatusError as e:
+            if request_budget is not None and reservation is not None:
+                if e.status_code == 401:
+                    request_budget.cancel_deterministic_pre_usage_rejection(
+                        reservation, failure_type="provider_authentication_error",
+                    )
+                elif e.status_code == 403:
+                    request_budget.cancel_deterministic_pre_usage_rejection(
+                        reservation, failure_type="provider_access_denied",
+                    )
+                else:
+                    request_budget.record_request_failure(
+                        reservation, failure_type="provider_transport_error",
+                    )
             raise LLMError(f"API error ({e.status_code}): {e.message}") from e
 
 

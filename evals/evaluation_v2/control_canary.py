@@ -721,6 +721,7 @@ def enforce_dispatch_invariant(result: PaidTaskResult) -> PaidTaskResult:
     explicit_zero_request_stop = (
         result.terminal_status in {
             "pre_agent_blocked", "budget_blocked", "provider_transport_error",
+            "provider_authentication_error", "provider_access_denied",
             "protocol_blocked", "task_environment_blocked", "host_runtime_contaminated",
         }
         and result.provider_status in {"pre_transport_blocked", "transport_failed"}
@@ -1151,6 +1152,17 @@ def _live_task_executor(
         "charge_cny": accounting["actual_cny"],
     })
     usage_violation = accounting.get("provider_usage_contract_violation")
+    failure_type = accounting.get("failure_type")
+    if failure_type in {"provider_authentication_error", "provider_access_denied"}:
+        evidence.update({
+            "failure_classification": failure_type,
+            "failure_recorded_at": accounting.get("failure_recorded_at"),
+        })
+        return finish(PaidTaskResult(
+            task["instance_id"], "failed", "not_exported", "not_run", "not_run",
+            "error", "pre_transport_blocked", terminal_status=failure_type,
+            failure_classification=failure_type, **common,
+        ))
     if accounting["budget_blocked"]:
         return finish(PaidTaskResult(
             task["instance_id"], "failed", "not_exported", "not_run", "not_run",
@@ -1158,10 +1170,13 @@ def _live_task_executor(
             failure_classification="budget_blocked", **common,
         ))
     if accounting["active_reservation"] is not None:
+        failure_classification = (
+            "provider_transport_error" if failure_type is None else str(failure_type)
+        )
         return finish(PaidTaskResult(
             task["instance_id"], "failed", "not_exported", "not_run", "not_run",
             "error", "transport_failed", terminal_status="provider_transport_error",
-            failure_classification="provider_transport_error", **common,
+            failure_classification=failure_classification, **common,
         ))
     fidelity = _validate_capability_v3_artifact(
         task_root=task_root, instance_id=task["instance_id"], treatment=capability_v3_flag,

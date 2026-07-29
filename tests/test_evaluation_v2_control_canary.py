@@ -431,6 +431,23 @@ def test_zero_request_capability_result_becomes_dispatch_missing() -> None:
     assert result.runner_status == "error"
 
 
+@pytest.mark.parametrize("failure_type", [
+    "provider_authentication_error", "provider_access_denied",
+])
+def test_deterministic_pre_usage_provider_rejection_keeps_its_precise_classification(
+    failure_type: str,
+) -> None:
+    result = canary.enforce_dispatch_invariant(canary.PaidTaskResult(
+        instance_id="task", agent_status="failed", candidate_status="not_exported",
+        validation_status="not_run", evaluator_status="not_run", runner_status="error",
+        provider_status="pre_transport_blocked", terminal_status=failure_type,
+        failure_classification=failure_type, live_executor_invoked=True,
+        agent_dispatch_started=True, provider_client_initialized=True,
+    ))
+    assert result.terminal_status == result.failure_classification == failure_type
+    assert result.provider_status == "pre_transport_blocked"
+
+
 def test_completed_without_candidate_requires_a_settled_model_response() -> None:
     result = canary.enforce_dispatch_invariant(canary.PaidTaskResult(
         instance_id="task", agent_status="completed_without_candidate",

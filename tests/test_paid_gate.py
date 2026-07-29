@@ -107,6 +107,37 @@ def test_gate_reserves_and_settles_each_provider_request_in_one_trial(tmp_path: 
     assert ledger["request_charges"][1]["request_index"] == 2
 
 
+@pytest.mark.parametrize("failure_type", [
+    "provider_authentication_error", "provider_access_denied",
+])
+def test_deterministic_pre_usage_rejection_cancels_zero_cost_and_retains_failure_evidence(
+    tmp_path: Path, failure_type: str,
+) -> None:
+    gate = _gate(tmp_path)
+    budget = ProviderRequestBudget(
+        gate, trial_id="swe/formal/access-denied", maximum_input_tokens_per_request=1000,
+        maximum_output_tokens_per_request=500,
+    )
+    with patch("evals.paid_gate._git_commit", return_value=COMMIT), patch(
+        "evals.paid_gate._git_is_clean", return_value=True,
+    ):
+        reservation = budget.reserve_before_request()
+        settlement = budget.cancel_deterministic_pre_usage_rejection(
+            reservation, failure_type=failure_type,  # type: ignore[arg-type]
+        )
+    ledger = BudgetLedger.model_validate_json((tmp_path / "ledger.json").read_text())
+    accounting = gate.trial_accounting("swe/formal/access-denied")
+    assert settlement.actual_cny == Decimal("0")
+    assert settlement.status == "cancelled"
+    assert settlement.settlement_method == failure_type
+    assert settlement.failure_type == failure_type
+    assert settlement.failure_recorded_at is not None
+    assert ledger.active_reservation is None
+    assert ledger.request_charges == [] and ledger.spent_cny == Decimal("0")
+    assert accounting["failure_type"] == failure_type
+    assert accounting["failure_recorded_at"] == settlement.failure_recorded_at
+
+
 @pytest.mark.parametrize("request_count", [39, 40])
 def test_provider_request_ceiling_allows_through_the_frozen_boundary(
     tmp_path: Path, request_count: int,

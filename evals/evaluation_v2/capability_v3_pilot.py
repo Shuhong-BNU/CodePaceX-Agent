@@ -600,6 +600,28 @@ def run_paid_pilot(root: Path, freeze: Path, artifact_root: Path, *, expected_fr
     return summary
 
 
+def assert_paid_pilot_terminal_contract(summary_path: Path) -> dict[str, Any]:
+    """Fail the workflow after evidence upload when a paid Pilot is incomplete.
+
+    An evaluator-confirmed unresolved outcome is a valid terminal task result.
+    A partial sequence, open reservation, or otherwise incomplete paid summary
+    is infrastructure/accounting failure and must make the job fail.
+    """
+    summary = _read_json(summary_path)
+    reasons: list[str] = []
+    if summary.get("completed") is not True:
+        reasons.append("completed=false")
+    if summary.get("ledger_closed") is not True:
+        reasons.append("ledger_closed=false")
+    if len(summary.get("results", [])) != 12:
+        reasons.append("task_run_count!=12")
+    if reasons:
+        raise RuntimeError(
+            "controlled Pilot paid terminal contract failed: " + ", ".join(reasons)
+        )
+    return {"valid": True, "task_run_count": len(summary["results"])}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Capability V3 controlled Pilot contracts")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -609,12 +631,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     rehearsal = sub.add_parser("rehearse"); rehearsal.add_argument("--root", type=Path, required=True); rehearsal.add_argument("--freeze", type=Path, required=True); rehearsal.add_argument("--preflight-summary", type=Path, required=True); rehearsal.add_argument("--artifact-root", type=Path, required=True)
     entry = sub.add_parser("rehearse-execution-entry"); entry.add_argument("--root", type=Path, required=True); entry.add_argument("--freeze", type=Path, required=True); entry.add_argument("--preflight-summary", type=Path, required=True); entry.add_argument("--artifact-root", type=Path, required=True)
     paid = sub.add_parser("paid-run"); paid.add_argument("--root", type=Path, required=True); paid.add_argument("--freeze", type=Path, required=True); paid.add_argument("--artifact-root", type=Path, required=True); paid.add_argument("--expected-freeze-sha256", required=True); paid.add_argument("--expected-allocation-hash", required=True); paid.add_argument("--approved-total-hard-cap-cny", required=True); paid.add_argument("--authorization-acknowledgement", required=True); paid.add_argument("--run-id", required=True); paid.add_argument("--confirm-paid-execution", action="store_true")
+    terminal = sub.add_parser("assert-paid-terminal"); terminal.add_argument("--summary", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "freeze": result = write_freeze(args.root.resolve(), args.output.resolve(), run_id=args.run_id, approved_total_hard_cap_cny=args.approved_total_hard_cap_cny)
     elif args.command == "validate": result = validate_freeze(args.root.resolve(), args.freeze.resolve())
     elif args.command == "preflight": result = run_preflight(args.root.resolve(), args.freeze.resolve(), args.artifact_root.resolve())
     elif args.command == "rehearse": result = rehearse(args.root.resolve(), args.freeze.resolve(), args.preflight_summary.resolve(), args.artifact_root.resolve())
     elif args.command == "rehearse-execution-entry": result = rehearse_execution_entry(args.root.resolve(), args.freeze.resolve(), args.preflight_summary.resolve(), args.artifact_root.resolve())
+    elif args.command == "assert-paid-terminal": result = assert_paid_pilot_terminal_contract(args.summary.resolve())
     else:
         if not args.confirm_paid_execution:
             raise ValueError("paid execution requires --confirm-paid-execution")

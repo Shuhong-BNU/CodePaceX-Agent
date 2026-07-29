@@ -20,3 +20,12 @@ ceilings may sum above the parent hard cap without creating twelve funds or
 reserving unused capacity.  A reservation, charge, settlement, cancellation,
 and block carries the task-run allocation identity when the Controlled Pilot
 contract is active.
+
+An explicit Provider HTTP 401 authentication rejection or HTTP 403 workspace
+access denial is known to have returned before any model response or Usage. The
+runner records the failure type and timestamp, then writes a CNY-zero
+cancellation that closes the active reservation. Connection loss, timeout and
+other ambiguous post-dispatch failures are not treated as access denials: they
+retain the existing conservative-settlement path. A paid workflow uploads its
+evidence even on failure, then fails its job when the paid summary is partial
+or leaves an active reservation.

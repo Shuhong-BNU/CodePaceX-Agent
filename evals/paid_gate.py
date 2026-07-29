@@ -149,11 +149,14 @@ class Settlement(BaseModel):
     settlement_method: Literal[
         "provider_usage", "provider_confirmed_not_submitted",
         "transport_connect_timeout",
+        "provider_authentication_error", "provider_access_denied",
         "conservative_reserved_amount",
     ] | None = None
     usage_status: Literal["known", "unknown"] = "known"
     evidence_gap: str | None = None
     settled_at: str
+    failure_type: str | None = None
+    failure_recorded_at: str | None = None
     task_run_id: str | None = None
     task_run_allocation_id: str | None = None
     task_run_allocation_hash: str | None = None
@@ -1185,14 +1188,20 @@ class PaidRunGate:
 
     def cancel(
         self, reservation: Reservation, *,
-        reason: Literal["provider_confirmed_not_submitted", "transport_connect_timeout"],
+        reason: Literal[
+            "provider_confirmed_not_submitted", "transport_connect_timeout",
+            "provider_authentication_error", "provider_access_denied",
+        ],
     ) -> Settlement:
         with self.locked():
             return self._cancel(reservation, reason=reason)
 
     def _cancel(
         self, reservation: Reservation, *,
-        reason: Literal["provider_confirmed_not_submitted", "transport_connect_timeout"],
+        reason: Literal[
+            "provider_confirmed_not_submitted", "transport_connect_timeout",
+            "provider_authentication_error", "provider_access_denied",
+        ],
     ) -> Settlement:
         ledger = self._load_ledger()
         active = ledger.active_reservation
@@ -1204,6 +1213,8 @@ class PaidRunGate:
             requests=0, input_tokens=0, output_tokens=0,
             actual_cny=Decimal("0"), status="cancelled",
             settlement_method=reason, settled_at=_utc_now(),
+            failure_type=active.failure_type,
+            failure_recorded_at=active.failure_recorded_at,
             task_run_id=active.task_run_id,
             task_run_allocation_id=active.task_run_allocation_id,
             task_run_allocation_hash=active.task_run_allocation_hash,
@@ -1265,7 +1276,21 @@ class PaidRunGate:
                 item for item in ledger.provider_request_ceiling_blocks
                 if item.trial_id == trial_id
             ]
-            return {
+            active_failure = (
+                ledger.active_reservation.failure_type
+                if ledger.active_reservation is not None
+                and ledger.active_reservation.trial_id == trial_id else None
+            )
+            active_failure_recorded_at = (
+                ledger.active_reservation.failure_recorded_at
+                if ledger.active_reservation is not None
+                and ledger.active_reservation.trial_id == trial_id else None
+            )
+            settlement_failure = next(
+                (item for item in reversed(settlements) if item.failure_type is not None),
+                None,
+            )
+            accounting = {
                 "trial_id": trial_id,
                 "request_count": len(charges),
                 "actual_cny": str(_money(sum(
@@ -1299,6 +1324,16 @@ class PaidRunGate:
                     else None
                 ),
             }
+            failure_type = active_failure or (
+                settlement_failure.failure_type if settlement_failure is not None else None
+            )
+            if failure_type is not None:
+                accounting["failure_type"] = failure_type
+                accounting["failure_recorded_at"] = active_failure_recorded_at or (
+                    settlement_failure.failure_recorded_at
+                    if settlement_failure is not None else None
+                )
+            return accounting
 
     def summary(self) -> dict[str, str | int | bool]:
         ledger = self._load_ledger()
@@ -1586,6 +1621,20 @@ class ProviderRequestBudget:
         return self.gate.cancel(
             reservation, reason="transport_connect_timeout",
         )
+
+    def cancel_deterministic_pre_usage_rejection(
+        self, reservation: Reservation, *,
+        failure_type: Literal["provider_authentication_error", "provider_access_denied"],
+    ) -> Settlement:
+        """Close a request the Provider deterministically rejected before Usage.
+
+        HTTP 401 and workspace-level HTTP 403 rejections are explicit access
+        denials, unlike ambiguous disconnects after a request may have reached
+        the Provider.  Persist the failure on the reservation first, then make
+        the CNY-zero cancellation durable in the settlement record.
+        """
+        self.record_request_failure(reservation, failure_type=failure_type)
+        return self.gate.cancel(reservation, reason=failure_type)
 
     def settle_after_usage(
         self, reservation: Reservation, provider_usage: Mapping[str, Any] | None,

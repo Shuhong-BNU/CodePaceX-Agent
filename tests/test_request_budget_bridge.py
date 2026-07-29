@@ -7,7 +7,7 @@ import httpx
 import openai
 import pytest
 
-from codepacex.client import NetworkError, OpenAICompatClient
+from codepacex.client import AuthenticationError, LLMError, NetworkError, OpenAICompatClient
 from codepacex.config import ProviderConfig
 from codepacex.conversation import ConversationManager
 from codepacex.tools.base import StreamEnd
@@ -75,6 +75,18 @@ class _FakeBudget:
     def cancel_connect_timeout_before_transport(self, reservation: object) -> None:
         assert reservation is self.reservation
         self.calls.append("connect_timeout_cancel")
+
+
+class _DeterministicRejectionBudget(_FakeBudget):
+    def record_request_failure(self, reservation: object, *, failure_type: str) -> None:
+        assert reservation is self.reservation
+        self.calls.append(f"failure:{failure_type}")
+
+    def cancel_deterministic_pre_usage_rejection(
+        self, reservation: object, *, failure_type: str,
+    ) -> None:
+        assert reservation is self.reservation
+        self.calls.append(f"cancel:{failure_type}")
 
 
 def _client() -> OpenAICompatClient:
@@ -239,6 +251,39 @@ async def test_compat_client_closes_reservation_without_retry_after_connect_time
     assert calls == 1
     assert budget.calls == ["reserve", "connect_timeout_cancel"]
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "provider_error", "expected_exception", "failure_type"),
+    [
+        (401, openai.AuthenticationError, AuthenticationError, "provider_authentication_error"),
+        (403, openai.PermissionDeniedError, LLMError, "provider_access_denied"),
+    ],
+)
+async def test_compat_client_cancels_only_deterministic_access_rejections_before_usage(
+    monkeypatch, status: int, provider_error: type[Exception],
+    expected_exception: type[Exception], failure_type: str,
+) -> None:
+    budget = _DeterministicRejectionBudget()
+    client = _client()
+    request = httpx.Request("POST", "https://example.invalid/chat/completions")
+    response = httpx.Response(status, request=request)
+
+    async def create(**_kwargs):
+        raise provider_error("Workspace endpoint access denied.", response=response, body={})
+
+    client._client = SimpleNamespace(chat=SimpleNamespace(
+        completions=SimpleNamespace(create=create),
+    ))
+    conversation = ConversationManager()
+    conversation.add_user_message("hello")
+    monkeypatch.setenv("CODEPACEX_EXPERIMENT_REQUEST_BUDGET", "1")
+    with patch("evals.paid_gate.ProviderRequestBudget.from_environment", return_value=budget), pytest.raises(
+        expected_exception,
+    ):
+        async for _event in client.stream(conversation):
+            pass
+    assert budget.calls == ["reserve", f"cancel:{failure_type}"]
 
 @pytest.mark.asyncio
 async def test_compat_client_does_not_call_provider_after_request_ceiling(monkeypatch) -> None:
