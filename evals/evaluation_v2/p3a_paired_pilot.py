@@ -339,6 +339,7 @@ def _recording_fake_transport():
                 self.rfile.read(length)
             body = provider.response("qwen3.7-max-2026-06-08")
             self.send_response(200); self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
             self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
 
         def log_message(self, _format: str, *_args: Any) -> None:
