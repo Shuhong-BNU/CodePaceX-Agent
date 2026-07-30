@@ -316,13 +316,9 @@ def _recording_fake_transport():
                 chunks = full_replay._fake_tool_chunks(model, self.request_count, command)
             else:
                 chunks = full_replay._fake_text_chunks(model, self.request_count)
-            # The transport is real enough to reach request assembly and the
-            # budget bridge, but records zero billable usage by construction.
-            chunks[-1]["usage"] = {
-                "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
-                "prompt_tokens_details": {"cached_tokens": 0},
-                "completion_tokens_details": {"reasoning_tokens": 0},
-            }
+            # This is the repository's deterministic loopback Usage payload.
+            # It settles the simulated reservation; external accounting remains
+            # separately fixed at zero in the rehearsal Artifact.
             return "".join(
                 f"data: {json.dumps(chunk, separators=(',', ':'))}\\n\\n" for chunk in chunks
             ).encode("utf-8") + b"data: [DONE]\\n\\n"

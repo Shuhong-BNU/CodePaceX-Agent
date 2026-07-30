@@ -117,7 +117,8 @@ def test_actual_zero_provider_rehearsal_binds_runner_artifacts_evaluator_ledger_
     assert rehearsal["executed"] is True and rehearsal["runner"] == "full_replay._full_task_executor"
     assert rehearsal["ledger_closed"] is True and rehearsal["active_reservation"] is None
     assert rehearsal["agent_dispatch_count"] == 8 and rehearsal["recording_fake_transport_requests"] >= 8
-    assert rehearsal["simulated_provider_requests"] >= 8 and rehearsal["simulated_usage"] == 0 and rehearsal["simulated_charge_cny"] == "0"
+    assert rehearsal["simulated_provider_requests"] >= 8 and rehearsal["simulated_usage"] > 0
+    assert float(rehearsal["simulated_charge_cny"]) > 0
     assert readiness["task_run_count"] == readiness["unique_task_run_count"] == 8
     assert readiness["paired_result_merge_count"] == 4
     for record in rehearsal["run_records"]:
