@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-from evals.evaluation_v2 import full_replay, v3_core_full20
+from evals.evaluation_v2 import control_canary, full_replay, v3_core_full20, v3_core_tail_completion
 from evals.paid_gate import BudgetLedger
 
 
@@ -366,14 +366,16 @@ def test_full_replay_workflow_keeps_paid_path_explicit_and_zero_provider_path_co
     assert "full_replay paid-run --confirm-paid-execution" in workflow
     assert "expected_freeze_sha256" in workflow
     assert "approved_total_hard_cap_cny" in workflow
-    assert workflow.count("python-version: '3.11'") == 6
+    assert workflow.count("python-version: '3.11'") == 8
     assert "zero-provider-controlled-pilot-readiness" in workflow
     assert "controlled-pilot-paid-execution" in workflow
     assert "v3-core-full20-paid-execution" in workflow
     assert "zero-provider-v3-core-full20-readiness" in workflow
+    assert "zero-provider-v3-core-tail-readiness" in workflow
+    assert "v3-core-tail-completion-paid-execution" in workflow
     assert "inputs.controlled_pilot_paid_execution == false && inputs.v3_core_full20_paid_execution == false" in workflow
     v3_readiness = workflow[workflow.index("zero-provider-v3-core-full20-readiness"):workflow.index("v3-core-full20-paid-execution")]
-    v3_paid = workflow[workflow.index("v3-core-full20-paid-execution"):workflow.index("zero-provider-controlled-pilot-readiness")]
+    v3_paid = workflow[workflow.index("v3-core-full20-paid-execution"):workflow.index("zero-provider-v3-core-tail-readiness")]
     assert v3_readiness.count("Install project and frozen official evaluator") == 1
     assert v3_paid.count("Install project and frozen official evaluator") == 1
     assert "EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be" in v3_readiness
@@ -393,3 +395,36 @@ def test_v3_core_full20_freeze_is_serial_v3_only_and_has_twenty_unique_allocatio
     allocation_ids = [item["task_run_allocation_id"] for item in frozen["allocation_binding"]["task_run_allocations"]]
     assert len(allocation_ids) == len(set(allocation_ids)) == 20
     assert result["allocation_hash"] == frozen["allocation_binding"]["allocation_hash"]
+
+
+def test_task_scoped_transport_terminal_is_preserved_and_tail_rehearsal_continues(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    monkeypatch.setattr("evals.paid_gate._git_is_clean", lambda _root: True)
+    transport = control_canary.enforce_dispatch_invariant(control_canary.PaidTaskResult(
+        instance_id="transport", agent_status="failed", candidate_status="not_exported",
+        validation_status="not_run", evaluator_status="not_run", runner_status="error",
+        provider_status="transport_failed", terminal_status="infrastructure_error",
+        failure_classification="openai.APIConnectionError/httpx.ReadError", resolved=False,
+        live_executor_invoked=True, agent_dispatch_started=True, provider_client_initialized=True,
+    ))
+    assert transport.terminal_status == "infrastructure_error"
+    assert transport.resolved is False and transport.failure_classification.endswith("ReadError")
+
+    freeze = tmp_path / "tail-freeze"
+    v3_core_tail_completion.write_freeze(ROOT, freeze, run_id="tail-rehearsal-test")
+    frozen = json.loads((freeze / v3_core_tail_completion.FREEZE_NAME).read_text(encoding="utf-8"))
+    assert [item["instance_id"] for item in frozen["task_runs"]] == list(full_replay.GOAL4_ORDER[4:])
+    assert len(frozen["task_runs"]) == 16
+    assert frozen["budget_contract"]["approved_total_hard_cap_cny"] == "225.935092"
+    assert len({item["task_run_allocation_id"] for item in frozen["allocation_binding"]["task_run_allocations"]}) == 16
+    summary = v3_core_tail_completion.rehearse_tail(
+        ROOT, freeze, tmp_path / "tail-rehearsal", run_id="tail-rehearsal-test",
+    )
+    assert summary["completed"] and len(summary["results"]) == 16
+    assert summary["results"][0]["terminal_status"] == "infrastructure_error"
+    assert summary["results"][0]["resolved"] is False
+    assert all(item["terminal_status"] for item in summary["results"])
+    assert summary["provider_requests"] == summary["usage"] == 0
+    assert summary["charge_cny"] == "0" and summary["provider_secret_read"] is False
+    assert summary["ledger_closed"] and summary["active_reservation"] is None

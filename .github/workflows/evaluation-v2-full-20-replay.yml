@@ -7,6 +7,7 @@ on:
       - "evals/evaluation_v2/full_replay.py"
       - "evals/evaluation_v2/capability_v3_pilot.py"
       - "evals/evaluation_v2/v3_core_full20.py"
+      - "evals/evaluation_v2/v3_core_tail_completion.py"
       - "evals/evaluation_v2/control_canary.py"
       - "evals/evaluation_v2/full_replay_payloads/**"
       - "tests/test_evaluation_v2_full_replay.py"
@@ -92,13 +93,34 @@ on:
         required: false
         type: string
         default: ''
+      v3_core_tail_completion_paid_execution:
+        description: Explicitly authorized V3_CORE-only 16-task infrastructure-recovery tail.
+        required: true
+        type: boolean
+        default: false
+      v3_core_tail_expected_freeze_sha256:
+        required: false
+        type: string
+        default: ''
+      v3_core_tail_expected_allocation_hash:
+        required: false
+        type: string
+        default: ''
+      v3_core_tail_authorization_acknowledgement:
+        required: false
+        type: string
+        default: ''
+      v3_core_tail_run_id:
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 jobs:
   zero-provider-full-readiness:
-    if: ${{ github.event_name == 'pull_request' || (inputs.paid_execution == false && inputs.controlled_pilot_paid_execution == false && inputs.v3_core_full20_paid_execution == false) }}
+    if: ${{ github.event_name == 'pull_request' || (inputs.paid_execution == false && inputs.controlled_pilot_paid_execution == false && inputs.v3_core_full20_paid_execution == false && inputs.v3_core_tail_completion_paid_execution == false) }}
     runs-on: ubuntu-22.04
     timeout-minutes: 360
     env:
@@ -239,7 +261,7 @@ jobs:
           if-no-files-found: warn
 
   zero-provider-v3-core-full20-readiness:
-    if: ${{ github.event_name == 'pull_request' || (inputs.paid_execution == false && inputs.controlled_pilot_paid_execution == false && inputs.v3_core_full20_paid_execution == false) }}
+    if: ${{ github.event_name == 'pull_request' || (inputs.paid_execution == false && inputs.controlled_pilot_paid_execution == false && inputs.v3_core_full20_paid_execution == false && inputs.v3_core_tail_completion_paid_execution == false) }}
     runs-on: ubuntu-22.04
     timeout-minutes: 1440
     env:
@@ -319,8 +341,76 @@ jobs:
           name: v3-core-full20-paid-${{ inputs.v3_core_full20_run_id }}-${{ github.run_id }}
           path: ${{ runner.temp }}/v3-core-full20-paid/${{ inputs.v3_core_full20_run_id }}
 
+  zero-provider-v3-core-tail-readiness:
+    if: ${{ github.event_name == 'pull_request' || (inputs.paid_execution == false && inputs.controlled_pilot_paid_execution == false && inputs.v3_core_full20_paid_execution == false && inputs.v3_core_tail_completion_paid_execution == false) }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - name: Rehearse task-scoped transport continuation without Provider
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/v3-core-tail/$GITHUB_RUN_ID"; mkdir -p "$root"
+          python -m pip install -e . pytest pytest-asyncio
+          python -m evals.evaluation_v2.v3_core_tail_completion freeze --root . --output "$root/freeze" --run-id "tail-readiness-$GITHUB_RUN_ID" > "$root/freeze.json"
+          python -m evals.evaluation_v2.v3_core_tail_completion validate --root . --freeze "$root/freeze" > "$root/validate.json"
+          python -m evals.evaluation_v2.v3_core_tail_completion rehearse-tail --root . --freeze "$root/freeze" --artifact-root "$root/rehearsal" --run-id "tail-readiness-$GITHUB_RUN_ID" > "$root/rehearsal.json"
+          python - "$root/rehearsal/tail-rehearsal-summary.json" <<'PY'
+          import json, sys
+          summary = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert summary['completed'] and len(summary['results']) == 16
+          assert summary['results'][0]['terminal_status'] == 'infrastructure_error'
+          assert summary['results'][0]['resolved'] is False
+          assert all(item['terminal_status'] for item in summary['results'])
+          assert summary['provider_requests'] == summary['usage'] == 0 and summary['charge_cny'] == '0'
+          assert summary['provider_secret_read'] is False and summary['ledger_closed']
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v3-core-tail-readiness-${{ github.run_id }}
+          path: ${{ runner.temp }}/v3-core-tail/${{ github.run_id }}
+
+  v3-core-tail-completion-paid-execution:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.v3_core_tail_completion_paid_execution == true && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 1440
+    env:
+      BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+      EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: main }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - name: Install project and frozen official evaluator
+        run: |
+          set -euo pipefail
+          docker info >/dev/null
+          python -m pip install -e . pytest pytest-asyncio
+          evaluator_root="$RUNNER_TEMP/swe-bench-live"
+          git clone --filter=blob:none https://github.com/microsoft/SWE-bench-Live.git "$evaluator_root"
+          git -C "$evaluator_root" checkout --detach "$EVALUATOR_COMMIT"
+          test "$(git -C "$evaluator_root" rev-parse HEAD)" = "$EVALUATOR_COMMIT"
+          python -m pip install -e "$evaluator_root"
+      - name: Run the one authorized V3_CORE-only recovery tail
+        run: |
+          set -euo pipefail
+          test '${{ inputs.v3_core_tail_completion_paid_execution }}' = true
+          root="$RUNNER_TEMP/v3-core-tail-paid/${{ inputs.v3_core_tail_run_id }}"; mkdir -p "$root"
+          python -m evals.evaluation_v2.v3_core_tail_completion freeze --root . --output "$root/freeze" --run-id '${{ inputs.v3_core_tail_run_id }}' > "$root/freeze.json"
+          python -m evals.evaluation_v2.v3_core_tail_completion preflight --root . --freeze "$root/freeze" --artifact-root "$root/preflight" > "$root/preflight.json"
+          python -m evals.evaluation_v2.v3_core_tail_completion paid --confirm-paid-execution --root . --freeze "$root/freeze" --artifact-root "$root/paid" --expected-freeze-sha256 '${{ inputs.v3_core_tail_expected_freeze_sha256 }}' --expected-allocation-hash '${{ inputs.v3_core_tail_expected_allocation_hash }}' --authorization-acknowledgement '${{ inputs.v3_core_tail_authorization_acknowledgement }}' --run-id '${{ inputs.v3_core_tail_run_id }}' > "$root/paid.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v3-core-tail-paid-${{ inputs.v3_core_tail_run_id }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/v3-core-tail-paid/${{ inputs.v3_core_tail_run_id }}
+
   zero-provider-controlled-pilot-readiness:
-    if: ${{ github.event_name == 'pull_request' || (inputs.paid_execution == false && inputs.controlled_pilot_paid_execution == false && inputs.v3_core_full20_paid_execution == false) }}
+    if: ${{ github.event_name == 'pull_request' || (inputs.paid_execution == false && inputs.controlled_pilot_paid_execution == false && inputs.v3_core_full20_paid_execution == false && inputs.v3_core_tail_completion_paid_execution == false) }}
     runs-on: ubuntu-22.04
     timeout-minutes: 360
     env:

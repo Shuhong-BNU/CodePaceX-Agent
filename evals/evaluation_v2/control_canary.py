@@ -357,7 +357,7 @@ def freeze_payload(root: Path) -> dict[str, Any]:
         "dependency_bootstrap": "isolated-no-system-site-packages-task-venv-and-host-runtime-fingerprint-v3",
         "gold_patch_forbidden": True,
         "fresh_authorization_and_ledger_required": True,
-        "terminal_status_schema": ["resolved", "unresolved", "agent_no_candidate", "request_ceiling_reached", "provider_usage_contract_violation", "pre_agent_blocked", "agent_dispatch_missing", "host_runtime_contaminated", "protocol_blocked", "provider_transport_error", "evaluator_unavailable", "evaluator_execution_error", "evaluator_report_selection_error", "runner_error", "budget_blocked", "task_environment_blocked", "preflight_wiring_blocked"],
+        "terminal_status_schema": ["resolved", "unresolved", "agent_no_candidate", "request_ceiling_reached", "provider_usage_contract_violation", "pre_agent_blocked", "agent_dispatch_missing", "host_runtime_contaminated", "protocol_blocked", "provider_transport_error", "infrastructure_error", "evaluator_unavailable", "evaluator_execution_error", "evaluator_report_selection_error", "runner_error", "budget_blocked", "task_environment_blocked", "preflight_wiring_blocked"],
         "budget_contract": budget,
         "go_no_go": {
             "go": "both task environment preflights pass and zero-provider paid-path rehearsal closes its ledger",
@@ -748,6 +748,7 @@ def enforce_dispatch_invariant(result: PaidTaskResult) -> PaidTaskResult:
     explicit_zero_request_stop = (
         result.terminal_status in {
             "pre_agent_blocked", "budget_blocked", "provider_transport_error",
+            "infrastructure_error",
             "provider_authentication_error", "provider_access_denied",
             "protocol_blocked", "task_environment_blocked", "host_runtime_contaminated",
         }
@@ -1204,6 +1205,21 @@ def _live_task_executor(
             task["instance_id"], "failed", "not_exported", "not_run", "not_run",
             "error", "transport_failed", terminal_status="provider_transport_error",
             failure_classification=failure_classification, **common,
+        ))
+    if failure_type is not None:
+        # The request crossed the transport boundary but returned no durable
+        # usage.  The ledger has already conservatively settled it; preserve
+        # the original classified failure instead of relabelling it as a
+        # missing Agent dispatch.
+        evidence.update({
+            "failure_classification": str(failure_type),
+            "failure_recorded_at": accounting.get("failure_recorded_at"),
+            "terminal_status": "infrastructure_error",
+        })
+        return finish(PaidTaskResult(
+            task["instance_id"], "failed", "not_exported", "not_run", "not_run",
+            "error", "transport_failed", terminal_status="infrastructure_error",
+            failure_classification=str(failure_type), resolved=False, **common,
         ))
     fidelity = _validate_capability_v3_artifact(
         task_root=task_root, workspace=workspace, instance_id=task["instance_id"],

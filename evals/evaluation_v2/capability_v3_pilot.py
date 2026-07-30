@@ -182,7 +182,7 @@ def budget_contract(root: Path, *, approved_total_hard_cap_cny: str | None = Non
         "maximum_reasoning_tokens_per_request": full_replay.MAX_REASONING_TOKENS,
         "rolling_reservation": "one_provider_request",
         "reservation_policy": "reserve before every request; reject a request that exceeds a run ceiling or the total authorization; settle/cancel before the next strictly serial run",
-        "stop_condition": "stop immediately on an infrastructure, accounting, active-reservation, or Provider-usage-contract failure; capability outcomes remain recorded but do not authorize retry or fallback",
+        "stop_condition": "continue after a task-scoped transport infrastructure terminal once its reservation is safely settled; stop only for aggregate hard-cap, security, or parent-ledger/Artifact integrity failure",
     }
 
 
@@ -761,7 +761,19 @@ def rehearse_execution_entry(root: Path, freeze: Path, preflight_summary: Path, 
     return result
 
 
-def run_paid_pilot(root: Path, freeze: Path, artifact_root: Path, *, expected_freeze_sha256: str, expected_allocation_hash: str, approved_total_hard_cap_cny: str, authorization_acknowledgement: str, run_id: str) -> dict[str, Any]:
+def _continues_after_task(result: control_canary.PaidTaskResult, ledger: BudgetLedger) -> bool:
+    """Task-scoped transport terminals do not poison a safely closed parent ledger."""
+    if ledger.active_reservation is not None:
+        return False
+    if result.pre_agent_blocker in {"provider_secret_unavailable", "task_venv_resolution_invalid"}:
+        return False
+    return result.terminal_status not in {
+        "budget_blocked", "provider_authentication_error", "provider_access_denied",
+        "provider_usage_contract_violation", "host_runtime_contaminated",
+    }
+
+
+def run_paid_pilot(root: Path, freeze: Path, artifact_root: Path, *, expected_freeze_sha256: str, expected_allocation_hash: str, approved_total_hard_cap_cny: str, authorization_acknowledgement: str, run_id: str, executor: Any | None = None) -> dict[str, Any]:
     """Future-only serial executor; no caller reaches it without explicit confirmation."""
     identities = validate_freeze(root, freeze)
     frozen = _read_json(freeze / FREEZE_NAME)
@@ -791,7 +803,8 @@ def run_paid_pilot(root: Path, freeze: Path, artifact_root: Path, *, expected_fr
         runtime = {**frozen["runtime_contract"], "capability_v3_feature_flag": run["capability_v3_flag"]}
         execution_freeze = {"runtime_contract": runtime, "provider_contract": {**frozen["provider_contract"], "provider_secret_name": "BAILIAN_API_KEY"}}
         task_run_identity = allocation_by_run[run["task_run_id"]]
-        result = full_replay._full_task_executor(
+        task_executor = executor or full_replay._full_task_executor
+        result = task_executor(
             root, execution_freeze, metadata, gate, run_root,
             f"{run_id}-{run['ordinal']:02d}-{run['capability_v3_flag']}",
             tasks[run["instance_id"]], task_run_identity=task_run_identity,
@@ -801,7 +814,7 @@ def run_paid_pilot(root: Path, freeze: Path, artifact_root: Path, *, expected_fr
             "task_run_allocation": task_run_identity.model_dump(mode="json"), **asdict(result),
         })
         ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
-        if result.terminal_status not in full_replay.CAPABILITY_TERMINALS or ledger.active_reservation is not None:
+        if not _continues_after_task(result, ledger):
             break
     ledger = BudgetLedger.model_validate_json(gate.ledger_path.read_text(encoding="utf-8"))
     summary = {
