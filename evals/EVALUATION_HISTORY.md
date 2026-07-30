@@ -33,6 +33,7 @@ Units in this ledger are intentionally not additive. In particular, MCP Trials, 
 | V2.1-CONTROL-CANARY | Evaluation V2.1 | Two historical resolved Goal 4 controls | Instance | 2 | 2 | 2 | 2 | Bailian | `qwen3.7-max-2026-06-08` | CNY 7.412724 actual | complete control canary | 2/2 Candidate, scorable, and resolved | This validates the corrected V2 real execution chain on historical resolved controls only. It is not a 20-task result and must not be generalized to the full Goal 4 matrix. |
 | V2-FULL20-DISPATCH-REGRESSION | Evaluation V2 | Full-20 paid replay dispatch coverage failure | Attempt | 20 planned | 20 rows | 1 aborted system run | 3 diagnostic rows only | Bailian | `qwen3.7-max-2026-06-08` | CNY 21.910536 actual | historical engineering evidence | 3/20 Agent/Provider execution coverage; 17 post-dispatch host-runtime import failures misclassified as `agent_no_candidate` | `FULL_20_SYSTEM_RUN_COMPLETE`; `MODEL_EXECUTION_COVERAGE_3_OF_20`; `INVALID_FOR_FULL_20_MODEL_SCORE_COMPARISON`; `PAID_DISPATCH_COVERAGE_REGRESSION`. It is excluded from every formal V2 20-task score. |
 | V2-FULL20-DISK-PREFLIGHT | Evaluation V2 | Full-20 pre-transport disk exhaustion | Attempt | 20 planned | 0 paid task rows | 1 preflight-only run | 0 | none sent | `qwen3.7-max-2026-06-08` not started | CNY 0 | historical engineering evidence | 19/20 environments ready; InstructLab editable install exhausted runner disk before Agent startup | Actions `30095930961`, Artifact `8597955317`; Provider requests/usage/charge `0/0/0`; excluded from every formal V2 score. |
+| V3-GOAL4-TWO-RUN | Capability V3.0 | Goal 4 two-run infrastructure-recovery completion | Instance | 20 | 20 | 20 terminal task records across 2 runs | 19 | Bailian | `qwen3.7-max-2026-06-08` | CNY 132.932760 total ledger consumption | formal closeout; Path A | 5 resolved / 14 unresolved / 1 infrastructure error | Head `30503096853` provided four scorable rows and a historical `haystack-8489` transport settlement; tail `30510508446` recovered haystack under a new task identity and ran the remaining 15. It is neither a single workflow nor a new complete rerun; the first four tasks were not rerun. |
 | G5-LONG-CANDIDATE | Goal 5 candidate | Formal long-session follow-up | Session | 3 candidate Sessions | 3 planned | 0 | 0 | not authorized | not selected | CNY 0 | planned/deferred | No result | Candidate only. No Stage B/C, Provider comparison, or eight-hour Session is authorized by this ledger. |
 
 Success/task-failure pairs in the Permission row are terminal Trial outcomes, not pytest counts. Goal 4 selected terminal cost (CNY `130.885692`), historical failed-attempt cost (CNY `34.158732`), uncertain exposure (CNY `5.492736`), and verified actual Provider cost (CNY `165.044424`) remain separate accounting measures.
@@ -55,6 +56,19 @@ These summaries preserve units and exclusions; they are not a grand total.
 CI pytest runs, local pytest runs, Claims validation, secret scans, `git diff --check`, workflow preflights, configuration validation, dry-runs, and dataset/materialization checks are software or evidence verification. They must not be added to any formal Instance, Trial, Attempt, Session, or Control count above.
 
 Artifact identities, hashes, retention, and audit status are tracked in [EVALUATION_ARTIFACT_INDEX.md](EVALUATION_ARTIFACT_INDEX.md).
+
+## Capability V3.0 formal closeout
+
+Capability V3.0 is a two-run infrastructure-recovery completion, not a single
+20-task workflow and not a second full replay. Its formal matrix is 20
+terminal records: 19 scorable, 5 resolved, 14 unresolved, and one
+`infrastructure_error`. `deepset-ai__haystack-8489` changed from unresolved to
+resolved; the four Goal 4 resolved tasks remained resolved;
+`bridgecrewio__checkov-6893` is retained as infrastructure rather than an
+ordinary unresolved outcome. The decision is Path A: retain 19/20 and do not
+immediately retry checkov. The report and activation boundary are
+[CAPABILITY_V3_GOAL4_FINAL_REPORT.md](CAPABILITY_V3_GOAL4_FINAL_REPORT.md) and
+[CAPABILITY_V3_ACTIVATION_POSTMORTEM.md](CAPABILITY_V3_ACTIVATION_POSTMORTEM.md).
 
 ## Evaluation V2.1 Control Canary evidence
 

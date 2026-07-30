@@ -165,6 +165,16 @@ Goal 2 completed the formal MCP (300/300 terminal) and Permission (200/200 termi
 
 Goal 4's pre-registered 20-task Python-only SWE-bench-Live Lite subset closed as `GOAL4_ACCEPTED`: 20/20 scorable, 4 resolved, and 16 unresolved. Its final GitHub Actions run is `29830820618`; its final Artifact is `goal4-request-ceiling-recovery-evidence-29830820618` (ID `8496125148`, SHA-256 `8b9309a9ee03b068bf96e69afd50ecc2c18e4a70046dc1ae99359310dc70c6c8`); the freeze commit is `75a1eca465913e1c5be81e58eba89bc4d1cd8853`; and the matrix SHA-256 is `9ff16e850b92a6eb0bd1338cb85253a605fdfb0e0aa77180488382eca353972a`. Verified actual Provider cost is CNY `165.044424`; uncertain maximum exposure is CNY `5.492736`; combined conservative budget consumption is CNY `170.537160`; `active_reservation=null`; and Claims are verified. This is not a full Lite leaderboard result or pass@k and makes no statistical-significance or model-generalization claim. See [`evals/GOAL4_FINAL_REPORT.md`](evals/GOAL4_FINAL_REPORT.md), [`evals/claims.goal4.json`](evals/claims.goal4.json), and [`evals/GOAL4_EVIDENCE_INDEX.md`](evals/GOAL4_EVIDENCE_INDEX.md).
 
+Capability V3.0 closed as a two-run infrastructure-recovery completion, not a
+single 20-task workflow: 20 terminal records, 19 scorable, 5 resolved, 14
+unresolved, and one infrastructure error. It retained Goal 4's four resolved
+tasks and newly resolved `deepset-ai__haystack-8489`; Path A retains
+`bridgecrewio__checkov-6893` as infrastructure with no immediate retry. The
+formal evidence and limits are in
+[`evals/CAPABILITY_V3_GOAL4_FINAL_REPORT.md`](evals/CAPABILITY_V3_GOAL4_FINAL_REPORT.md),
+[`evals/CAPABILITY_V3_ACTIVATION_POSTMORTEM.md`](evals/CAPABILITY_V3_ACTIVATION_POSTMORTEM.md),
+and the [governance index](docs/governance/CodePaceX_版本与文档总索引_v1.1.0_20260730_1828.md).
+
 Each paid request checks the total budget, its category allocation, and the CNY 90 safety reserve before it is sent. Only when durable Provider evidence cannot be recovered may one conservative settlement debit the full reservation; Tokens remain unknown and no request charge, Usage, or Provider bill is fabricated. PR #16 remains Draft and must not be marked ready or merged.
 
 ## 🧰 Requirements

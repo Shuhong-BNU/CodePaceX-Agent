@@ -116,6 +116,15 @@ Cross-Goal study status, units, sample boundaries, and results are recorded in [
 
 The current formal boundary includes a three-task Goal 3 paid Pilot with 3/3 scorable and 1 resolved / 2 unresolved, plus Goal 4's pre-registered 20-task Python-only Lite subset at `GOAL4_ACCEPTED`, 20/20 scorable, and 4 resolved / 16 unresolved. The zero-provider attribution of Goal 4's 16 unresolved instances is in [`GOAL4_FAILURE_ANALYSIS.md`](GOAL4_FAILURE_ANALYSIS.md) and [`goal4_failure_taxonomy.csv`](goal4_failure_taxonomy.csv). It is evidence organization, not a new experiment or a change to the formal result.
 
+Capability V3.0 closed as a **two-run infrastructure-recovery completion**:
+20 terminal records, 19 scorable, 5 resolved, 14 unresolved, and one
+`infrastructure_error`. Head `30503096853` and tail `30510508446` form the
+completion; the tail did not rerun the head's first four tasks. `haystack-8489`
+changed from unresolved to resolved, the four historical resolved tasks held,
+and `checkov-6893` remains infrastructure under Path A with no immediate retry.
+See [`CAPABILITY_V3_GOAL4_FINAL_REPORT.md`](CAPABILITY_V3_GOAL4_FINAL_REPORT.md)
+and [`CAPABILITY_V3_ACTIVATION_POSTMORTEM.md`](CAPABILITY_V3_ACTIVATION_POSTMORTEM.md).
+
 ## Stage B Agent Validation Gates
 
 Stage B adds a default-disabled, explicitly enabled deterministic validation

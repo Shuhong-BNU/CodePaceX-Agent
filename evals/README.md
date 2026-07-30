@@ -135,6 +135,14 @@ Goal 2 的四类 `ExperimentProfile` 会真实改变 ToolRegistry、压缩、权
 
 当前正式边界包括：Goal 3 三题 paid Pilot 为 3/3 scorable、1 resolved / 2 unresolved；Goal 4 预注册 20-task Python-only Lite subset 为 `GOAL4_ACCEPTED`、20/20 scorable、4 resolved / 16 unresolved。Goal 4 的 16 题失败归因见 [`GOAL4_FAILURE_ANALYSIS.md`](GOAL4_FAILURE_ANALYSIS.md) 和 [`goal4_failure_taxonomy.csv`](goal4_failure_taxonomy.csv)。该归因是 zero-provider 证据整理，不是新实验，也不修改正式结果。
 
+Capability V3.0 已以 **two-run infrastructure-recovery completion** 收口：20 个
+terminal records 中 19 个可评分，5 resolved、14 unresolved、1
+`infrastructure_error`。它由 Head `30503096853` 和 Tail `30510508446` 组成；tail
+没有重跑 head 的前四题。`haystack-8489` 从 unresolved 变为 resolved，历史四个
+resolved 全部保持 resolved，`checkov-6893` 按 Path A 保留为 infrastructure，暂不
+补跑。详见 [`CAPABILITY_V3_GOAL4_FINAL_REPORT.md`](CAPABILITY_V3_GOAL4_FINAL_REPORT.md)
+和 [`CAPABILITY_V3_ACTIVATION_POSTMORTEM.md`](CAPABILITY_V3_ACTIVATION_POSTMORTEM.md)。
+
 ## Stage B Agent Validation Gates
 
 Stage B 为未来的代码修改型 Agent session 增加默认关闭、显式启用的确定性
