@@ -10,14 +10,22 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import subprocess
+import sys
+import tempfile
+import threading
+from contextlib import contextmanager
+from dataclasses import asdict
 from decimal import Decimal
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from unittest.mock import patch
 
 from evals.benchmark import canonical_hash
 from evals.costing import load_pricing, pricing_snapshot_hash
-from evals.evaluation_v2 import full_replay
-from evals.paid_gate import worst_case_reservation
+from evals.evaluation_v2 import control_canary, full_replay
+from evals.paid_gate import BudgetAuthorization, BudgetLedger, PaidRunGate, authorization_hash, worst_case_reservation
 
 
 SCHEMA_VERSION = 1
@@ -32,6 +40,7 @@ PARENT_NAME = "parent-authorization-draft.json"
 CHILDREN_NAME = "child-allocation-drafts.json"
 SCHEMA_NAME = "paired-artifact-schema.json"
 READINESS_NAME = "zero-provider-readiness.json"
+REHEARSAL_DIRECTORY = "rehearsal"
 REQUEST_CEILING = 40
 RETRY = 0
 FALLBACK = False
@@ -195,20 +204,53 @@ def paired_artifact_schema() -> dict[str, Any]:
     }
 
 
-def merge_paired_results(results: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Fail closed unless every paired result has exactly one record per treatment."""
-    grouped: dict[tuple[Any, ...], dict[str, Mapping[str, Any]]] = {}
+def merge_paired_results(
+    frozen: Mapping[str, Any], results: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge exactly the complete frozen four-pair / eight-run manifest.
+
+    The result stream is never self-describing: every record must identify one
+    and only one frozen task-run, with all pairing fields equal to that run.
+    """
+    expected_runs = {item["task_run_id"]: item for item in frozen["task_runs"]}
+    if len(expected_runs) != 8 or len({item["pair_index"] for item in expected_runs.values()}) != 4:
+        raise ValueError("frozen manifest is not exactly four pairs and eight task-runs")
+    if len(results) != 8:
+        raise ValueError("paired result must contain exactly eight frozen task-runs")
+    actual: dict[str, Mapping[str, Any]] = {}
+    fields = ("pair_index", "instance_id", "repo", "base_commit", "problem_statement_sha256", "treatment")
     for result in results:
-        key = tuple(result[name] for name in paired_artifact_schema()["comparison_key"])
-        treatment = str(result["treatment"])
-        if treatment not in {"V2_CONTROL", "V3_CORE"} or treatment in grouped.setdefault(key, {}):
-            raise ValueError("paired result has an invalid or duplicate treatment identity")
-        grouped[key][treatment] = result
+        task_run_id = str(result.get("task_run_id", ""))
+        if task_run_id not in expected_runs:
+            raise ValueError("paired result has an unexpected task-run")
+        if task_run_id in actual:
+            raise ValueError("paired result has a duplicate task-run")
+        expected = expected_runs[task_run_id]
+        if any(result.get(field) != expected[field] for field in fields):
+            raise ValueError("paired result task-run does not match its frozen pair key")
+        actual[task_run_id] = result
+    if set(actual) != set(expected_runs):
+        raise ValueError("paired result omits a frozen task-run or pair")
+    grouped: dict[int, dict[str, Mapping[str, Any]]] = {}
+    for task_run_id, result in actual.items():
+        expected = expected_runs[task_run_id]
+        pair = grouped.setdefault(int(expected["pair_index"]), {})
+        treatment = str(expected["treatment"])
+        if treatment in pair:
+            raise ValueError("paired result has a duplicate treatment")
+        pair[treatment] = result
+    if set(grouped) != {1, 2, 3, 4}:
+        raise ValueError("paired result omits an entire frozen pair")
     merged = []
-    for key, pair in grouped.items():
+    for pair_index in range(1, 5):
+        pair = grouped[pair_index]
         if set(pair) != {"V2_CONTROL", "V3_CORE"}:
-            raise ValueError("paired result is missing its strict counterpart")
-        merged.append({"comparison_key": list(key), "V2_CONTROL": pair["V2_CONTROL"], "V3_CORE": pair["V3_CORE"]})
+            raise ValueError("paired result omits a frozen treatment")
+        v2, v3 = pair["V2_CONTROL"], pair["V3_CORE"]
+        key = [v2[field] for field in paired_artifact_schema()["comparison_key"]]
+        if key != [v3[field] for field in paired_artifact_schema()["comparison_key"]]:
+            raise ValueError("paired result treatments do not share an identical pair key")
+        merged.append({"comparison_key": key, "V2_CONTROL": v2, "V3_CORE": v3})
     return merged
 
 
@@ -261,44 +303,211 @@ def validate_freeze(root: Path, frozen: Mapping[str, Any]) -> None:
         raise ValueError("P3-A freeze lacks eight child allocation drafts")
 
 
-def readiness_payload(root: Path, frozen: Mapping[str, Any]) -> dict[str, Any]:
+@contextmanager
+def _recording_fake_transport():
+    """Run the formal OpenAI-compatible transport boundary on localhost only."""
+    class RecordingProvider:
+        request_count = 0
+
+        def response(self, model: str) -> bytes:
+            self.request_count += 1
+            if self.request_count == 1:
+                command = "target=$(git ls-files | head -n 1); printf '\\n# p3a-zero-provider-rehearsal\\n' >> \"$target\""
+                chunks = full_replay._fake_tool_chunks(model, self.request_count, command)
+            else:
+                chunks = full_replay._fake_text_chunks(model, self.request_count)
+            # The transport is real enough to reach request assembly and the
+            # budget bridge, but records zero billable usage by construction.
+            chunks[-1]["usage"] = {
+                "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+                "prompt_tokens_details": {"cached_tokens": 0},
+                "completion_tokens_details": {"reasoning_tokens": 0},
+            }
+            return "".join(
+                f"data: {json.dumps(chunk, separators=(',', ':'))}\\n\\n" for chunk in chunks
+            ).encode("utf-8") + b"data: [DONE]\\n\\n"
+
+    provider = RecordingProvider()
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self) -> None:
+            body = json.dumps({"id": "qwen3.7-max-2026-06-08", "max_model_len": 131072}).encode()
+            self.send_response(200); self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+
+        def do_POST(self) -> None:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length:
+                self.rfile.read(length)
+            body = provider.response("qwen3.7-max-2026-06-08")
+            self.send_response(200); self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+
+        def log_message(self, _format: str, *_args: Any) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield provider, f"http://127.0.0.1:{server.server_port}/v1"
+    finally:
+        server.shutdown(); server.server_close(); thread.join(timeout=5)
+
+
+def _synthetic_task_workspace(_task: Mapping[str, Any], workspace: Path) -> None:
+    """A disposable git workspace lets the formal runner execute without a checkout."""
+    workspace.mkdir(parents=True)
+    (workspace / "tracked.py").write_text("VALUE = 0\n", encoding="utf-8")
+    (workspace / "test_rehearsal.py").write_text(
+        "def test_rehearsal_workspace_is_available():\n    assert True\n", encoding="utf-8",
+    )
+    for command in (
+        ["git", "init"], ["git", "config", "user.email", "p3a@example.test"],
+        ["git", "config", "user.name", "P3-A Zero Provider"], ["git", "add", "."],
+        ["git", "commit", "-m", "p3a rehearsal base"],
+    ):
+        subprocess.run(command, cwd=workspace, check=True, capture_output=True, text=True)
+
+
+def _synthetic_bootstrap(_workspace: Path, _dependencies: Sequence[str], **_kwargs: Any) -> tuple[Path, list[dict[str, Any]]]:
+    return Path(sys.executable), [{"command": [sys.executable, "-m", "pytest", "test_rehearsal.py"], "exit_code": 0}]
+
+
+def _shadow_evaluator(**kwargs: Any) -> subprocess.CompletedProcess[str]:
+    return full_replay._shadow_evaluator_runner(**kwargs)
+
+
+def _rehearsal_gate(root: Path, frozen: Mapping[str, Any], artifact_root: Path) -> PaidRunGate:
+    pricing = load_pricing(root / full_replay.PRICING_PATH)
+    authorization = BudgetAuthorization(
+        authorized_total_cny=Decimal(str(frozen["budget_proposal"]["hard_cap_proposal_cny"])),
+        stage_limits_cny={"A": Decimal("0"), "B": Decimal("0"), "C": Decimal(str(frozen["budget_proposal"]["hard_cap_proposal_cny"]))},
+        pricing_snapshot_hash=pricing_snapshot_hash(pricing), experiment_commit=BOUND_MAIN_COMMIT,
+        authorized_at="p3a-zero-provider-rehearsal", authorized_by="zero-provider-rehearsal",
+    )
+    ledger = BudgetLedger(authorization_hash=authorization_hash(authorization), updated_at="p3a-zero-provider-rehearsal")
+    authorization_path, ledger_path = artifact_root / "authorization.json", artifact_root / "ledger.json"
+    _write_json(authorization_path, authorization.model_dump(mode="json"))
+    _write_json(ledger_path, ledger.model_dump(mode="json"))
+    return PaidRunGate(
+        root=root, authorization_path=authorization_path, ledger_path=ledger_path,
+        pricing_path=root / full_replay.PRICING_PATH, pricing=pricing, stage="C",
+    )
+
+
+def run_zero_provider_rehearsal(root: Path, frozen: Mapping[str, Any], artifact_root: Path) -> dict[str, Any]:
+    """Exercise manifest -> runner -> Agent -> fake transport -> evaluator -> ledger."""
     validate_freeze(root, frozen)
-    run_records = []
-    for run in frozen["task_runs"]:
-        is_v3 = run["treatment"] == "V3_CORE"
-        run_records.append({
-            "task_run_id": run["task_run_id"],
-            "pair_index": run["pair_index"],
-            "instance_id": run["instance_id"],
-            "repo": run["repo"],
-            "base_commit": run["base_commit"],
-            "problem_statement_sha256": run["problem_statement_sha256"],
-            "treatment": run["treatment"],
-            "artifact_path": run["expected_artifact_path"],
-            "terminal_status": "zero_provider_readiness_only",
-            "provider_requests": 0,
-            "usage": 0,
-            "charge_cny": "0",
-            "provider_secret_read": False,
-            "paid_execution": False,
-            "v3_advice_expected": is_v3,
-            "v3_activation_artifact_required": is_v3,
-        })
-    # Exercise the strict merge wiring on the zero-provider records themselves.
-    merged = merge_paired_results(run_records)
+    if artifact_root.exists():
+        raise ValueError("refusing to overwrite P3-A rehearsal Artifact")
+    artifact_root.mkdir(parents=True)
+    gate = _rehearsal_gate(root, frozen, artifact_root)
+    records: list[dict[str, Any]] = []
+    metadata = {
+        run["instance_id"]: {
+            "dependencies": [], "editable_target": ".", "test_target": "test_rehearsal.py",
+            "bootstrap_environment": {}, "disk_budget": {"minimum_available_bytes": 0, "minimum_available_inodes": 0},
+        } for run in frozen["task_runs"]
+    }
+    tasks = _tasks(root)
+    with patch.object(control_canary, "_goal3_materialize_instance", _synthetic_task_workspace), \
+         patch.object(control_canary, "_bootstrap", _synthetic_bootstrap), \
+         patch.object(control_canary, "_agent_runtime_probe", lambda **_kwargs: subprocess.CompletedProcess([], 0, "", "")), \
+         patch.object(control_canary, "_task_tool_resolution", lambda _environment, python: {"python": str(python)}):
+        for run in frozen["task_runs"]:
+            runtime = {**frozen["frozen_identities"]["tools_and_permissions"], "capability_v3_feature_flag": run["treatment"]}
+            execution_freeze = {"runtime_contract": runtime, "provider_contract": dict(frozen["frozen_identities"]["provider"])}
+            with _recording_fake_transport() as (transport, base_url):
+                pilot = control_canary._paid_pilot_config(execution_freeze).model_copy(update={
+                    "base_url": base_url, "api_key_env": full_replay.FAKE_PROVIDER_KEY_ENV,
+                })
+                result = full_replay._full_task_executor(
+                    root, execution_freeze, metadata, gate, artifact_root,
+                    f"p3a-rehearsal-{run['ordinal']:02d}", tasks[run["instance_id"]],
+                    live_executor_kwargs={
+                        "pilot_override": pilot, "provider_secret_override": "zero-provider-loopback-only",
+                        "child_environment_overrides": {"NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"},
+                        "evaluator_runner": _shadow_evaluator,
+                    },
+                )
+            task_root = artifact_root / "tasks" / run["instance_id"]
+            fidelity = control_canary._validate_capability_v3_artifact(
+                task_root=task_root, workspace=task_root / "workspace", instance_id=run["instance_id"],
+                treatment=control_canary.CapabilityV3Flag(run["treatment"]),
+            )
+            records.append({
+                **{key: run[key] for key in ("task_run_id", "pair_index", "instance_id", "repo", "base_commit", "problem_statement_sha256", "treatment", "expected_artifact_path")},
+                "artifact_path": str(task_root.relative_to(artifact_root)),
+                "task_result_path": str((task_root / "task-result.json").relative_to(artifact_root)),
+                "official_report_path": str((task_root / "official-report.json").relative_to(artifact_root)),
+                "terminal_status": result.terminal_status,
+                "evaluator_status": result.evaluator_status,
+                "agent_dispatch_started": result.agent_dispatch_started,
+                "recording_fake_transport_requests": transport.request_count,
+                "simulated_provider_requests": result.provider_requests,
+                "provider_requests": 0, "usage": 0, "charge_cny": "0", "provider_secret_read": False,
+                "paid_execution": False,
+                "v3_advice_present": run["treatment"] == "V3_CORE",
+                "v3_activation_schema_present": run["treatment"] == "V3_CORE",
+                "treatment_fidelity": fidelity,
+            })
+    ledger = BudgetLedger.model_validate_json((artifact_root / "ledger.json").read_text(encoding="utf-8"))
+    for record in records:
+        root_path = artifact_root / record["artifact_path"]
+        if not (root_path / "task-result.json").is_file() or not (root_path / "official-report.json").is_file():
+            raise RuntimeError("P3-A rehearsal raw task or evaluator Artifact is missing")
+        if record["treatment"] == "V3_CORE" and not record["treatment_fidelity"]["valid"]:
+            raise RuntimeError("P3-A rehearsal raw V3 Artifact failed validation")
     return {
-        "schema_version": SCHEMA_VERSION,
-        "freeze_sha256": canonical_hash(frozen),
-        "status": "passed_zero_provider_readiness",
-        "paid_jobs": "skipped",
-        "provider_requests": 0,
-        "usage": 0,
-        "charge_cny": "0",
-        "provider_secret_read": False,
-        "task_run_count": len(run_records),
-        "unique_task_run_count": len({item["task_run_id"] for item in run_records}),
-        "paired_result_merge_count": len(merged),
-        "run_records": run_records,
+        "schema_version": SCHEMA_VERSION, "executed": True, "runner": "full_replay._full_task_executor",
+        "transport": "recording_fake_openai_compatible_loopback", "provider_requests": 0, "usage": 0,
+        "charge_cny": "0", "provider_secret_read": False, "paid_execution": False,
+        "run_records": records, "agent_dispatch_count": sum(item["agent_dispatch_started"] for item in records),
+        "recording_fake_transport_requests": sum(item["recording_fake_transport_requests"] for item in records),
+        "simulated_provider_requests": len(ledger.request_charges),
+        "simulated_usage": sum(item.input_tokens + item.output_tokens for item in ledger.request_charges),
+        "simulated_charge_cny": str(ledger.spent_cny), "ledger_closed": ledger.active_reservation is None,
+        "active_reservation": None if ledger.active_reservation is None else ledger.active_reservation.model_dump(mode="json"),
+    }
+
+
+def readiness_payload(
+    root: Path, frozen: Mapping[str, Any], *, freeze_path: Path, rehearsal: Mapping[str, Any],
+) -> dict[str, Any]:
+    validate_freeze(root, frozen)
+    required = (
+        rehearsal.get("executed") is True, rehearsal.get("ledger_closed") is True,
+        rehearsal.get("active_reservation") is None, rehearsal.get("provider_requests") == 0,
+        rehearsal.get("usage") == 0, rehearsal.get("charge_cny") == "0",
+        rehearsal.get("provider_secret_read") is False, rehearsal.get("agent_dispatch_count") == 8,
+        rehearsal.get("recording_fake_transport_requests", 0) >= 8,
+    )
+    if not all(required):
+        raise ValueError("P3-A readiness requires a completed zero-provider rehearsal and closed zero-cost ledger")
+    records = rehearsal.get("run_records")
+    if not isinstance(records, list):
+        raise ValueError("P3-A readiness requires rehearsal run records")
+    for record in records:
+        root_path = freeze_path.parent / REHEARSAL_DIRECTORY / record["artifact_path"]
+        if not (root_path / "task-result.json").is_file() or not (root_path / "official-report.json").is_file():
+            raise ValueError("P3-A readiness requires raw task and evaluator Artifacts")
+        if record["treatment"] == "V3_CORE" and not record.get("treatment_fidelity", {}).get("valid"):
+            raise ValueError("P3-A readiness requires valid raw V3 Artifacts")
+        if record["treatment"] == "V2_CONTROL" and (record.get("v3_advice_present") or record.get("v3_activation_schema_present")):
+            raise ValueError("V2_CONTROL must not carry V3 Advice or activation schema")
+        if record["treatment"] == "V3_CORE" and not (record.get("v3_advice_present") and record.get("v3_activation_schema_present")):
+            raise ValueError("V3_CORE must carry V3 Advice and activation schema")
+    merged = merge_paired_results(frozen, records)
+    return {
+        "schema_version": SCHEMA_VERSION, "freeze_sha256": _sha256(freeze_path),
+        "freeze_canonical_sha256": canonical_hash(frozen), "status": "passed_zero_provider_readiness",
+        "paid_jobs": "skipped", "provider_requests": 0, "usage": 0, "charge_cny": "0",
+        "provider_secret_read": False, "task_run_count": len(records),
+        "unique_task_run_count": len({item["task_run_id"] for item in records}),
+        "paired_result_merge_count": len(merged), "rehearsal": dict(rehearsal),
         "p3_b": "blocked_pending_new_explicit_paid_authorization",
     }
 
@@ -308,9 +517,10 @@ def write_artifacts(root: Path, output: Path) -> dict[str, str]:
     if output.exists():
         raise ValueError("refusing to overwrite P3-A readiness Artifact")
     frozen = freeze_payload(root)
-    readiness = readiness_payload(root, frozen)
     output.mkdir(parents=True)
     _write_json(output / FREEZE_NAME, frozen)
+    rehearsal = run_zero_provider_rehearsal(root, frozen, output / REHEARSAL_DIRECTORY)
+    readiness = readiness_payload(root, frozen, freeze_path=output / FREEZE_NAME, rehearsal=rehearsal)
     _write_json(output / MANIFEST_NAME, {"task_runs": frozen["task_runs"]})
     _write_json(output / TREATMENT_ORDER_NAME, {"treatment_order": frozen["treatment_order"]})
     _write_json(output / BUDGET_NAME, frozen["budget_proposal"])
@@ -318,7 +528,11 @@ def write_artifacts(root: Path, output: Path) -> dict[str, str]:
     _write_json(output / CHILDREN_NAME, {"child_allocation_drafts": frozen["child_allocation_drafts"]})
     _write_json(output / SCHEMA_NAME, frozen["paired_artifact_schema"])
     _write_json(output / READINESS_NAME, readiness)
-    return {"freeze_sha256": _sha256(output / FREEZE_NAME), "readiness_sha256": _sha256(output / READINESS_NAME)}
+    return {
+        "freeze_sha256": _sha256(output / FREEZE_NAME),
+        "freeze_canonical_sha256": canonical_hash(frozen),
+        "readiness_sha256": _sha256(output / READINESS_NAME),
+    }
 
 
 def main(argv: Sequence[str] | None = None) -> int:
