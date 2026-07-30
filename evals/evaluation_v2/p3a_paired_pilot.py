@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 from unittest.mock import patch
 
-from evals.benchmark import canonical_hash
+from evals.benchmark import canonical_hash, current_git_commit
 from evals.costing import load_pricing, pricing_snapshot_hash
 from evals.evaluation_v2 import control_canary, full_replay
 from evals.paid_gate import BudgetAuthorization, BudgetLedger, PaidRunGate, authorization_hash, worst_case_reservation
@@ -386,7 +386,7 @@ def _rehearsal_gate(root: Path, frozen: Mapping[str, Any], artifact_root: Path) 
     authorization = BudgetAuthorization(
         authorized_total_cny=hard_cap,
         stage_limits_cny={"A": hard_cap, "B": hard_cap, "C": hard_cap},
-        pricing_snapshot_hash=pricing_snapshot_hash(pricing), experiment_commit=BOUND_MAIN_COMMIT,
+        pricing_snapshot_hash=pricing_snapshot_hash(pricing), experiment_commit=current_git_commit(root),
         authorized_at="p3a-zero-provider-rehearsal", authorized_by="user",
     )
     ledger = BudgetLedger(authorization_hash=authorization_hash(authorization), updated_at="p3a-zero-provider-rehearsal")
