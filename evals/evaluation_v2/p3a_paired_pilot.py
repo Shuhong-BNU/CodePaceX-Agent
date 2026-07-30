@@ -431,8 +431,9 @@ def run_zero_provider_rehearsal(root: Path, frozen: Mapping[str, Any], artifact_
                 pilot = control_canary._paid_pilot_config(execution_freeze).model_copy(update={
                     "base_url": base_url, "api_key_env": full_replay.FAKE_PROVIDER_KEY_ENV,
                 })
+                run_root = artifact_root / "runs" / f"{run['ordinal']:02d}-{run['treatment']}"
                 result = full_replay._full_task_executor(
-                    root, execution_freeze, metadata, gate, artifact_root,
+                    root, execution_freeze, metadata, gate, run_root,
                     f"p3a-rehearsal-{run['ordinal']:02d}", tasks[run["instance_id"]],
                     live_executor_kwargs={
                         "pilot_override": pilot, "provider_secret_override": "zero-provider-loopback-only",
@@ -440,7 +441,7 @@ def run_zero_provider_rehearsal(root: Path, frozen: Mapping[str, Any], artifact_
                         "evaluator_runner": _shadow_evaluator,
                     },
                 )
-            task_root = artifact_root / "tasks" / run["instance_id"]
+            task_root = run_root / "tasks" / run["instance_id"]
             fidelity = control_canary._validate_capability_v3_artifact(
                 task_root=task_root, workspace=task_root / "workspace", instance_id=run["instance_id"],
                 treatment=control_canary.CapabilityV3Flag(run["treatment"]),
