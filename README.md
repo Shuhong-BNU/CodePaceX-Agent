@@ -176,6 +176,15 @@ Eval 产物默认写入 `evals/.runs/`，该目录是本地 artifact 并被 Git 
 
 Goal 4 的预注册 20-task Python-only SWE-bench-Live Lite subset 已以 `GOAL4_ACCEPTED` 收口：20/20 scorable，4 resolved、16 unresolved。最终 GitHub Actions run 为 `29830820618`，Artifact 为 `goal4-request-ceiling-recovery-evidence-29830820618`（ID `8496125148`，SHA-256 `8b9309a9ee03b068bf96e69afd50ecc2c18e4a70046dc1ae99359310dc70c6c8`），冻结 commit 为 `75a1eca465913e1c5be81e58eba89bc4d1cd8853`，matrix SHA-256 为 `9ff16e850b92a6eb0bd1338cb85253a605fdfb0e0aa77180488382eca353972a`。已验证的 Provider 实际费用为 CNY `165.044424`；不确定最大暴露为 CNY `5.492736`；合并保守预算消耗为 CNY `170.537160`；`active_reservation=null`，Claims 已验证。该结果不是完整 Lite leaderboard、pass@k，也不宣称统计显著性或模型泛化。详见 [`evals/GOAL4_FINAL_REPORT.md`](evals/GOAL4_FINAL_REPORT.md)、[`evals/claims.goal4.json`](evals/claims.goal4.json) 与 [`evals/GOAL4_EVIDENCE_INDEX.md`](evals/GOAL4_EVIDENCE_INDEX.md)。
 
+Capability V3.0 的后续复核以 two-run infrastructure-recovery completion 收口，而非单个
+20 题 workflow：20 terminal、19 scorable、5 resolved、14 unresolved、1
+infrastructure error。该结果保留 Goal 4 的四个 resolved，并新增解决
+`deepset-ai__haystack-8489`；`bridgecrewio__checkov-6893` 按 Path A 保留为
+infrastructure，不立即补跑。完整证据与边界见
+[`evals/CAPABILITY_V3_GOAL4_FINAL_REPORT.md`](evals/CAPABILITY_V3_GOAL4_FINAL_REPORT.md)、
+[`evals/CAPABILITY_V3_ACTIVATION_POSTMORTEM.md`](evals/CAPABILITY_V3_ACTIVATION_POSTMORTEM.md)
+和 [`docs/governance/CodePaceX_版本与文档总索引_v1.1.0_20260730_1828.md`](docs/governance/CodePaceX_版本与文档总索引_v1.1.0_20260730_1828.md)。
+
 每个付费请求在发出前独立检查总预算、类别额度和 CNY 90 safety reserve；若无 durable Provider evidence，才可一次性按 reservation 全额作保守预算结算，Token 维持 unknown，绝不伪造 request charge、Usage 或 Provider 实际账单。PR #16 仍保持 Draft，不能 Ready 或 merge。
 
 ## 🧰 环境要求
