@@ -113,7 +113,7 @@ PHASE_A_IDS = (
 PHASE_B_IDS = tuple(item for item in GOAL4_ORDER if item not in PHASE_A_IDS)
 CAPABILITY_TERMINALS = control_canary.CAPABILITY_TERMINALS
 INFRASTRUCTURE_TERMINALS = frozenset({
-    "protocol_blocked", "provider_transport_error", "evaluator_unavailable",
+    "protocol_blocked", "provider_transport_error", "infrastructure_error", "evaluator_unavailable",
     "evaluator_execution_error", "evaluator_report_selection_error",
     "budget_blocked", "runner_error", "task_environment_blocked",
     "preflight_wiring_blocked", "pre_agent_blocked", "agent_dispatch_missing",
