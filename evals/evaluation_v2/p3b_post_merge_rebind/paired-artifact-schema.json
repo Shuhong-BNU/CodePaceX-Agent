@@ -1,0 +1,24 @@
+{
+  "comparison_key": [
+    "pair_index",
+    "instance_id",
+    "repo",
+    "base_commit",
+    "problem_statement_sha256"
+  ],
+  "ledger_contract": "every terminal run has a closed CNY-zero rehearsal cancellation; future paid runs use the same bound allocation",
+  "merge_rule": "complete frozen 4-pair/8-run set only; reject missing, duplicate, unexpected, or pair-key mismatch",
+  "required_raw_artifacts": [
+    "agent-request-record.json",
+    "candidate.patch",
+    "task-result.json",
+    "official-report.json"
+  ],
+  "required_treatments": [
+    "V2_CONTROL",
+    "V3_CORE"
+  ],
+  "schema_version": 1,
+  "v2_contract": "V2_CONTROL must not contain V3 Advice or activation artifact",
+  "v3_contract": "V3_CORE requires raw capability-v3 summary.json, events.jsonl, and final.patch"
+}

@@ -1,0 +1,72 @@
+{
+  "agent_event_types": [
+    "ToolUseEvent",
+    "UsageEvent",
+    "PermissionDecisionEvent",
+    "ToolResultEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "TurnComplete",
+    "ToolUseEvent",
+    "UsageEvent",
+    "PermissionDecisionEvent",
+    "ToolResultEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "TurnComplete",
+    "ToolUseEvent",
+    "UsageEvent",
+    "PermissionDecisionEvent",
+    "ToolResultEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "TurnComplete",
+    "StreamText",
+    "UsageEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "LoopComplete"
+  ],
+  "assembled_requests": [
+    {
+      "message_count": 2,
+      "system_sha256": "eb8df5906be2cf095d7f9dc5358822d39d3e03bdda53f8e4cbd16d7382a5df97",
+      "tools_sha256": "a3016d889bc025659b475cb70f5c5b9a549334549ff92c172463838004671510"
+    },
+    {
+      "message_count": 4,
+      "system_sha256": "eb8df5906be2cf095d7f9dc5358822d39d3e03bdda53f8e4cbd16d7382a5df97",
+      "tools_sha256": "a3016d889bc025659b475cb70f5c5b9a549334549ff92c172463838004671510"
+    },
+    {
+      "message_count": 6,
+      "system_sha256": "eb8df5906be2cf095d7f9dc5358822d39d3e03bdda53f8e4cbd16d7382a5df97",
+      "tools_sha256": "a3016d889bc025659b475cb70f5c5b9a549334549ff92c172463838004671510"
+    },
+    {
+      "message_count": 8,
+      "system_sha256": "eb8df5906be2cf095d7f9dc5358822d39d3e03bdda53f8e4cbd16d7382a5df97",
+      "tools_sha256": "a3016d889bc025659b475cb70f5c5b9a549334549ff92c172463838004671510"
+    }
+  ],
+  "fake_transport_calls": 4,
+  "task_run_id": "p3b-06-dynaconf__dynaconf-1249-V3_CORE",
+  "treatment": "V3_CORE"
+}

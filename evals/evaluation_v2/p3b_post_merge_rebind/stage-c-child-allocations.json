@@ -1,0 +1,84 @@
+{
+  "formal_child_allocations": [
+    {
+      "execution_run_id": "p3b-paid-pilot-single-dispatch-v1-01",
+      "expected_artifact_path": "runs/01-V2_CONTROL/tasks/beetbox__beets-5457",
+      "instance_id": "beetbox__beets-5457",
+      "task_run_allocation_hash": "960097adac6dbe086048d706ba450ca79ee3dda66651484e0b14d4abac29c478",
+      "task_run_allocation_id": "p3b-stage-c-01",
+      "task_run_id": "p3b-01-beetbox__beets-5457-V2_CONTROL",
+      "theoretical_ceiling_cny": "36.618240",
+      "treatment": "V2_CONTROL"
+    },
+    {
+      "execution_run_id": "p3b-paid-pilot-single-dispatch-v1-02",
+      "expected_artifact_path": "runs/02-V3_CORE/tasks/beetbox__beets-5457",
+      "instance_id": "beetbox__beets-5457",
+      "task_run_allocation_hash": "b28046590702f5722f77a87ea3a7e5e0995c565eb9f48e7012dd307bc6eb8dc2",
+      "task_run_allocation_id": "p3b-stage-c-02",
+      "task_run_id": "p3b-02-beetbox__beets-5457-V3_CORE",
+      "theoretical_ceiling_cny": "36.618240",
+      "treatment": "V3_CORE"
+    },
+    {
+      "execution_run_id": "p3b-paid-pilot-single-dispatch-v1-03",
+      "expected_artifact_path": "runs/03-V3_CORE/tasks/deepset-ai__haystack-8489",
+      "instance_id": "deepset-ai__haystack-8489",
+      "task_run_allocation_hash": "74a487135fa2995166d00721caf96b6075e0ab6d613ec608fb452afb73c2394f",
+      "task_run_allocation_id": "p3b-stage-c-03",
+      "task_run_id": "p3b-03-deepset-ai__haystack-8489-V3_CORE",
+      "theoretical_ceiling_cny": "36.618240",
+      "treatment": "V3_CORE"
+    },
+    {
+      "execution_run_id": "p3b-paid-pilot-single-dispatch-v1-04",
+      "expected_artifact_path": "runs/04-V2_CONTROL/tasks/deepset-ai__haystack-8489",
+      "instance_id": "deepset-ai__haystack-8489",
+      "task_run_allocation_hash": "863613fcce2c2f839b677fde7ea12c92574fa451bedb1a6ff895224d2db12b2a",
+      "task_run_allocation_id": "p3b-stage-c-04",
+      "task_run_id": "p3b-04-deepset-ai__haystack-8489-V2_CONTROL",
+      "theoretical_ceiling_cny": "36.618240",
+      "treatment": "V2_CONTROL"
+    },
+    {
+      "execution_run_id": "p3b-paid-pilot-single-dispatch-v1-05",
+      "expected_artifact_path": "runs/05-V2_CONTROL/tasks/dynaconf__dynaconf-1249",
+      "instance_id": "dynaconf__dynaconf-1249",
+      "task_run_allocation_hash": "cdf41734112d6607f532fdad96e0e243a1bdc058b92188bee010729ea56a757d",
+      "task_run_allocation_id": "p3b-stage-c-05",
+      "task_run_id": "p3b-05-dynaconf__dynaconf-1249-V2_CONTROL",
+      "theoretical_ceiling_cny": "36.618240",
+      "treatment": "V2_CONTROL"
+    },
+    {
+      "execution_run_id": "p3b-paid-pilot-single-dispatch-v1-06",
+      "expected_artifact_path": "runs/06-V3_CORE/tasks/dynaconf__dynaconf-1249",
+      "instance_id": "dynaconf__dynaconf-1249",
+      "task_run_allocation_hash": "3047602be6f0a59bb13783e6be28ef1c8344139959000f8d486b95e073594b46",
+      "task_run_allocation_id": "p3b-stage-c-06",
+      "task_run_id": "p3b-06-dynaconf__dynaconf-1249-V3_CORE",
+      "theoretical_ceiling_cny": "36.618240",
+      "treatment": "V3_CORE"
+    },
+    {
+      "execution_run_id": "p3b-paid-pilot-single-dispatch-v1-07",
+      "expected_artifact_path": "runs/07-V3_CORE/tasks/delgan__loguru-1297",
+      "instance_id": "delgan__loguru-1297",
+      "task_run_allocation_hash": "eacbfa55b452452fac23a041d85455c10bad9650b48004db7e7d5e1ded91dab8",
+      "task_run_allocation_id": "p3b-stage-c-07",
+      "task_run_id": "p3b-07-delgan__loguru-1297-V3_CORE",
+      "theoretical_ceiling_cny": "36.618240",
+      "treatment": "V3_CORE"
+    },
+    {
+      "execution_run_id": "p3b-paid-pilot-single-dispatch-v1-08",
+      "expected_artifact_path": "runs/08-V2_CONTROL/tasks/delgan__loguru-1297",
+      "instance_id": "delgan__loguru-1297",
+      "task_run_allocation_hash": "b39e3eacd0893fc917302c4415953bea8be685b6306283d71fc7e760451edf14",
+      "task_run_allocation_id": "p3b-stage-c-08",
+      "task_run_id": "p3b-08-delgan__loguru-1297-V2_CONTROL",
+      "theoretical_ceiling_cny": "36.618240",
+      "treatment": "V2_CONTROL"
+    }
+  ]
+}

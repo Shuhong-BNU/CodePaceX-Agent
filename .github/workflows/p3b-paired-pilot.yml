@@ -1,0 +1,107 @@
+name: P3-B paired Pilot
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/p3b-paired-pilot.yml"
+      - "evals/evaluation_v2/p3b_post_merge_rebind.py"
+      - "evals/evaluation_v2/p3b_post_merge_rebind/**"
+      - "tests/test_p3b_post_merge_rebind.py"
+  workflow_dispatch:
+    inputs:
+      paid_execution:
+        description: Separately user-authorized P3-B paid execution only.
+        required: true
+        type: boolean
+        default: false
+      expected_freeze_sha256:
+        required: false
+        type: string
+        default: ''
+      expected_allocation_hash:
+        required: false
+        type: string
+        default: ''
+      approved_parent_cap_cny:
+        required: false
+        type: string
+        default: ''
+      authorization_acknowledgement:
+        required: false
+        type: string
+        default: ''
+      dispatch_token:
+        required: false
+        type: string
+        default: ''
+      run_id:
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p3b-paired-pilot-${{ inputs.dispatch_token || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  p3b-zero-provider-readiness:
+    if: ${{ github.event_name == 'pull_request' || inputs.paid_execution == false }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      # Boolean presence only; the secret value is never exposed to a step.
+      P3B_PROVIDER_SECRET_PRESENT: ${{ secrets.BAILIAN_API_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install project dependencies
+        run: python -m pip install -e . pytest pytest-asyncio
+      - name: Verify P3-B post-merge freeze and zero-provider readiness
+        run: |
+          set -euo pipefail
+          python -m pytest -q tests/test_p3b_post_merge_rebind.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from evals.evaluation_v2 import p3b_post_merge_rebind as p3b
+          root = Path('.')
+          freeze = json.loads((root / p3b.ARTIFACT_DIRECTORY / p3b.FREEZE_NAME).read_text(encoding='utf-8'))
+          readiness = json.loads((root / p3b.ARTIFACT_DIRECTORY / p3b.READINESS_NAME).read_text(encoding='utf-8'))
+          p3b.validate_freeze(root, freeze)
+          assert readiness['status'] == 'passed_zero_provider_readiness'
+          assert readiness['provider_requests'] == readiness['usage'] == 0
+          assert readiness['charge_cny'] == '0' and readiness['provider_secret_read'] is False
+          assert readiness['rehearsal']['ledger_closed'] and readiness['rehearsal']['active_reservation'] is None
+          assert readiness['paired_result_merge_count'] == 4
+          assert '${{ env.P3B_PROVIDER_SECRET_PRESENT }}' in {'true', 'false'}
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: p3b-zero-provider-readiness-${{ github.run_id }}
+          path: evals/evaluation_v2/p3b_post_merge_rebind
+          if-no-files-found: error
+
+  p3b-paid-execution:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.paid_execution == true && github.ref == 'refs/heads/main' && inputs.expected_freeze_sha256 != '' && inputs.expected_allocation_hash != '' && inputs.approved_parent_cap_cny == '292.945921' && inputs.authorization_acknowledgement != '' && inputs.dispatch_token != '' && inputs.run_id != '' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 1440
+    env:
+      BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Fail closed until a separately authorized P3-B executor is invoked
+        run: |
+          set -euo pipefail
+          test '${{ inputs.paid_execution }}' = true
+          test '${{ inputs.approved_parent_cap_cny }}' = '292.945921'
+          echo 'P3-B paid executor requires a separate explicit user authorization and is intentionally not run by P3-B0.'
+          exit 1

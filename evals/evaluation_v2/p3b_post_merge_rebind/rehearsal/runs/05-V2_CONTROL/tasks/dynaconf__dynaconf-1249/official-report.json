@@ -1,0 +1,9 @@
+{
+  "dynaconf__dynaconf-1249": {
+    "patch_exists": true,
+    "patch_is_None": false,
+    "patch_successfully_applied": true,
+    "resolved": false,
+    "tests_status": {}
+  }
+}

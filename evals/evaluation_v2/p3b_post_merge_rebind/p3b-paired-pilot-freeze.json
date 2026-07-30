@@ -1,0 +1,444 @@
+{
+  "bound_main_commit": "2794e27220d3fada3bd0fdd3a1a14ff50e3a6034",
+  "budget_proposal": {
+    "authorization": "proposal_only_not_paid_authorization",
+    "child_cap_each_proposal_cny": "36.618240",
+    "child_count": 8,
+    "closure": "8 * child_cap_each + safety_reserve == parent_cap",
+    "currency": "CNY",
+    "parent_cap_proposal_cny": "292.945921",
+    "safety_reserve_cny": "0.000001",
+    "spendable_total_cny": "292.945920"
+  },
+  "dispatch_contract": {
+    "future_inputs": [
+      "paid_execution",
+      "expected_freeze_sha256",
+      "expected_allocation_hash",
+      "approved_parent_cap_cny",
+      "authorization_acknowledgement",
+      "dispatch_token",
+      "run_id"
+    ],
+    "one_paid_job_only": "p3b-paid-execution",
+    "second_dispatch": "fail_closed",
+    "unique_dispatch_identity": "p3b-paid-pilot-single-dispatch-v1",
+    "workflow": ".github/workflows/p3b-paired-pilot.yml"
+  },
+  "execution_contract": {
+    "automatic_retry_rerun_or_continuation": false,
+    "fallback": false,
+    "future_paid_execution_requires_new_user_authorization": true,
+    "only_treatment_difference": "treatment",
+    "request_ceiling_per_run": 40,
+    "retry": 0,
+    "strict_serial": true
+  },
+  "experiment_name": "p3b-strict-paired-pilot",
+  "formal_child_allocations": [
+    {
+      "execution_run_id": "p3b-paid-pilot-single-dispatch-v1-01",
+      "expected_artifact_path": "runs/01-V2_CONTROL/tasks/beetbox__beets-5457",
+      "instance_id": "beetbox__beets-5457",
+      "task_run_allocation_hash": "960097adac6dbe086048d706ba450ca79ee3dda66651484e0b14d4abac29c478",
+      "task_run_allocation_id": "p3b-stage-c-01",
+      "task_run_id": "p3b-01-beetbox__beets-5457-V2_CONTROL",
+      "theoretical_ceiling_cny": "36.618240",
+      "treatment": "V2_CONTROL"
+    },
+    {
+      "execution_run_id": "p3b-paid-pilot-single-dispatch-v1-02",
+      "expected_artifact_path": "runs/02-V3_CORE/tasks/beetbox__beets-5457",
+      "instance_id": "beetbox__beets-5457",
+      "task_run_allocation_hash": "b28046590702f5722f77a87ea3a7e5e0995c565eb9f48e7012dd307bc6eb8dc2",
+      "task_run_allocation_id": "p3b-stage-c-02",
+      "task_run_id": "p3b-02-beetbox__beets-5457-V3_CORE",
+      "theoretical_ceiling_cny": "36.618240",
+      "treatment": "V3_CORE"
+    },
+    {
+      "execution_run_id": "p3b-paid-pilot-single-dispatch-v1-03",
+      "expected_artifact_path": "runs/03-V3_CORE/tasks/deepset-ai__haystack-8489",
+      "instance_id": "deepset-ai__haystack-8489",
+      "task_run_allocation_hash": "74a487135fa2995166d00721caf96b6075e0ab6d613ec608fb452afb73c2394f",
+      "task_run_allocation_id": "p3b-stage-c-03",
+      "task_run_id": "p3b-03-deepset-ai__haystack-8489-V3_CORE",
+      "theoretical_ceiling_cny": "36.618240",
+      "treatment": "V3_CORE"
+    },
+    {
+      "execution_run_id": "p3b-paid-pilot-single-dispatch-v1-04",
+      "expected_artifact_path": "runs/04-V2_CONTROL/tasks/deepset-ai__haystack-8489",
+      "instance_id": "deepset-ai__haystack-8489",
+      "task_run_allocation_hash": "863613fcce2c2f839b677fde7ea12c92574fa451bedb1a6ff895224d2db12b2a",
+      "task_run_allocation_id": "p3b-stage-c-04",
+      "task_run_id": "p3b-04-deepset-ai__haystack-8489-V2_CONTROL",
+      "theoretical_ceiling_cny": "36.618240",
+      "treatment": "V2_CONTROL"
+    },
+    {
+      "execution_run_id": "p3b-paid-pilot-single-dispatch-v1-05",
+      "expected_artifact_path": "runs/05-V2_CONTROL/tasks/dynaconf__dynaconf-1249",
+      "instance_id": "dynaconf__dynaconf-1249",
+      "task_run_allocation_hash": "cdf41734112d6607f532fdad96e0e243a1bdc058b92188bee010729ea56a757d",
+      "task_run_allocation_id": "p3b-stage-c-05",
+      "task_run_id": "p3b-05-dynaconf__dynaconf-1249-V2_CONTROL",
+      "theoretical_ceiling_cny": "36.618240",
+      "treatment": "V2_CONTROL"
+    },
+    {
+      "execution_run_id": "p3b-paid-pilot-single-dispatch-v1-06",
+      "expected_artifact_path": "runs/06-V3_CORE/tasks/dynaconf__dynaconf-1249",
+      "instance_id": "dynaconf__dynaconf-1249",
+      "task_run_allocation_hash": "3047602be6f0a59bb13783e6be28ef1c8344139959000f8d486b95e073594b46",
+      "task_run_allocation_id": "p3b-stage-c-06",
+      "task_run_id": "p3b-06-dynaconf__dynaconf-1249-V3_CORE",
+      "theoretical_ceiling_cny": "36.618240",
+      "treatment": "V3_CORE"
+    },
+    {
+      "execution_run_id": "p3b-paid-pilot-single-dispatch-v1-07",
+      "expected_artifact_path": "runs/07-V3_CORE/tasks/delgan__loguru-1297",
+      "instance_id": "delgan__loguru-1297",
+      "task_run_allocation_hash": "eacbfa55b452452fac23a041d85455c10bad9650b48004db7e7d5e1ded91dab8",
+      "task_run_allocation_id": "p3b-stage-c-07",
+      "task_run_id": "p3b-07-delgan__loguru-1297-V3_CORE",
+      "theoretical_ceiling_cny": "36.618240",
+      "treatment": "V3_CORE"
+    },
+    {
+      "execution_run_id": "p3b-paid-pilot-single-dispatch-v1-08",
+      "expected_artifact_path": "runs/08-V2_CONTROL/tasks/delgan__loguru-1297",
+      "instance_id": "delgan__loguru-1297",
+      "task_run_allocation_hash": "b39e3eacd0893fc917302c4415953bea8be685b6306283d71fc7e760451edf14",
+      "task_run_allocation_id": "p3b-stage-c-08",
+      "task_run_id": "p3b-08-delgan__loguru-1297-V2_CONTROL",
+      "theoretical_ceiling_cny": "36.618240",
+      "treatment": "V2_CONTROL"
+    }
+  ],
+  "formal_stage_c_allocation": {
+    "aggregate_child_ceiling_exposure": false,
+    "allocation_hash": "58e3e967736fe4335a8882fa21b69fd755946da28aa04d3f88babb8cb2c25fff",
+    "allocation_id": "p3b-stage-c-parent",
+    "baseline_authorization_hash": "b9dfe904ad3b4728b00f2109459e99ac6464e1cd8311b74ee3ef3a882b310d51",
+    "baseline_budget_block_count": 0,
+    "baseline_ledger_sha256": "4a5ad92d0b0bd06df359e2dcecdc5e769995e76453cf04d5d5c5e1457972569e",
+    "baseline_rebind_count": 0,
+    "baseline_request_charge_count": 0,
+    "baseline_settlement_count": 0,
+    "baseline_spent_cny": "0",
+    "category_limits_cny": {
+      "long_session": "0",
+      "mcp": "0",
+      "multi_agent": "0",
+      "permission": "0",
+      "retention": "0",
+      "swe": "292.945920"
+    },
+    "currency": "CNY",
+    "experiment_commit": "2794e27220d3fada3bd0fdd3a1a14ff50e3a6034",
+    "pricing_snapshot_hash": "a09eb6e6955b9fb68d3e011771c948f7a14b7bbca5316a2433cab099d0b643d3",
+    "safety_reserve_cny": "0.000001",
+    "schema_version": 1,
+    "spendable_total_cny": "292.945920",
+    "status": "formal_proposal_not_authorized",
+    "task_run_allocations": [
+      {
+        "execution_run_id": "p3b-paid-pilot-single-dispatch-v1-01",
+        "expected_artifact_path": "runs/01-V2_CONTROL/tasks/beetbox__beets-5457",
+        "instance_id": "beetbox__beets-5457",
+        "task_run_allocation_hash": "960097adac6dbe086048d706ba450ca79ee3dda66651484e0b14d4abac29c478",
+        "task_run_allocation_id": "p3b-stage-c-01",
+        "task_run_id": "p3b-01-beetbox__beets-5457-V2_CONTROL",
+        "theoretical_ceiling_cny": "36.618240",
+        "treatment": "V2_CONTROL"
+      },
+      {
+        "execution_run_id": "p3b-paid-pilot-single-dispatch-v1-02",
+        "expected_artifact_path": "runs/02-V3_CORE/tasks/beetbox__beets-5457",
+        "instance_id": "beetbox__beets-5457",
+        "task_run_allocation_hash": "b28046590702f5722f77a87ea3a7e5e0995c565eb9f48e7012dd307bc6eb8dc2",
+        "task_run_allocation_id": "p3b-stage-c-02",
+        "task_run_id": "p3b-02-beetbox__beets-5457-V3_CORE",
+        "theoretical_ceiling_cny": "36.618240",
+        "treatment": "V3_CORE"
+      },
+      {
+        "execution_run_id": "p3b-paid-pilot-single-dispatch-v1-03",
+        "expected_artifact_path": "runs/03-V3_CORE/tasks/deepset-ai__haystack-8489",
+        "instance_id": "deepset-ai__haystack-8489",
+        "task_run_allocation_hash": "74a487135fa2995166d00721caf96b6075e0ab6d613ec608fb452afb73c2394f",
+        "task_run_allocation_id": "p3b-stage-c-03",
+        "task_run_id": "p3b-03-deepset-ai__haystack-8489-V3_CORE",
+        "theoretical_ceiling_cny": "36.618240",
+        "treatment": "V3_CORE"
+      },
+      {
+        "execution_run_id": "p3b-paid-pilot-single-dispatch-v1-04",
+        "expected_artifact_path": "runs/04-V2_CONTROL/tasks/deepset-ai__haystack-8489",
+        "instance_id": "deepset-ai__haystack-8489",
+        "task_run_allocation_hash": "863613fcce2c2f839b677fde7ea12c92574fa451bedb1a6ff895224d2db12b2a",
+        "task_run_allocation_id": "p3b-stage-c-04",
+        "task_run_id": "p3b-04-deepset-ai__haystack-8489-V2_CONTROL",
+        "theoretical_ceiling_cny": "36.618240",
+        "treatment": "V2_CONTROL"
+      },
+      {
+        "execution_run_id": "p3b-paid-pilot-single-dispatch-v1-05",
+        "expected_artifact_path": "runs/05-V2_CONTROL/tasks/dynaconf__dynaconf-1249",
+        "instance_id": "dynaconf__dynaconf-1249",
+        "task_run_allocation_hash": "cdf41734112d6607f532fdad96e0e243a1bdc058b92188bee010729ea56a757d",
+        "task_run_allocation_id": "p3b-stage-c-05",
+        "task_run_id": "p3b-05-dynaconf__dynaconf-1249-V2_CONTROL",
+        "theoretical_ceiling_cny": "36.618240",
+        "treatment": "V2_CONTROL"
+      },
+      {
+        "execution_run_id": "p3b-paid-pilot-single-dispatch-v1-06",
+        "expected_artifact_path": "runs/06-V3_CORE/tasks/dynaconf__dynaconf-1249",
+        "instance_id": "dynaconf__dynaconf-1249",
+        "task_run_allocation_hash": "3047602be6f0a59bb13783e6be28ef1c8344139959000f8d486b95e073594b46",
+        "task_run_allocation_id": "p3b-stage-c-06",
+        "task_run_id": "p3b-06-dynaconf__dynaconf-1249-V3_CORE",
+        "theoretical_ceiling_cny": "36.618240",
+        "treatment": "V3_CORE"
+      },
+      {
+        "execution_run_id": "p3b-paid-pilot-single-dispatch-v1-07",
+        "expected_artifact_path": "runs/07-V3_CORE/tasks/delgan__loguru-1297",
+        "instance_id": "delgan__loguru-1297",
+        "task_run_allocation_hash": "eacbfa55b452452fac23a041d85455c10bad9650b48004db7e7d5e1ded91dab8",
+        "task_run_allocation_id": "p3b-stage-c-07",
+        "task_run_id": "p3b-07-delgan__loguru-1297-V3_CORE",
+        "theoretical_ceiling_cny": "36.618240",
+        "treatment": "V3_CORE"
+      },
+      {
+        "execution_run_id": "p3b-paid-pilot-single-dispatch-v1-08",
+        "expected_artifact_path": "runs/08-V2_CONTROL/tasks/delgan__loguru-1297",
+        "instance_id": "delgan__loguru-1297",
+        "task_run_allocation_hash": "b39e3eacd0893fc917302c4415953bea8be685b6306283d71fc7e760451edf14",
+        "task_run_allocation_id": "p3b-stage-c-08",
+        "task_run_id": "p3b-08-delgan__loguru-1297-V2_CONTROL",
+        "theoretical_ceiling_cny": "36.618240",
+        "treatment": "V2_CONTROL"
+      }
+    ]
+  },
+  "formal_stage_c_parent_authorization": {
+    "authorization_hash": "b9dfe904ad3b4728b00f2109459e99ac6464e1cd8311b74ee3ef3a882b310d51",
+    "authorized_at": "p3b0-post-merge-rebind-proposal",
+    "authorized_by": "user",
+    "authorized_total_cny": "292.945921",
+    "currency": "CNY",
+    "experiment_commit": "2794e27220d3fada3bd0fdd3a1a14ff50e3a6034",
+    "pricing_snapshot_hash": "a09eb6e6955b9fb68d3e011771c948f7a14b7bbca5316a2433cab099d0b643d3",
+    "schema_version": 2,
+    "stage_limits_cny": {
+      "A": "292.945921",
+      "B": "292.945921",
+      "C": "292.945921"
+    },
+    "status": "formal_proposal_not_authorized"
+  },
+  "frozen_identities": {
+    "model": {
+      "model_id": "qwen3.7-max-2026-06-08"
+    },
+    "official_evaluator": {
+      "commit": "ad79b850f15e33992e96f03f6e97f05ddf9aa0be",
+      "dataset": "SWE-bench-Live/SWE-bench-Live",
+      "namespace": "starryzhang",
+      "report_selection": "detailed_then_summary_fail_closed-v1",
+      "repository": "https://github.com/microsoft/SWE-bench-Live",
+      "split": "lite"
+    },
+    "pricing": {
+      "path": "evals/goal2/pricing_bailian_qwen37_max_2026-07-13.json",
+      "snapshot_sha256": "a09eb6e6955b9fb68d3e011771c948f7a14b7bbca5316a2433cab099d0b643d3"
+    },
+    "prompt": {
+      "construction": "goal3-swe-inference-prompt-v1",
+      "system_instruction_sha256": "f43af3f8b81f58b2970571afb86f69641caf0da49c191cffe4026cf732abd36c"
+    },
+    "provider": {
+      "base_url": "https://llm-ipge9fy38w648m28.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+      "fallback_enabled": false,
+      "model_id": "qwen3.7-max-2026-06-08",
+      "protocol": "openai-compat",
+      "provider": "bailian-qwen37-max",
+      "provider_secret_name": "BAILIAN_API_KEY",
+      "retry": 0,
+      "strict_serial": true
+    }
+  },
+  "inherits_p3a_freeze": {
+    "historical_bound_main_commit": "9e076874894ccf155d990fa8a176b2191e258652",
+    "path": "evals/evaluation_v2/p3a_paired_pilot/p3a-paired-pilot-freeze.json",
+    "sha256": "c62fcd9c9a0a87c5b76e6bc3227d09f559106b0d8151e1b61180a1612d27abc7"
+  },
+  "p3_b": "blocked_pending_separate_explicit_paid_authorization",
+  "paired_artifact_schema": {
+    "comparison_key": [
+      "pair_index",
+      "instance_id",
+      "repo",
+      "base_commit",
+      "problem_statement_sha256"
+    ],
+    "ledger_contract": "every terminal run has a closed CNY-zero rehearsal cancellation; future paid runs use the same bound allocation",
+    "merge_rule": "complete frozen 4-pair/8-run set only; reject missing, duplicate, unexpected, or pair-key mismatch",
+    "required_raw_artifacts": [
+      "agent-request-record.json",
+      "candidate.patch",
+      "task-result.json",
+      "official-report.json"
+    ],
+    "required_treatments": [
+      "V2_CONTROL",
+      "V3_CORE"
+    ],
+    "schema_version": 1,
+    "v2_contract": "V2_CONTROL must not contain V3 Advice or activation artifact",
+    "v3_contract": "V3_CORE requires raw capability-v3 summary.json, events.jsonl, and final.patch"
+  },
+  "runtime_source_sha256": {
+    ".github/workflows/p3b-paired-pilot.yml": "9ff115c4cdfc990a8fc7265372731e92aeab87908895313a33e8f655800f31fd",
+    "codepacex/agent.py": "064ca1054d4d0268b629a1d15b685f32042c61d3408415d0c6cc3540f697d8d4",
+    "codepacex/capability_v3/controller.py": "863f0afbb3162064b7b52b88e69fe3c55019191dae0c6a6a31911224204273c9",
+    "codepacex/client.py": "09bc2c696628f1431e9eadd890947b9c798798b200002f0557f224dfcf1e7a5a",
+    "evals/evaluation_v2/control_canary.py": "54c3ec068e28d5a2d9dff26a329b408de04f5b43ad8c06f881cb6cf5c6b4d2c4",
+    "evals/evaluation_v2/full_replay.py": "37c6479b023e8fbad70504d338135ba764912ee734f785a42a9318b0c9c75d39",
+    "evals/evaluation_v2/p3a_paired_pilot.py": "554885bb02c3c42eea7725f2448246d16bfa2f471ec563c336c6dd13cfb7024e",
+    "evals/evaluation_v2/p3b_post_merge_rebind.py": "dd028c1f9c9297a39efd479ea5c28dd43d37cf546c7018eea786e62293c14960",
+    "evals/paid_gate.py": "7406e79cf8e1e4827d347ca8cad4ff1d30cb83c4912c50910bf4d871a1c382b9"
+  },
+  "schema_version": 1,
+  "status": "formal_paid_freeze_not_authorized",
+  "task_runs": [
+    {
+      "base_commit": "03f1205629ad17f123a190040361babc41c18afc",
+      "expected_artifact_path": "runs/01-V2_CONTROL/tasks/beetbox__beets-5457",
+      "instance_id": "beetbox__beets-5457",
+      "ordinal": 1,
+      "pair_index": 1,
+      "problem_statement_sha256": "cd40853caf942eb05d178bc3ccbe2524673ed7ba38d35fe9c2f5fad8f333617e",
+      "repo": "beetbox/beets",
+      "task_run_id": "p3b-01-beetbox__beets-5457-V2_CONTROL",
+      "treatment": "V2_CONTROL"
+    },
+    {
+      "base_commit": "03f1205629ad17f123a190040361babc41c18afc",
+      "expected_artifact_path": "runs/02-V3_CORE/tasks/beetbox__beets-5457",
+      "instance_id": "beetbox__beets-5457",
+      "ordinal": 2,
+      "pair_index": 1,
+      "problem_statement_sha256": "cd40853caf942eb05d178bc3ccbe2524673ed7ba38d35fe9c2f5fad8f333617e",
+      "repo": "beetbox/beets",
+      "task_run_id": "p3b-02-beetbox__beets-5457-V3_CORE",
+      "treatment": "V3_CORE"
+    },
+    {
+      "base_commit": "906177329bcc54f6946af361fcd3d0e334e6ce5f",
+      "expected_artifact_path": "runs/03-V3_CORE/tasks/deepset-ai__haystack-8489",
+      "instance_id": "deepset-ai__haystack-8489",
+      "ordinal": 3,
+      "pair_index": 2,
+      "problem_statement_sha256": "bebd5d176bbc67a3682acf2e2886ae5410196e73943012ce4fdc72f316083463",
+      "repo": "deepset-ai/haystack",
+      "task_run_id": "p3b-03-deepset-ai__haystack-8489-V3_CORE",
+      "treatment": "V3_CORE"
+    },
+    {
+      "base_commit": "906177329bcc54f6946af361fcd3d0e334e6ce5f",
+      "expected_artifact_path": "runs/04-V2_CONTROL/tasks/deepset-ai__haystack-8489",
+      "instance_id": "deepset-ai__haystack-8489",
+      "ordinal": 4,
+      "pair_index": 2,
+      "problem_statement_sha256": "bebd5d176bbc67a3682acf2e2886ae5410196e73943012ce4fdc72f316083463",
+      "repo": "deepset-ai/haystack",
+      "task_run_id": "p3b-04-deepset-ai__haystack-8489-V2_CONTROL",
+      "treatment": "V2_CONTROL"
+    },
+    {
+      "base_commit": "71ea887ade58f57cbc5b37f311188bfb7cda8ca5",
+      "expected_artifact_path": "runs/05-V2_CONTROL/tasks/dynaconf__dynaconf-1249",
+      "instance_id": "dynaconf__dynaconf-1249",
+      "ordinal": 5,
+      "pair_index": 3,
+      "problem_statement_sha256": "038c14518f3117f0a31d3ecf566e55d7f13ecebd5a6e3eccf11cc9eb27ee1702",
+      "repo": "dynaconf/dynaconf",
+      "task_run_id": "p3b-05-dynaconf__dynaconf-1249-V2_CONTROL",
+      "treatment": "V2_CONTROL"
+    },
+    {
+      "base_commit": "71ea887ade58f57cbc5b37f311188bfb7cda8ca5",
+      "expected_artifact_path": "runs/06-V3_CORE/tasks/dynaconf__dynaconf-1249",
+      "instance_id": "dynaconf__dynaconf-1249",
+      "ordinal": 6,
+      "pair_index": 3,
+      "problem_statement_sha256": "038c14518f3117f0a31d3ecf566e55d7f13ecebd5a6e3eccf11cc9eb27ee1702",
+      "repo": "dynaconf/dynaconf",
+      "task_run_id": "p3b-06-dynaconf__dynaconf-1249-V3_CORE",
+      "treatment": "V3_CORE"
+    },
+    {
+      "base_commit": "e310e2029102b5d63a679a2b64501c045aa86336",
+      "expected_artifact_path": "runs/07-V3_CORE/tasks/delgan__loguru-1297",
+      "instance_id": "delgan__loguru-1297",
+      "ordinal": 7,
+      "pair_index": 4,
+      "problem_statement_sha256": "0368432d5d613af17b313606c7f68dcfb831a4a8c5cfb8e5c8e1170593fa49cc",
+      "repo": "Delgan/loguru",
+      "task_run_id": "p3b-07-delgan__loguru-1297-V3_CORE",
+      "treatment": "V3_CORE"
+    },
+    {
+      "base_commit": "e310e2029102b5d63a679a2b64501c045aa86336",
+      "expected_artifact_path": "runs/08-V2_CONTROL/tasks/delgan__loguru-1297",
+      "instance_id": "delgan__loguru-1297",
+      "ordinal": 8,
+      "pair_index": 4,
+      "problem_statement_sha256": "0368432d5d613af17b313606c7f68dcfb831a4a8c5cfb8e5c8e1170593fa49cc",
+      "repo": "Delgan/loguru",
+      "task_run_id": "p3b-08-delgan__loguru-1297-V2_CONTROL",
+      "treatment": "V2_CONTROL"
+    }
+  ],
+  "task_runs_sha256": "443afa7cc979bf97f9aeadde3b3126d6578fcf93f72220eb7f30d44f941be89c",
+  "treatment_order": [
+    {
+      "instance_id": "beetbox__beets-5457",
+      "order": [
+        "V2_CONTROL",
+        "V3_CORE"
+      ],
+      "pair_index": 1
+    },
+    {
+      "instance_id": "deepset-ai__haystack-8489",
+      "order": [
+        "V3_CORE",
+        "V2_CONTROL"
+      ],
+      "pair_index": 2
+    },
+    {
+      "instance_id": "dynaconf__dynaconf-1249",
+      "order": [
+        "V2_CONTROL",
+        "V3_CORE"
+      ],
+      "pair_index": 3
+    },
+    {
+      "instance_id": "delgan__loguru-1297",
+      "order": [
+        "V3_CORE",
+        "V2_CONTROL"
+      ],
+      "pair_index": 4
+    }
+  ]
+}

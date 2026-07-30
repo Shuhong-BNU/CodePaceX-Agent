@@ -1,0 +1,36 @@
+{
+  "treatment_order": [
+    {
+      "instance_id": "beetbox__beets-5457",
+      "order": [
+        "V2_CONTROL",
+        "V3_CORE"
+      ],
+      "pair_index": 1
+    },
+    {
+      "instance_id": "deepset-ai__haystack-8489",
+      "order": [
+        "V3_CORE",
+        "V2_CONTROL"
+      ],
+      "pair_index": 2
+    },
+    {
+      "instance_id": "dynaconf__dynaconf-1249",
+      "order": [
+        "V2_CONTROL",
+        "V3_CORE"
+      ],
+      "pair_index": 3
+    },
+    {
+      "instance_id": "delgan__loguru-1297",
+      "order": [
+        "V3_CORE",
+        "V2_CONTROL"
+      ],
+      "pair_index": 4
+    }
+  ]
+}

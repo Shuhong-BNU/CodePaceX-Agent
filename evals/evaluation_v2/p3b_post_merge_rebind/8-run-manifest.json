@@ -1,0 +1,92 @@
+{
+  "task_runs": [
+    {
+      "base_commit": "03f1205629ad17f123a190040361babc41c18afc",
+      "expected_artifact_path": "runs/01-V2_CONTROL/tasks/beetbox__beets-5457",
+      "instance_id": "beetbox__beets-5457",
+      "ordinal": 1,
+      "pair_index": 1,
+      "problem_statement_sha256": "cd40853caf942eb05d178bc3ccbe2524673ed7ba38d35fe9c2f5fad8f333617e",
+      "repo": "beetbox/beets",
+      "task_run_id": "p3b-01-beetbox__beets-5457-V2_CONTROL",
+      "treatment": "V2_CONTROL"
+    },
+    {
+      "base_commit": "03f1205629ad17f123a190040361babc41c18afc",
+      "expected_artifact_path": "runs/02-V3_CORE/tasks/beetbox__beets-5457",
+      "instance_id": "beetbox__beets-5457",
+      "ordinal": 2,
+      "pair_index": 1,
+      "problem_statement_sha256": "cd40853caf942eb05d178bc3ccbe2524673ed7ba38d35fe9c2f5fad8f333617e",
+      "repo": "beetbox/beets",
+      "task_run_id": "p3b-02-beetbox__beets-5457-V3_CORE",
+      "treatment": "V3_CORE"
+    },
+    {
+      "base_commit": "906177329bcc54f6946af361fcd3d0e334e6ce5f",
+      "expected_artifact_path": "runs/03-V3_CORE/tasks/deepset-ai__haystack-8489",
+      "instance_id": "deepset-ai__haystack-8489",
+      "ordinal": 3,
+      "pair_index": 2,
+      "problem_statement_sha256": "bebd5d176bbc67a3682acf2e2886ae5410196e73943012ce4fdc72f316083463",
+      "repo": "deepset-ai/haystack",
+      "task_run_id": "p3b-03-deepset-ai__haystack-8489-V3_CORE",
+      "treatment": "V3_CORE"
+    },
+    {
+      "base_commit": "906177329bcc54f6946af361fcd3d0e334e6ce5f",
+      "expected_artifact_path": "runs/04-V2_CONTROL/tasks/deepset-ai__haystack-8489",
+      "instance_id": "deepset-ai__haystack-8489",
+      "ordinal": 4,
+      "pair_index": 2,
+      "problem_statement_sha256": "bebd5d176bbc67a3682acf2e2886ae5410196e73943012ce4fdc72f316083463",
+      "repo": "deepset-ai/haystack",
+      "task_run_id": "p3b-04-deepset-ai__haystack-8489-V2_CONTROL",
+      "treatment": "V2_CONTROL"
+    },
+    {
+      "base_commit": "71ea887ade58f57cbc5b37f311188bfb7cda8ca5",
+      "expected_artifact_path": "runs/05-V2_CONTROL/tasks/dynaconf__dynaconf-1249",
+      "instance_id": "dynaconf__dynaconf-1249",
+      "ordinal": 5,
+      "pair_index": 3,
+      "problem_statement_sha256": "038c14518f3117f0a31d3ecf566e55d7f13ecebd5a6e3eccf11cc9eb27ee1702",
+      "repo": "dynaconf/dynaconf",
+      "task_run_id": "p3b-05-dynaconf__dynaconf-1249-V2_CONTROL",
+      "treatment": "V2_CONTROL"
+    },
+    {
+      "base_commit": "71ea887ade58f57cbc5b37f311188bfb7cda8ca5",
+      "expected_artifact_path": "runs/06-V3_CORE/tasks/dynaconf__dynaconf-1249",
+      "instance_id": "dynaconf__dynaconf-1249",
+      "ordinal": 6,
+      "pair_index": 3,
+      "problem_statement_sha256": "038c14518f3117f0a31d3ecf566e55d7f13ecebd5a6e3eccf11cc9eb27ee1702",
+      "repo": "dynaconf/dynaconf",
+      "task_run_id": "p3b-06-dynaconf__dynaconf-1249-V3_CORE",
+      "treatment": "V3_CORE"
+    },
+    {
+      "base_commit": "e310e2029102b5d63a679a2b64501c045aa86336",
+      "expected_artifact_path": "runs/07-V3_CORE/tasks/delgan__loguru-1297",
+      "instance_id": "delgan__loguru-1297",
+      "ordinal": 7,
+      "pair_index": 4,
+      "problem_statement_sha256": "0368432d5d613af17b313606c7f68dcfb831a4a8c5cfb8e5c8e1170593fa49cc",
+      "repo": "Delgan/loguru",
+      "task_run_id": "p3b-07-delgan__loguru-1297-V3_CORE",
+      "treatment": "V3_CORE"
+    },
+    {
+      "base_commit": "e310e2029102b5d63a679a2b64501c045aa86336",
+      "expected_artifact_path": "runs/08-V2_CONTROL/tasks/delgan__loguru-1297",
+      "instance_id": "delgan__loguru-1297",
+      "ordinal": 8,
+      "pair_index": 4,
+      "problem_statement_sha256": "0368432d5d613af17b313606c7f68dcfb831a4a8c5cfb8e5c8e1170593fa49cc",
+      "repo": "Delgan/loguru",
+      "task_run_id": "p3b-08-delgan__loguru-1297-V2_CONTROL",
+      "treatment": "V2_CONTROL"
+    }
+  ]
+}
