@@ -1,0 +1,14 @@
+{
+  "authorized_at": "p3a-zero-provider-rehearsal",
+  "authorized_by": "user",
+  "authorized_total_cny": "585.891840",
+  "currency": "CNY",
+  "experiment_commit": "e7178abb4dab9ca544279d00fe565f1ff5944788",
+  "pricing_snapshot_hash": "a09eb6e6955b9fb68d3e011771c948f7a14b7bbca5316a2433cab099d0b643d3",
+  "schema_version": 2,
+  "stage_limits_cny": {
+    "A": "585.891840",
+    "B": "585.891840",
+    "C": "585.891840"
+  }
+}

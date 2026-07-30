@@ -1,0 +1,9 @@
+{
+  "agent_dispatch_started": true,
+  "charge_cny": "0",
+  "provider_requests": 0,
+  "provider_secret_read": false,
+  "task_run_id": "p3a-06-dynaconf__dynaconf-1249-V3_CORE",
+  "terminal_status": "zero_provider_rehearsal_only",
+  "usage": 0
+}

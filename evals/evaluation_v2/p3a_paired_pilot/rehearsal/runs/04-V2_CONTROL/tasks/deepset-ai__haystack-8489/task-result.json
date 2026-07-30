@@ -1,0 +1,9 @@
+{
+  "agent_dispatch_started": true,
+  "charge_cny": "0",
+  "provider_requests": 0,
+  "provider_secret_read": false,
+  "task_run_id": "p3a-04-deepset-ai__haystack-8489-V2_CONTROL",
+  "terminal_status": "zero_provider_rehearsal_only",
+  "usage": 0
+}

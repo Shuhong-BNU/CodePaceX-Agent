@@ -1,0 +1,26 @@
+{
+  "aggregate_child_ceiling_exposure": false,
+  "allocation_id": null,
+  "baseline_authorization_hash": "e6ef9bcce90e153e8774abf81f9e905e1b10a8675a967993c26420bab5b141ae",
+  "baseline_budget_block_count": 0,
+  "baseline_ledger_sha256": "8bbd9ec523a3663d03668641add580805544cf2cd58d270565409aee61bb9dd9",
+  "baseline_rebind_count": 0,
+  "baseline_request_charge_count": 0,
+  "baseline_settlement_count": 0,
+  "baseline_spent_cny": "0",
+  "category_limits_cny": {
+    "long_session": "0",
+    "mcp": "0",
+    "multi_agent": "0",
+    "permission": "0",
+    "retention": "0",
+    "swe": "585.891839"
+  },
+  "currency": "CNY",
+  "experiment_commit": "e7178abb4dab9ca544279d00fe565f1ff5944788",
+  "pricing_snapshot_hash": "a09eb6e6955b9fb68d3e011771c948f7a14b7bbca5316a2433cab099d0b643d3",
+  "safety_reserve_cny": "0.000001",
+  "schema_version": 1,
+  "spendable_total_cny": "585.891839",
+  "task_run_allocations": []
+}

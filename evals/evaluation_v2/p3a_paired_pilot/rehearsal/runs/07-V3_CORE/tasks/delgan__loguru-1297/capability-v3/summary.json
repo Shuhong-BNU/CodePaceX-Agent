@@ -1,0 +1,643 @@
+{
+  "config": {
+    "bounded_hypotheses_enabled": true,
+    "budget_finalization_enabled": true,
+    "candidate_snapshot_enabled": true,
+    "contract_matrix_enabled": true,
+    "contract_recovery_enabled": true,
+    "differential_validation_enabled": true,
+    "enabled": true,
+    "fail_open_on_internal_error": true,
+    "finalization_reserve_fraction": 0.2,
+    "finalization_reserve_min_requests": 6,
+    "full_suite_fallback_enabled": false,
+    "impact_slice_enabled": true,
+    "max_contract_dimensions": 6,
+    "max_hypotheses": 3,
+    "max_matrix_cases": 12,
+    "max_selected_tests": 12,
+    "oracle_guard_enabled": true,
+    "restore_floor_requests": 3,
+    "reversible_reproducer_enabled": true,
+    "risk_triggered_baseline_enabled": true
+  },
+  "derived_state": {
+    "budget": {
+      "current_candidate_id": "candidate-002",
+      "finalization_reserve": 8,
+      "phase": "explore",
+      "phase_reason": "initialized",
+      "request_limit": 40,
+      "requests_remaining": 40,
+      "requests_used": 0,
+      "restore_floor": 3,
+      "wip_since_candidate": false
+    },
+    "candidate_snapshots": [
+      {
+        "base_commit": "e310e2029102b5d63a679a2b64501c045aa86336",
+        "candidate_id": "candidate-001",
+        "changed_files": [
+          "tracked.py"
+        ],
+        "created_request": 0,
+        "diff_sha": "a0963fda9779290ec6b0c2b805a5b6ae59ff8d67a88db44e1006a4804f47e0e6",
+        "evidence_packet_id": "packet-0368432d5d613af1",
+        "impact_slice_id": null,
+        "known_failures": [],
+        "level": "C1",
+        "oracle_risks": [],
+        "patch_path": "/private/tmp/p3a-pr74-rehearsal-artifact/rehearsal/runs/07-V3_CORE/tasks/delgan__loguru-1297/capability-v3/candidate-001.patch",
+        "restorable": true,
+        "test_evidence_ids": [],
+        "unknowns": []
+      },
+      {
+        "base_commit": "e310e2029102b5d63a679a2b64501c045aa86336",
+        "candidate_id": "candidate-002",
+        "changed_files": [
+          "tracked.py"
+        ],
+        "created_request": 0,
+        "diff_sha": "a0963fda9779290ec6b0c2b805a5b6ae59ff8d67a88db44e1006a4804f47e0e6",
+        "evidence_packet_id": "packet-0368432d5d613af1",
+        "impact_slice_id": null,
+        "known_failures": [],
+        "level": "C2",
+        "oracle_risks": [],
+        "patch_path": "/private/tmp/p3a-pr74-rehearsal-artifact/rehearsal/runs/07-V3_CORE/tasks/delgan__loguru-1297/capability-v3/candidate-001.patch",
+        "restorable": true,
+        "test_evidence_ids": [
+          "test"
+        ],
+        "unknowns": []
+      }
+    ],
+    "contract_matrix": null,
+    "differential_validation": {
+      "baseline_existing": [],
+      "environment_errors": [],
+      "flaky_suspects": [],
+      "incomparable": [],
+      "new_regression_candidates": [],
+      "persistent_failures": [],
+      "resolved_failures": [],
+      "unknown": [
+        "baseline unavailable"
+      ]
+    },
+    "evidence": {
+      "callers": [
+        {
+          "commit": "e310e2029102b5d63a679a2b64501c045aa86336",
+          "confidence": "high",
+          "evidence_id": "ev-2b169c56b0e4773c",
+          "evidence_type": "tool_read",
+          "excerpt_hash": "2b169c56b0e4773ca9504252237ba5b0d10155464b4e18dca91bce1e3e4570de",
+          "line_end": null,
+          "line_start": null,
+          "path": "/private/tmp/p3a-pr74-rehearsal-artifact/rehearsal/runs/07-V3_CORE/tasks/delgan__loguru-1297/workspace/tracked.py",
+          "summary": "1\tVALUE = 0",
+          "symbol": null
+        }
+      ],
+      "conflicts": [],
+      "defaults_and_config": [],
+      "expected_behaviors": [
+        {
+          "commit": "e310e2029102b5d63a679a2b64501c045aa86336",
+          "confidence": "high",
+          "evidence_id": "ev-0368432d5d613af1",
+          "evidence_type": "issue_statement",
+          "excerpt_hash": "0368432d5d613af17b313606c7f68dcfb831a4a8c5cfb8e5c8e1170593fa49cc",
+          "line_end": null,
+          "line_start": null,
+          "path": null,
+          "summary": "Won't handle future time\nSo my system clock was set in the future, year 2040 Feb, because of a battery issue.\n\nAnd I was surprised that loguru refused to be included:\n\n```\n    from loguru import logger as log\n  File \"C:\\py38_64\\lib\\site-packages\\loguru\\__init__.py\", line 10, in <module>\n    from ._l",
+          "symbol": null
+        }
+      ],
+      "history": [],
+      "implementations": [],
+      "issue_entities": [
+        "__init__",
+        "_Core",
+        "_datetime",
+        "_logger",
+        "All",
+        "And",
+        "aware_now",
+        "Core",
+        "Feb",
+        "File",
+        "py38_64",
+        "Someone"
+      ],
+      "packet_id": "packet-0368432d5d613af1",
+      "serialization_and_output": [],
+      "target_symbols": [],
+      "tests_and_fixtures": [],
+      "unknowns": [
+        "no repository definition matched named entities: __init__, _Core, _datetime"
+      ]
+    },
+    "hypotheses": [],
+    "impact_slice": {
+      "changed_files": [
+        "tracked.py"
+      ],
+      "changed_symbols": [],
+      "config_readers": [],
+      "diff_sha": "a0963fda9779290ec6b0c2b805a5b6ae59ff8d67a88db44e1006a4804f47e0e6",
+      "fallback_reason": "no parseable changed Python symbols",
+      "impacted_tests": [],
+      "implementations": [],
+      "reverse_callers": [],
+      "serializers": [],
+      "unknown_edges": [
+        "dynamic Python edges may be incomplete"
+      ]
+    },
+    "internal_errors": [],
+    "oracle_risks": [],
+    "reproducer": null
+  },
+  "events": [
+    {
+      "event_type": "V3Initialized",
+      "payload": {
+        "base_commit": "e310e2029102b5d63a679a2b64501c045aa86336",
+        "config": {
+          "bounded_hypotheses_enabled": true,
+          "budget_finalization_enabled": true,
+          "candidate_snapshot_enabled": true,
+          "contract_matrix_enabled": true,
+          "contract_recovery_enabled": true,
+          "differential_validation_enabled": true,
+          "enabled": true,
+          "fail_open_on_internal_error": true,
+          "finalization_reserve_fraction": 0.2,
+          "finalization_reserve_min_requests": 6,
+          "full_suite_fallback_enabled": false,
+          "impact_slice_enabled": true,
+          "max_contract_dimensions": 6,
+          "max_hypotheses": 3,
+          "max_matrix_cases": 12,
+          "max_selected_tests": 12,
+          "oracle_guard_enabled": true,
+          "restore_floor_requests": 3,
+          "reversible_reproducer_enabled": true,
+          "risk_triggered_baseline_enabled": true
+        },
+        "task_id": "delgan__loguru-1297"
+      },
+      "schema_version": 1,
+      "sequence": 1
+    },
+    {
+      "event_type": "V3RunConfigured",
+      "payload": {
+        "base_commit": "e310e2029102b5d63a679a2b64501c045aa86336",
+        "config": {
+          "bounded_hypotheses_enabled": true,
+          "budget_finalization_enabled": true,
+          "candidate_snapshot_enabled": true,
+          "contract_matrix_enabled": true,
+          "contract_recovery_enabled": true,
+          "differential_validation_enabled": true,
+          "enabled": true,
+          "fail_open_on_internal_error": true,
+          "finalization_reserve_fraction": 0.2,
+          "finalization_reserve_min_requests": 6,
+          "full_suite_fallback_enabled": false,
+          "impact_slice_enabled": true,
+          "max_contract_dimensions": 6,
+          "max_hypotheses": 3,
+          "max_matrix_cases": 12,
+          "max_selected_tests": 12,
+          "oracle_guard_enabled": true,
+          "restore_floor_requests": 3,
+          "reversible_reproducer_enabled": true,
+          "risk_triggered_baseline_enabled": true
+        },
+        "feature_flag": "V3_CORE",
+        "task_id": "delgan__loguru-1297"
+      },
+      "schema_version": 1,
+      "sequence": 2
+    },
+    {
+      "event_type": "EvidenceCollected",
+      "payload": {
+        "packet": {
+          "callers": [],
+          "conflicts": [],
+          "defaults_and_config": [],
+          "expected_behaviors": [
+            {
+              "commit": "e310e2029102b5d63a679a2b64501c045aa86336",
+              "confidence": "high",
+              "evidence_id": "ev-0368432d5d613af1",
+              "evidence_type": "issue_statement",
+              "excerpt_hash": "0368432d5d613af17b313606c7f68dcfb831a4a8c5cfb8e5c8e1170593fa49cc",
+              "line_end": null,
+              "line_start": null,
+              "path": null,
+              "summary": "Won't handle future time\nSo my system clock was set in the future, year 2040 Feb, because of a battery issue.\n\nAnd I was surprised that loguru refused to be included:\n\n```\n    from loguru import logger as log\n  File \"C:\\py38_64\\lib\\site-packages\\loguru\\__init__.py\", line 10, in <module>\n    from ._l",
+              "symbol": null
+            }
+          ],
+          "history": [],
+          "implementations": [],
+          "issue_entities": [
+            "__init__",
+            "_Core",
+            "_datetime",
+            "_logger",
+            "All",
+            "And",
+            "aware_now",
+            "Core",
+            "Feb",
+            "File",
+            "py38_64",
+            "Someone"
+          ],
+          "packet_id": "packet-0368432d5d613af1",
+          "serialization_and_output": [],
+          "target_symbols": [],
+          "tests_and_fixtures": [],
+          "unknowns": [
+            "no repository definition matched named entities: __init__, _Core, _datetime"
+          ]
+        }
+      },
+      "schema_version": 1,
+      "sequence": 3
+    },
+    {
+      "event_type": "AdviceGenerated",
+      "payload": {
+        "chars": 308,
+        "digest": "b6f511699cfb553f91e35361adec3361ab268e4036e55f3abed54aa238702498",
+        "preview": "[Capability V3 evidence advice]\nEntities: __init__, _Core, _datetime, _logger, All, And\nAnchors: unresolved\nTargeted validation: derive a targeted project test\nUnknowns: no repository definition matched named entities: __init__, _Core, _datetime\nKeep this advisory; inspect evidence before changing b"
+      },
+      "schema_version": 1,
+      "sequence": 4
+    },
+    {
+      "event_type": "AdviceInjected",
+      "payload": {
+        "chars": 308,
+        "digest": "b6f511699cfb553f91e35361adec3361ab268e4036e55f3abed54aa238702498"
+      },
+      "schema_version": 1,
+      "sequence": 5
+    },
+    {
+      "event_type": "AdvicePresentInRequest",
+      "payload": {
+        "digest": "b6f511699cfb553f91e35361adec3361ab268e4036e55f3abed54aa238702498",
+        "present": true
+      },
+      "schema_version": 1,
+      "sequence": 6
+    },
+    {
+      "event_type": "ToolEvidenceObserved",
+      "payload": {
+        "evidence": {
+          "commit": "e310e2029102b5d63a679a2b64501c045aa86336",
+          "confidence": "high",
+          "evidence_id": "ev-2b169c56b0e4773c",
+          "evidence_type": "tool_read",
+          "excerpt_hash": "2b169c56b0e4773ca9504252237ba5b0d10155464b4e18dca91bce1e3e4570de",
+          "line_end": null,
+          "line_start": null,
+          "path": "/private/tmp/p3a-pr74-rehearsal-artifact/rehearsal/runs/07-V3_CORE/tasks/delgan__loguru-1297/workspace/tracked.py",
+          "summary": "1\tVALUE = 0",
+          "symbol": null
+        },
+        "tool_name": "ReadFile"
+      },
+      "schema_version": 1,
+      "sequence": 7
+    },
+    {
+      "event_type": "AdviceGenerated",
+      "payload": {
+        "chars": 308,
+        "digest": "b6f511699cfb553f91e35361adec3361ab268e4036e55f3abed54aa238702498",
+        "preview": "[Capability V3 evidence advice]\nEntities: __init__, _Core, _datetime, _logger, All, And\nAnchors: unresolved\nTargeted validation: derive a targeted project test\nUnknowns: no repository definition matched named entities: __init__, _Core, _datetime\nKeep this advisory; inspect evidence before changing b"
+      },
+      "schema_version": 1,
+      "sequence": 8
+    },
+    {
+      "event_type": "AdviceInjected",
+      "payload": {
+        "chars": 308,
+        "digest": "b6f511699cfb553f91e35361adec3361ab268e4036e55f3abed54aa238702498"
+      },
+      "schema_version": 1,
+      "sequence": 9
+    },
+    {
+      "event_type": "AdvicePresentInRequest",
+      "payload": {
+        "digest": "b6f511699cfb553f91e35361adec3361ab268e4036e55f3abed54aa238702498",
+        "present": true
+      },
+      "schema_version": 1,
+      "sequence": 10
+    },
+    {
+      "event_type": "CandidateSnapshotCreated",
+      "payload": {
+        "candidate": {
+          "base_commit": "e310e2029102b5d63a679a2b64501c045aa86336",
+          "candidate_id": "candidate-001",
+          "changed_files": [
+            "tracked.py"
+          ],
+          "created_request": 0,
+          "diff_sha": "a0963fda9779290ec6b0c2b805a5b6ae59ff8d67a88db44e1006a4804f47e0e6",
+          "evidence_packet_id": "packet-0368432d5d613af1",
+          "impact_slice_id": null,
+          "known_failures": [],
+          "level": "C1",
+          "oracle_risks": [],
+          "patch_path": "/private/tmp/p3a-pr74-rehearsal-artifact/rehearsal/runs/07-V3_CORE/tasks/delgan__loguru-1297/capability-v3/candidate-001.patch",
+          "restorable": true,
+          "test_evidence_ids": [],
+          "unknowns": []
+        }
+      },
+      "schema_version": 1,
+      "sequence": 11
+    },
+    {
+      "event_type": "ImpactSliceBuilt",
+      "payload": {
+        "impact": {
+          "changed_files": [
+            "tracked.py"
+          ],
+          "changed_symbols": [],
+          "config_readers": [],
+          "diff_sha": "a0963fda9779290ec6b0c2b805a5b6ae59ff8d67a88db44e1006a4804f47e0e6",
+          "fallback_reason": "no parseable changed Python symbols",
+          "impacted_tests": [],
+          "implementations": [],
+          "reverse_callers": [],
+          "serializers": [],
+          "unknown_edges": [
+            "dynamic Python edges may be incomplete"
+          ]
+        }
+      },
+      "schema_version": 1,
+      "sequence": 12
+    },
+    {
+      "event_type": "TestSliceRecommended",
+      "payload": {
+        "tests": []
+      },
+      "schema_version": 1,
+      "sequence": 13
+    },
+    {
+      "event_type": "AdviceIgnoredOrRejected",
+      "payload": {
+        "reason": "no matching advised validation",
+        "tool_name": "EditFile"
+      },
+      "schema_version": 1,
+      "sequence": 14
+    },
+    {
+      "event_type": "AdviceGenerated",
+      "payload": {
+        "chars": 308,
+        "digest": "b6f511699cfb553f91e35361adec3361ab268e4036e55f3abed54aa238702498",
+        "preview": "[Capability V3 evidence advice]\nEntities: __init__, _Core, _datetime, _logger, All, And\nAnchors: unresolved\nTargeted validation: derive a targeted project test\nUnknowns: no repository definition matched named entities: __init__, _Core, _datetime\nKeep this advisory; inspect evidence before changing b"
+      },
+      "schema_version": 1,
+      "sequence": 15
+    },
+    {
+      "event_type": "AdviceInjected",
+      "payload": {
+        "chars": 308,
+        "digest": "b6f511699cfb553f91e35361adec3361ab268e4036e55f3abed54aa238702498"
+      },
+      "schema_version": 1,
+      "sequence": 16
+    },
+    {
+      "event_type": "AdvicePresentInRequest",
+      "payload": {
+        "digest": "b6f511699cfb553f91e35361adec3361ab268e4036e55f3abed54aa238702498",
+        "present": true
+      },
+      "schema_version": 1,
+      "sequence": 17
+    },
+    {
+      "event_type": "PostObserved",
+      "payload": {
+        "failures": [],
+        "identity": {
+          "command": [
+            "test_rehearsal.py"
+          ],
+          "dependency_fingerprint": "local",
+          "environment_fingerprint": "/private/tmp/p3a-pr74-rehearsal-artifact/rehearsal/runs/07-V3_CORE/tasks/delgan__loguru-1297/workspace",
+          "execution_commit": "e310e2029102b5d63a679a2b64501c045aa86336",
+          "interpreter": "python",
+          "network_mode": "offline",
+          "test_slice_id": "f3ec62254bb59232",
+          "timeout_seconds": 30
+        },
+        "test_evidence_id": "test"
+      },
+      "schema_version": 1,
+      "sequence": 18
+    },
+    {
+      "event_type": "FailureAttributionCompleted",
+      "payload": {
+        "attribution": {
+          "baseline_existing": [],
+          "environment_errors": [],
+          "flaky_suspects": [],
+          "incomparable": [],
+          "new_regression_candidates": [],
+          "persistent_failures": [],
+          "resolved_failures": [],
+          "unknown": [
+            "baseline unavailable"
+          ]
+        }
+      },
+      "schema_version": 1,
+      "sequence": 19
+    },
+    {
+      "event_type": "DifferentialIncomparable",
+      "payload": {
+        "reasons": [
+          "baseline unavailable"
+        ]
+      },
+      "schema_version": 1,
+      "sequence": 20
+    },
+    {
+      "event_type": "CandidatePromoted",
+      "payload": {
+        "candidate": {
+          "base_commit": "e310e2029102b5d63a679a2b64501c045aa86336",
+          "candidate_id": "candidate-002",
+          "changed_files": [
+            "tracked.py"
+          ],
+          "created_request": 0,
+          "diff_sha": "a0963fda9779290ec6b0c2b805a5b6ae59ff8d67a88db44e1006a4804f47e0e6",
+          "evidence_packet_id": "packet-0368432d5d613af1",
+          "impact_slice_id": null,
+          "known_failures": [],
+          "level": "C2",
+          "oracle_risks": [],
+          "patch_path": "/private/tmp/p3a-pr74-rehearsal-artifact/rehearsal/runs/07-V3_CORE/tasks/delgan__loguru-1297/capability-v3/candidate-001.patch",
+          "restorable": true,
+          "test_evidence_ids": [
+            "test"
+          ],
+          "unknowns": []
+        }
+      },
+      "schema_version": 1,
+      "sequence": 21
+    },
+    {
+      "event_type": "AdviceReferenced",
+      "payload": {
+        "tool_name": "RunTest"
+      },
+      "schema_version": 1,
+      "sequence": 22
+    },
+    {
+      "event_type": "AdviceGenerated",
+      "payload": {
+        "chars": 308,
+        "digest": "b6f511699cfb553f91e35361adec3361ab268e4036e55f3abed54aa238702498",
+        "preview": "[Capability V3 evidence advice]\nEntities: __init__, _Core, _datetime, _logger, All, And\nAnchors: unresolved\nTargeted validation: derive a targeted project test\nUnknowns: no repository definition matched named entities: __init__, _Core, _datetime\nKeep this advisory; inspect evidence before changing b"
+      },
+      "schema_version": 1,
+      "sequence": 23
+    },
+    {
+      "event_type": "AdviceInjected",
+      "payload": {
+        "chars": 308,
+        "digest": "b6f511699cfb553f91e35361adec3361ab268e4036e55f3abed54aa238702498"
+      },
+      "schema_version": 1,
+      "sequence": 24
+    },
+    {
+      "event_type": "AdvicePresentInRequest",
+      "payload": {
+        "digest": "b6f511699cfb553f91e35361adec3361ab268e4036e55f3abed54aa238702498",
+        "present": true
+      },
+      "schema_version": 1,
+      "sequence": 25
+    },
+    {
+      "event_type": "FinalizationStarted",
+      "payload": {
+        "reason": "agent_stream_finalized"
+      },
+      "schema_version": 1,
+      "sequence": 26
+    },
+    {
+      "event_type": "CandidateSelectionEvaluated",
+      "payload": {
+        "candidates": [
+          {
+            "candidate_id": "candidate-001",
+            "candidate_level": "C1",
+            "changed_file_coverage": 1,
+            "created_request": 0,
+            "oracle_risk_penalty": 0,
+            "oracle_risks": [],
+            "regression_count": 0,
+            "score": 22,
+            "selection_eligible": false,
+            "superseded_by": "candidate-002",
+            "validation_evidence_count": 0
+          },
+          {
+            "candidate_id": "candidate-002",
+            "candidate_level": "C2",
+            "changed_file_coverage": 1,
+            "created_request": 0,
+            "oracle_risk_penalty": 0,
+            "oracle_risks": [],
+            "regression_count": 0,
+            "score": 142,
+            "selection_eligible": true,
+            "validation_evidence_count": 1
+          }
+        ],
+        "reason": "evidence_weighted_finalization",
+        "selected_candidate_id": "candidate-002"
+      },
+      "schema_version": 1,
+      "sequence": 27
+    },
+    {
+      "event_type": "CandidateRestored",
+      "payload": {
+        "candidate": {
+          "base_commit": "e310e2029102b5d63a679a2b64501c045aa86336",
+          "candidate_id": "candidate-002",
+          "changed_files": [
+            "tracked.py"
+          ],
+          "created_request": 0,
+          "diff_sha": "a0963fda9779290ec6b0c2b805a5b6ae59ff8d67a88db44e1006a4804f47e0e6",
+          "evidence_packet_id": "packet-0368432d5d613af1",
+          "impact_slice_id": null,
+          "known_failures": [],
+          "level": "C2",
+          "oracle_risks": [],
+          "patch_path": "/private/tmp/p3a-pr74-rehearsal-artifact/rehearsal/runs/07-V3_CORE/tasks/delgan__loguru-1297/capability-v3/candidate-001.patch",
+          "restorable": true,
+          "test_evidence_ids": [
+            "test"
+          ],
+          "unknowns": []
+        },
+        "reason": "agent_stream_finalized"
+      },
+      "schema_version": 1,
+      "sequence": 28
+    },
+    {
+      "event_type": "V3Completed",
+      "payload": {
+        "exported_patch": "/private/tmp/p3a-pr74-rehearsal-artifact/rehearsal/runs/07-V3_CORE/tasks/delgan__loguru-1297/capability-v3/candidate-001.patch",
+        "reason": "agent_stream_finalized"
+      },
+      "schema_version": 1,
+      "sequence": 29
+    }
+  ],
+  "schema_version": 1
+}
