@@ -391,11 +391,17 @@ def _rehearsal_gate(root: Path, frozen: Mapping[str, Any], artifact_root: Path) 
     )
     ledger = BudgetLedger(authorization_hash=authorization_hash(authorization), updated_at="p3a-zero-provider-rehearsal")
     authorization_path, ledger_path = artifact_root / "authorization.json", artifact_root / "ledger.json"
+    allocation_path = artifact_root / "stage-c-allocation.json"
     _write_json(authorization_path, authorization.model_dump(mode="json"))
     _write_json(ledger_path, ledger.model_dump(mode="json"))
+    allocation = control_canary._fresh_rehearsal_allocation(
+        authorization, ledger, pricing_snapshot_hash(pricing),
+    )
+    _write_json(allocation_path, allocation.model_dump(mode="json"))
     return PaidRunGate(
         root=root, authorization_path=authorization_path, ledger_path=ledger_path,
         pricing_path=root / full_replay.PRICING_PATH, pricing=pricing, stage="C",
+        allocation_path=allocation_path,
     )
 
 
