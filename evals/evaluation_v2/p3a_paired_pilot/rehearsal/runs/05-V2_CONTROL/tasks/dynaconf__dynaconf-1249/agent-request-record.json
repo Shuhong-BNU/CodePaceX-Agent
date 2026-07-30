@@ -1,0 +1,47 @@
+{
+  "agent_event_types": [
+    "ToolUseEvent",
+    "UsageEvent",
+    "PermissionDecisionEvent",
+    "ToolResultEvent",
+    "TurnComplete",
+    "ToolUseEvent",
+    "UsageEvent",
+    "PermissionDecisionEvent",
+    "ToolResultEvent",
+    "TurnComplete",
+    "ToolUseEvent",
+    "UsageEvent",
+    "PermissionDecisionEvent",
+    "ToolResultEvent",
+    "TurnComplete",
+    "StreamText",
+    "UsageEvent",
+    "LoopComplete"
+  ],
+  "assembled_requests": [
+    {
+      "message_count": 2,
+      "system_sha256": "bbdd89c82071094bc9444970013bd10e014e273d3b6af73a1b3b2f876bdfe1f6",
+      "tools_sha256": "a3016d889bc025659b475cb70f5c5b9a549334549ff92c172463838004671510"
+    },
+    {
+      "message_count": 4,
+      "system_sha256": "bbdd89c82071094bc9444970013bd10e014e273d3b6af73a1b3b2f876bdfe1f6",
+      "tools_sha256": "a3016d889bc025659b475cb70f5c5b9a549334549ff92c172463838004671510"
+    },
+    {
+      "message_count": 6,
+      "system_sha256": "bbdd89c82071094bc9444970013bd10e014e273d3b6af73a1b3b2f876bdfe1f6",
+      "tools_sha256": "a3016d889bc025659b475cb70f5c5b9a549334549ff92c172463838004671510"
+    },
+    {
+      "message_count": 8,
+      "system_sha256": "bbdd89c82071094bc9444970013bd10e014e273d3b6af73a1b3b2f876bdfe1f6",
+      "tools_sha256": "a3016d889bc025659b475cb70f5c5b9a549334549ff92c172463838004671510"
+    }
+  ],
+  "fake_transport_calls": 4,
+  "task_run_id": "p3a-05-dynaconf__dynaconf-1249-V2_CONTROL",
+  "treatment": "V2_CONTROL"
+}

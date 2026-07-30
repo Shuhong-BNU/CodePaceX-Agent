@@ -1,0 +1,9 @@
+{
+  "base_commit": "03f1205629ad17f123a190040361babc41c18afc",
+  "instance_id": "beetbox__beets-5457",
+  "pair_index": 1,
+  "problem_statement_sha256": "cd40853caf942eb05d178bc3ccbe2524673ed7ba38d35fe9c2f5fad8f333617e",
+  "repo": "beetbox/beets",
+  "task_run_id": "p3a-01-beetbox__beets-5457-V2_CONTROL",
+  "treatment": "V2_CONTROL"
+}

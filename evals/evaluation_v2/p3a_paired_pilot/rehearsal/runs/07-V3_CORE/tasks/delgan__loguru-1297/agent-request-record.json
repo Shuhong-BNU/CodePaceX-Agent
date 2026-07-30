@@ -1,0 +1,72 @@
+{
+  "agent_event_types": [
+    "ToolUseEvent",
+    "UsageEvent",
+    "PermissionDecisionEvent",
+    "ToolResultEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "TurnComplete",
+    "ToolUseEvent",
+    "UsageEvent",
+    "PermissionDecisionEvent",
+    "ToolResultEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "TurnComplete",
+    "ToolUseEvent",
+    "UsageEvent",
+    "PermissionDecisionEvent",
+    "ToolResultEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "TurnComplete",
+    "StreamText",
+    "UsageEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "CapabilityV3TelemetryEvent",
+    "LoopComplete"
+  ],
+  "assembled_requests": [
+    {
+      "message_count": 2,
+      "system_sha256": "4fae61ad1241c7f41444049f00ac8ca4e348561911205746874a5d08752b0f8b",
+      "tools_sha256": "a3016d889bc025659b475cb70f5c5b9a549334549ff92c172463838004671510"
+    },
+    {
+      "message_count": 4,
+      "system_sha256": "4fae61ad1241c7f41444049f00ac8ca4e348561911205746874a5d08752b0f8b",
+      "tools_sha256": "a3016d889bc025659b475cb70f5c5b9a549334549ff92c172463838004671510"
+    },
+    {
+      "message_count": 6,
+      "system_sha256": "4fae61ad1241c7f41444049f00ac8ca4e348561911205746874a5d08752b0f8b",
+      "tools_sha256": "a3016d889bc025659b475cb70f5c5b9a549334549ff92c172463838004671510"
+    },
+    {
+      "message_count": 8,
+      "system_sha256": "4fae61ad1241c7f41444049f00ac8ca4e348561911205746874a5d08752b0f8b",
+      "tools_sha256": "a3016d889bc025659b475cb70f5c5b9a549334549ff92c172463838004671510"
+    }
+  ],
+  "fake_transport_calls": 4,
+  "task_run_id": "p3a-07-delgan__loguru-1297-V3_CORE",
+  "treatment": "V3_CORE"
+}

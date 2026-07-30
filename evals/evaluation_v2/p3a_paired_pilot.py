@@ -8,16 +8,27 @@ pre-registered P3-A evidence.  P3-B needs a separate explicit authorization.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import json
+import shutil
+import subprocess
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, AsyncIterator, Mapping, Sequence
 
-from evals.benchmark import canonical_hash
+from codepacex.agent import Agent
+from codepacex.capability_v3 import CapabilityV3Config, CapabilityV3Flag
+from codepacex.client import LLMClient
+from codepacex.conversation import ConversationManager
+from codepacex.permissions import DangerousCommandDetector, PathSandbox, PermissionChecker, PermissionMode, RuleEngine
+from codepacex.tools import create_default_registry
+from codepacex.tools.base import StreamEnd, StreamEvent, TextDelta, ToolCallComplete
+from codepacex.tools.run_test import RunTest
+from evals.benchmark import canonical_hash, current_git_commit
 from evals.costing import load_pricing, pricing_snapshot_hash
-from evals.evaluation_v2 import full_replay
-from evals.paid_gate import worst_case_reservation
+from evals.evaluation_v2 import control_canary, full_replay
+from evals.paid_gate import BudgetAuthorization, BudgetLedger, PaidRunGate, authorization_hash, worst_case_reservation
 
 
 SCHEMA_VERSION = 1
@@ -32,6 +43,7 @@ PARENT_NAME = "parent-authorization-draft.json"
 CHILDREN_NAME = "child-allocation-drafts.json"
 SCHEMA_NAME = "paired-artifact-schema.json"
 READINESS_NAME = "zero-provider-readiness.json"
+REHEARSAL_DIRECTORY = "rehearsal"
 REQUEST_CEILING = 40
 RETRY = 0
 FALLBACK = False
@@ -195,20 +207,53 @@ def paired_artifact_schema() -> dict[str, Any]:
     }
 
 
-def merge_paired_results(results: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Fail closed unless every paired result has exactly one record per treatment."""
-    grouped: dict[tuple[Any, ...], dict[str, Mapping[str, Any]]] = {}
+def merge_paired_results(
+    frozen: Mapping[str, Any], results: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge exactly the complete frozen four-pair / eight-run manifest.
+
+    The result stream is never self-describing: every record must identify one
+    and only one frozen task-run, with all pairing fields equal to that run.
+    """
+    expected_runs = {item["task_run_id"]: item for item in frozen["task_runs"]}
+    if len(expected_runs) != 8 or len({item["pair_index"] for item in expected_runs.values()}) != 4:
+        raise ValueError("frozen manifest is not exactly four pairs and eight task-runs")
+    if len(results) != 8:
+        raise ValueError("paired result must contain exactly eight frozen task-runs")
+    actual: dict[str, Mapping[str, Any]] = {}
+    fields = ("pair_index", "instance_id", "repo", "base_commit", "problem_statement_sha256", "treatment")
     for result in results:
-        key = tuple(result[name] for name in paired_artifact_schema()["comparison_key"])
-        treatment = str(result["treatment"])
-        if treatment not in {"V2_CONTROL", "V3_CORE"} or treatment in grouped.setdefault(key, {}):
-            raise ValueError("paired result has an invalid or duplicate treatment identity")
-        grouped[key][treatment] = result
+        task_run_id = str(result.get("task_run_id", ""))
+        if task_run_id not in expected_runs:
+            raise ValueError("paired result has an unexpected task-run")
+        if task_run_id in actual:
+            raise ValueError("paired result has a duplicate task-run")
+        expected = expected_runs[task_run_id]
+        if any(result.get(field) != expected[field] for field in fields):
+            raise ValueError("paired result task-run does not match its frozen pair key")
+        actual[task_run_id] = result
+    if set(actual) != set(expected_runs):
+        raise ValueError("paired result omits a frozen task-run or pair")
+    grouped: dict[int, dict[str, Mapping[str, Any]]] = {}
+    for task_run_id, result in actual.items():
+        expected = expected_runs[task_run_id]
+        pair = grouped.setdefault(int(expected["pair_index"]), {})
+        treatment = str(expected["treatment"])
+        if treatment in pair:
+            raise ValueError("paired result has a duplicate treatment")
+        pair[treatment] = result
+    if set(grouped) != {1, 2, 3, 4}:
+        raise ValueError("paired result omits an entire frozen pair")
     merged = []
-    for key, pair in grouped.items():
+    for pair_index in range(1, 5):
+        pair = grouped[pair_index]
         if set(pair) != {"V2_CONTROL", "V3_CORE"}:
-            raise ValueError("paired result is missing its strict counterpart")
-        merged.append({"comparison_key": list(key), "V2_CONTROL": pair["V2_CONTROL"], "V3_CORE": pair["V3_CORE"]})
+            raise ValueError("paired result omits a frozen treatment")
+        v2, v3 = pair["V2_CONTROL"], pair["V3_CORE"]
+        key = [v2[field] for field in paired_artifact_schema()["comparison_key"]]
+        if key != [v3[field] for field in paired_artifact_schema()["comparison_key"]]:
+            raise ValueError("paired result treatments do not share an identical pair key")
+        merged.append({"comparison_key": key, "V2_CONTROL": v2, "V3_CORE": v3})
     return merged
 
 
@@ -261,44 +306,245 @@ def validate_freeze(root: Path, frozen: Mapping[str, Any]) -> None:
         raise ValueError("P3-A freeze lacks eight child allocation drafts")
 
 
-def readiness_payload(root: Path, frozen: Mapping[str, Any]) -> dict[str, Any]:
-    validate_freeze(root, frozen)
-    run_records = []
-    for run in frozen["task_runs"]:
-        is_v3 = run["treatment"] == "V3_CORE"
-        run_records.append({
-            "task_run_id": run["task_run_id"],
-            "pair_index": run["pair_index"],
-            "instance_id": run["instance_id"],
-            "repo": run["repo"],
-            "base_commit": run["base_commit"],
-            "problem_statement_sha256": run["problem_statement_sha256"],
-            "treatment": run["treatment"],
-            "artifact_path": run["expected_artifact_path"],
-            "terminal_status": "zero_provider_readiness_only",
-            "provider_requests": 0,
-            "usage": 0,
-            "charge_cny": "0",
-            "provider_secret_read": False,
-            "paid_execution": False,
-            "v3_advice_expected": is_v3,
-            "v3_activation_artifact_required": is_v3,
+class _RecordingFakeTransport(LLMClient):
+    """In-process fake transport that records actual Agent request assembly."""
+
+    def __init__(self, workspace: Path, source: Path) -> None:
+        self.workspace, self.source, self.calls = workspace, source, 0
+        self.request_records: list[dict[str, Any]] = []
+
+    async def stream(
+        self, conversation: Any, system: str = "", tools: list[dict[str, Any]] | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        self.calls += 1
+        self.request_records.append({
+            "system_sha256": hashlib.sha256(system.encode()).hexdigest(),
+            "tools_sha256": canonical_hash(tools or []),
+            "message_count": len(conversation.get_messages()),
         })
-    # Exercise the strict merge wiring on the zero-provider records themselves.
-    merged = merge_paired_results(run_records)
+        if self.calls == 1:
+            yield ToolCallComplete("read", "ReadFile", {"file_path": str(self.source), "offset": 0, "limit": 20})
+        elif self.calls == 2:
+            yield ToolCallComplete("edit", "EditFile", {"file_path": str(self.source), "old_string": "VALUE = 0", "new_string": "VALUE = 1"})
+        elif self.calls == 3:
+            yield ToolCallComplete("test", "RunTest", {"cwd": str(self.workspace), "argv": ["test_rehearsal.py"], "timeout_seconds": 30})
+        else:
+            yield TextDelta("P3-A recording fake transport complete")
+        yield StreamEnd("end_turn")
+
+
+def _synthetic_task_workspace(_task: Mapping[str, Any], workspace: Path) -> None:
+    """A disposable git workspace lets the formal runner execute without a checkout."""
+    workspace.mkdir(parents=True)
+    (workspace / "tracked.py").write_text("VALUE = 0\n", encoding="utf-8")
+    (workspace / "test_rehearsal.py").write_text(
+        "def test_rehearsal_workspace_is_available():\n    assert True\n", encoding="utf-8",
+    )
+    for command in (
+        ["git", "init"], ["git", "config", "user.email", "p3a@example.test"],
+        ["git", "config", "user.name", "P3-A Zero Provider"], ["git", "add", "."],
+        ["git", "commit", "-m", "p3a rehearsal base"],
+    ):
+        subprocess.run(command, cwd=workspace, check=True, capture_output=True, text=True)
+
+
+def _rehearsal_gate(root: Path, frozen: Mapping[str, Any], artifact_root: Path) -> PaidRunGate:
+    pricing = load_pricing(root / full_replay.PRICING_PATH)
+    hard_cap = Decimal(str(frozen["budget_proposal"]["hard_cap_proposal_cny"]))
+    authorization = BudgetAuthorization(
+        authorized_total_cny=hard_cap,
+        stage_limits_cny={"A": hard_cap, "B": hard_cap, "C": hard_cap},
+        pricing_snapshot_hash=pricing_snapshot_hash(pricing), experiment_commit=current_git_commit(root),
+        authorized_at="p3a-zero-provider-rehearsal", authorized_by="user",
+    )
+    ledger = BudgetLedger(authorization_hash=authorization_hash(authorization), updated_at="p3a-zero-provider-rehearsal")
+    authorization_path, ledger_path = artifact_root / "authorization.json", artifact_root / "ledger.json"
+    allocation_path = artifact_root / "stage-c-allocation.json"
+    _write_json(authorization_path, authorization.model_dump(mode="json"))
+    _write_json(ledger_path, ledger.model_dump(mode="json"))
+    allocation = control_canary._fresh_rehearsal_allocation(
+        authorization, ledger, pricing_snapshot_hash(pricing),
+    )
+    _write_json(allocation_path, allocation.model_dump(mode="json"))
+    return PaidRunGate(
+        root=root, authorization_path=authorization_path, ledger_path=ledger_path,
+        pricing_path=root / full_replay.PRICING_PATH, pricing=pricing, stage="C",
+        allocation_path=allocation_path,
+    )
+
+
+def run_zero_provider_rehearsal(root: Path, frozen: Mapping[str, Any], artifact_root: Path) -> dict[str, Any]:
+    """Exercise manifest -> runner -> Agent -> fake transport -> evaluator -> ledger."""
+    validate_freeze(root, frozen)
+    if artifact_root.exists():
+        raise ValueError("refusing to overwrite P3-A rehearsal Artifact")
+    artifact_root.mkdir(parents=True)
+    gate = _rehearsal_gate(root, frozen, artifact_root)
+    records: list[dict[str, Any]] = []
+    tasks = _tasks(root)
+    for run in frozen["task_runs"]:
+        run_root = artifact_root / "runs" / f"{run['ordinal']:02d}-{run['treatment']}"
+        task_root = run_root / "tasks" / run["instance_id"]
+        workspace = task_root / "workspace"
+        _synthetic_task_workspace(tasks[run["instance_id"]], workspace)
+        source = workspace / "tracked.py"
+        registry = create_default_registry()
+        registry.register(RunTest())
+        checker = PermissionChecker(
+            DangerousCommandDetector(), PathSandbox(str(workspace)), RuleEngine(),
+            PermissionMode.DEFAULT, session_allow_all=True,
+        )
+        transport = _RecordingFakeTransport(workspace, source)
+        treatment = CapabilityV3Flag(run["treatment"])
+        agent = Agent(
+            transport, registry, "openai-compat", work_dir=str(workspace),
+            permission_checker=checker, max_iterations=8,
+            capability_v3_config=CapabilityV3Config.from_flag(treatment),
+            capability_v3_flag=treatment.value,
+            capability_v3_artifact_root=task_root / "capability-v3",
+            capability_v3_task_id=run["instance_id"],
+            capability_v3_base_commit=run["base_commit"],
+        )
+        conversation = ConversationManager()
+        conversation.add_user_message(str(tasks[run["instance_id"]]["problem_statement"]))
+
+        # This calls the real reserve/cancel ledger wiring immediately around
+        # Agent dispatch.  The in-process client never crosses a Provider
+        # boundary, so the only valid terminal settlement is CNY-zero cancel.
+        reservation = gate.reserve(
+            f"swe/p3a-rehearsal/{run['task_run_id']}", maximum_requests=1,
+            maximum_input_tokens_per_request=full_replay.MAX_INPUT_TOKENS,
+            maximum_output_tokens_per_request=full_replay.MAX_OUTPUT_TOKENS,
+        )
+        events: list[str] = []
+
+        async def consume() -> None:
+            async for event in agent.run(conversation):
+                events.append(type(event).__name__)
+
+        try:
+            asyncio.run(consume())
+        finally:
+            gate.cancel(reservation, reason="provider_confirmed_not_submitted")
+
+        patch_text = control_canary._goal3_extract_patch(workspace)
+        _write_json(task_root / "agent-request-record.json", {
+            "task_run_id": run["task_run_id"], "treatment": treatment.value,
+            "fake_transport_calls": transport.calls,
+            "assembled_requests": transport.request_records,
+            "agent_event_types": events,
+        })
+        _write_json(task_root / "task-run-contract.json", {
+            key: run[key] for key in (
+                "task_run_id", "pair_index", "instance_id", "repo", "base_commit",
+                "problem_statement_sha256", "treatment",
+            )
+        })
+        (task_root / "candidate.patch").write_text(patch_text, encoding="utf-8")
+        prediction_path = task_root / "predictions.json"
+        _write_json(prediction_path, [{
+            "instance_id": run["instance_id"], "model_name_or_path": "p3a-zero-provider-rehearsal",
+            "model_patch": patch_text,
+        }])
+        evaluator_run_id = f"p3a-rehearsal-{run['ordinal']:02d}"
+        evaluator = full_replay._shadow_evaluator_runner(
+            predictions_path=prediction_path, instance_ids=[run["instance_id"]],
+            run_id=evaluator_run_id, cwd=task_root,
+        )
+        report_source = (
+            task_root / "logs" / "run_evaluation" / evaluator_run_id /
+            "p3a-zero-provider-rehearsal" / run["instance_id"] / "report.json"
+        )
+        if evaluator.returncode != 0 or not report_source.is_file():
+            raise RuntimeError("P3-A rehearsal evaluator interface did not emit a raw report")
+        shutil.copyfile(report_source, task_root / "official-report.json")
+        _write_json(task_root / "task-result.json", {
+            "task_run_id": run["task_run_id"], "terminal_status": "zero_provider_rehearsal_only",
+            "agent_dispatch_started": transport.calls > 0, "provider_requests": 0,
+            "usage": 0, "charge_cny": "0", "provider_secret_read": False,
+        })
+        fidelity = control_canary._validate_capability_v3_artifact(
+            task_root=task_root, workspace=workspace, instance_id=run["instance_id"], treatment=treatment,
+        )
+        if treatment is CapabilityV3Flag.V3_CORE and not fidelity["valid"]:
+            raise RuntimeError(f"P3-A rehearsal V3 artifact failed: {fidelity['errors']}")
+        if treatment is CapabilityV3Flag.V2_CONTROL and (task_root / "capability-v3").exists():
+            raise RuntimeError("P3-A V2_CONTROL rehearsal unexpectedly wrote a V3 artifact")
+        # Keep the raw runner evidence, but not disposable Git/pytest/session
+        # internals from the synthetic workspace.
+        for transient in (".git", ".pytest_cache", "__pycache__", ".codepacex"):
+            transient_path = workspace / transient
+            if transient_path.exists():
+                shutil.rmtree(transient_path)
+        records.append({
+            **{key: run[key] for key in ("task_run_id", "pair_index", "instance_id", "repo", "base_commit", "problem_statement_sha256", "treatment", "expected_artifact_path")},
+            "artifact_path": str(task_root.relative_to(artifact_root)),
+            "task_result_path": str((task_root / "task-result.json").relative_to(artifact_root)),
+            "official_report_path": str((task_root / "official-report.json").relative_to(artifact_root)),
+            "terminal_status": "zero_provider_rehearsal_only", "evaluator_status": "completed",
+            "agent_dispatch_started": transport.calls > 0,
+            "recording_fake_transport_requests": transport.calls,
+            "provider_requests": 0, "usage": 0, "charge_cny": "0", "provider_secret_read": False,
+            "paid_execution": False,
+            "v3_advice_present": treatment is CapabilityV3Flag.V3_CORE,
+            "v3_activation_schema_present": treatment is CapabilityV3Flag.V3_CORE,
+            "treatment_fidelity": fidelity,
+        })
+    ledger = BudgetLedger.model_validate_json((artifact_root / "ledger.json").read_text(encoding="utf-8"))
+    for record in records:
+        root_path = artifact_root / record["artifact_path"]
+        if not (root_path / "task-result.json").is_file() or not (root_path / "official-report.json").is_file():
+            raise RuntimeError("P3-A rehearsal raw task or evaluator Artifact is missing")
+        if record["treatment"] == "V3_CORE" and not record["treatment_fidelity"]["valid"]:
+            raise RuntimeError("P3-A rehearsal raw V3 Artifact failed validation")
     return {
-        "schema_version": SCHEMA_VERSION,
-        "freeze_sha256": canonical_hash(frozen),
-        "status": "passed_zero_provider_readiness",
-        "paid_jobs": "skipped",
-        "provider_requests": 0,
-        "usage": 0,
-        "charge_cny": "0",
-        "provider_secret_read": False,
-        "task_run_count": len(run_records),
-        "unique_task_run_count": len({item["task_run_id"] for item in run_records}),
-        "paired_result_merge_count": len(merged),
-        "run_records": run_records,
+        "schema_version": SCHEMA_VERSION, "executed": True, "runner": "p3a_paired_pilot.real_agent_dispatch",
+        "transport": "recording_fake_llmclient_in_process", "provider_requests": 0, "usage": 0,
+        "charge_cny": "0", "provider_secret_read": False, "paid_execution": False,
+        "run_records": records, "agent_dispatch_count": sum(item["agent_dispatch_started"] for item in records),
+        "recording_fake_transport_requests": sum(item["recording_fake_transport_requests"] for item in records),
+        "simulated_provider_requests": len(ledger.request_charges),
+        "simulated_usage": sum(item.input_tokens + item.output_tokens for item in ledger.request_charges),
+        "simulated_charge_cny": str(ledger.spent_cny), "ledger_settlement_count": len(ledger.settlements),
+        "ledger_closed": ledger.active_reservation is None,
+        "active_reservation": None if ledger.active_reservation is None else ledger.active_reservation.model_dump(mode="json"),
+    }
+
+
+def readiness_payload(
+    root: Path, frozen: Mapping[str, Any], *, freeze_path: Path, rehearsal: Mapping[str, Any],
+) -> dict[str, Any]:
+    validate_freeze(root, frozen)
+    required = (
+        rehearsal.get("executed") is True, rehearsal.get("ledger_closed") is True,
+        rehearsal.get("active_reservation") is None, rehearsal.get("provider_requests") == 0,
+        rehearsal.get("usage") == 0, rehearsal.get("charge_cny") == "0",
+        rehearsal.get("provider_secret_read") is False, rehearsal.get("agent_dispatch_count") == 8,
+        rehearsal.get("recording_fake_transport_requests", 0) >= 8,
+    )
+    if not all(required):
+        raise ValueError("P3-A readiness requires a completed zero-provider rehearsal and closed zero-cost ledger")
+    records = rehearsal.get("run_records")
+    if not isinstance(records, list):
+        raise ValueError("P3-A readiness requires rehearsal run records")
+    for record in records:
+        root_path = freeze_path.parent / REHEARSAL_DIRECTORY / record["artifact_path"]
+        if not (root_path / "task-result.json").is_file() or not (root_path / "official-report.json").is_file():
+            raise ValueError("P3-A readiness requires raw task and evaluator Artifacts")
+        if record["treatment"] == "V3_CORE" and not record.get("treatment_fidelity", {}).get("valid"):
+            raise ValueError("P3-A readiness requires valid raw V3 Artifacts")
+        if record["treatment"] == "V2_CONTROL" and (record.get("v3_advice_present") or record.get("v3_activation_schema_present")):
+            raise ValueError("V2_CONTROL must not carry V3 Advice or activation schema")
+        if record["treatment"] == "V3_CORE" and not (record.get("v3_advice_present") and record.get("v3_activation_schema_present")):
+            raise ValueError("V3_CORE must carry V3 Advice and activation schema")
+    merged = merge_paired_results(frozen, records)
+    return {
+        "schema_version": SCHEMA_VERSION, "freeze_sha256": _sha256(freeze_path),
+        "freeze_canonical_sha256": canonical_hash(frozen), "status": "passed_zero_provider_readiness",
+        "paid_jobs": "skipped", "provider_requests": 0, "usage": 0, "charge_cny": "0",
+        "provider_secret_read": False, "task_run_count": len(records),
+        "unique_task_run_count": len({item["task_run_id"] for item in records}),
+        "paired_result_merge_count": len(merged), "rehearsal": dict(rehearsal),
         "p3_b": "blocked_pending_new_explicit_paid_authorization",
     }
 
@@ -308,9 +554,10 @@ def write_artifacts(root: Path, output: Path) -> dict[str, str]:
     if output.exists():
         raise ValueError("refusing to overwrite P3-A readiness Artifact")
     frozen = freeze_payload(root)
-    readiness = readiness_payload(root, frozen)
     output.mkdir(parents=True)
     _write_json(output / FREEZE_NAME, frozen)
+    rehearsal = run_zero_provider_rehearsal(root, frozen, output / REHEARSAL_DIRECTORY)
+    readiness = readiness_payload(root, frozen, freeze_path=output / FREEZE_NAME, rehearsal=rehearsal)
     _write_json(output / MANIFEST_NAME, {"task_runs": frozen["task_runs"]})
     _write_json(output / TREATMENT_ORDER_NAME, {"treatment_order": frozen["treatment_order"]})
     _write_json(output / BUDGET_NAME, frozen["budget_proposal"])
@@ -318,7 +565,11 @@ def write_artifacts(root: Path, output: Path) -> dict[str, str]:
     _write_json(output / CHILDREN_NAME, {"child_allocation_drafts": frozen["child_allocation_drafts"]})
     _write_json(output / SCHEMA_NAME, frozen["paired_artifact_schema"])
     _write_json(output / READINESS_NAME, readiness)
-    return {"freeze_sha256": _sha256(output / FREEZE_NAME), "readiness_sha256": _sha256(output / READINESS_NAME)}
+    return {
+        "freeze_sha256": _sha256(output / FREEZE_NAME),
+        "freeze_canonical_sha256": canonical_hash(frozen),
+        "readiness_sha256": _sha256(output / READINESS_NAME),
+    }
 
 
 def main(argv: Sequence[str] | None = None) -> int:

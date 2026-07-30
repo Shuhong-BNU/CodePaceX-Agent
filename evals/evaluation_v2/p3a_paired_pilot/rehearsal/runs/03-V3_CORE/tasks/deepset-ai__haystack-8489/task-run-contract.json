@@ -1,0 +1,9 @@
+{
+  "base_commit": "906177329bcc54f6946af361fcd3d0e334e6ce5f",
+  "instance_id": "deepset-ai__haystack-8489",
+  "pair_index": 2,
+  "problem_statement_sha256": "bebd5d176bbc67a3682acf2e2886ae5410196e73943012ce4fdc72f316083463",
+  "repo": "deepset-ai/haystack",
+  "task_run_id": "p3a-03-deepset-ai__haystack-8489-V3_CORE",
+  "treatment": "V3_CORE"
+}
