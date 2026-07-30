@@ -470,6 +470,12 @@ def run_zero_provider_rehearsal(root: Path, frozen: Mapping[str, Any], artifact_
             raise RuntimeError(f"P3-A rehearsal V3 artifact failed: {fidelity['errors']}")
         if treatment is CapabilityV3Flag.V2_CONTROL and (task_root / "capability-v3").exists():
             raise RuntimeError("P3-A V2_CONTROL rehearsal unexpectedly wrote a V3 artifact")
+        # Keep the raw runner evidence, but not disposable Git/pytest/session
+        # internals from the synthetic workspace.
+        for transient in (".git", ".pytest_cache", "__pycache__", ".codepacex"):
+            transient_path = workspace / transient
+            if transient_path.exists():
+                shutil.rmtree(transient_path)
         records.append({
             **{key: run[key] for key in ("task_run_id", "pair_index", "instance_id", "repo", "base_commit", "problem_statement_sha256", "treatment", "expected_artifact_path")},
             "artifact_path": str(task_root.relative_to(artifact_root)),
