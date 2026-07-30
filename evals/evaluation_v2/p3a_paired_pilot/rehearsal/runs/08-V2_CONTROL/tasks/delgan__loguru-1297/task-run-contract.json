@@ -1,0 +1,9 @@
+{
+  "base_commit": "e310e2029102b5d63a679a2b64501c045aa86336",
+  "instance_id": "delgan__loguru-1297",
+  "pair_index": 4,
+  "problem_statement_sha256": "0368432d5d613af17b313606c7f68dcfb831a4a8c5cfb8e5c8e1170593fa49cc",
+  "repo": "Delgan/loguru",
+  "task_run_id": "p3a-08-delgan__loguru-1297-V2_CONTROL",
+  "treatment": "V2_CONTROL"
+}

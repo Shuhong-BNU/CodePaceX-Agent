@@ -1,0 +1,9 @@
+{
+  "delgan__loguru-1297": {
+    "patch_exists": true,
+    "patch_is_None": false,
+    "patch_successfully_applied": true,
+    "resolved": false,
+    "tests_status": {}
+  }
+}

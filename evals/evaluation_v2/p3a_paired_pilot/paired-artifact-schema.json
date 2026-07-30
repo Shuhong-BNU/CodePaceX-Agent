@@ -1,0 +1,29 @@
+{
+  "comparison_key": [
+    "pair_index",
+    "instance_id",
+    "repo",
+    "base_commit",
+    "problem_statement_sha256"
+  ],
+  "merge_rule": "exactly one V2_CONTROL and one V3_CORE record per identical comparison key; reject all other joins",
+  "required_result_fields": [
+    "task_run_id",
+    "pair_index",
+    "instance_id",
+    "treatment",
+    "provider_requests",
+    "usage",
+    "charge_cny",
+    "provider_secret_read",
+    "artifact_path",
+    "terminal_status"
+  ],
+  "required_treatments": [
+    "V2_CONTROL",
+    "V3_CORE"
+  ],
+  "schema_version": 1,
+  "v2_contract": "V2_CONTROL has no V3 Advice or V3 activation Artifact requirement",
+  "v3_contract": "V3_CORE records Advice/activation expectation and raw V3 Artifact requirement"
+}
