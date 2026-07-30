@@ -6,6 +6,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, AsyncIterator
 
+import pytest
+
 from codepacex.agent import Agent, PermissionDecisionEvent
 from codepacex.capability_v3 import CapabilityV3Config, CapabilityV3Controller, CapabilityV3Flag
 from codepacex.client import LLMClient
@@ -48,6 +50,74 @@ class _DoneClient(LLMClient):
     ) -> AsyncIterator[StreamEvent]:
         yield TextDelta("done")
         yield StreamEnd("end_turn")
+
+
+class _ActivationFixtureClient(LLMClient):
+    """Fake transport that retains the real request payload but never sends it."""
+
+    def __init__(self, workspace: Path, source: Path, *, compatibility_roundtrip: bool = False) -> None:
+        self.workspace, self.source = workspace, source
+        self.compatibility_roundtrip = compatibility_roundtrip
+        self.calls = 0
+        self.systems: list[str] = []
+
+    async def stream(
+        self, _conversation: Any, system: str = "", tools: list[dict[str, Any]] | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        self.calls += 1
+        self.systems.append(system)
+        if self.calls == 1:
+            yield ToolCallComplete("read", "ReadFile", {"file_path": str(self.source), "offset": 0, "limit": 80})
+        elif self.calls == 2:
+            yield ToolCallComplete("baseline", "RunTest", {"cwd": str(self.workspace), "argv": ["test_contract.py"], "timeout_seconds": 30})
+        elif self.compatibility_roundtrip and self.calls == 3:
+            yield ToolCallComplete("bad-annotation", "EditFile", {
+                "file_path": str(self.source), "old_string": "Optional[str]", "new_string": "str | None",
+            })
+        elif self.compatibility_roundtrip and self.calls == 4:
+            yield ToolCallComplete("safe-annotation", "EditFile", {
+                "file_path": str(self.source), "old_string": "str | None", "new_string": "Optional[str]",
+            })
+        elif self.calls == (5 if self.compatibility_roundtrip else 3):
+            yield ToolCallComplete("edit", "EditFile", {
+                "file_path": str(self.source), "old_string": 'DEFAULT = "old"', "new_string": 'DEFAULT = "new-value"',
+            })
+        elif self.calls == (6 if self.compatibility_roundtrip else 4):
+            yield ToolCallComplete("post", "RunTest", {"cwd": str(self.workspace), "argv": ["test_contract.py"], "timeout_seconds": 30})
+        else:
+            yield TextDelta("activation fixture complete")
+        yield StreamEnd("end_turn")
+
+
+def _activation_workspace(tmp_path: Path, *, sibling: bool = False, excluded: bool = False) -> tuple[Path, Path]:
+    workspace = tmp_path / "activation-workspace"
+    workspace.mkdir()
+    (workspace / "pyproject.toml").write_text('[project]\nrequires-python = ">=3.8"\n', encoding="utf-8")
+    source = workspace / "contract.py"
+    source.write_text(
+        'from typing import Optional\nDEFAULT = "old"\ndef target(value: Optional[str] = DEFAULT):\n    return value\n',
+        encoding="utf-8",
+    )
+    (workspace / "test_contract.py").write_text(
+        'from contract import target\n\ndef test_target_default():\n    assert target() == "new-value"\n', encoding="utf-8",
+    )
+    if sibling:
+        (workspace / "sibling_backend.py").write_text("def target(value):\n    return value\n", encoding="utf-8")
+    if excluded:
+        shadow = workspace / ".evaluation-v2-preflight-venv" / "lib" / "site-packages"
+        shadow.mkdir(parents=True)
+        (shadow / "test_contract.py").write_text("def test_target_default(): pass\n", encoding="utf-8")
+        venv = workspace / "venv" / "site-packages"
+        venv.mkdir(parents=True)
+        (venv / "test_contract.py").write_text("def test_target_default(): pass\n", encoding="utf-8")
+    for command in (
+        ["git", "init"], ["git", "config", "user.email", "v31@example.test"],
+        ["git", "config", "user.name", "Capability V3.1"],
+        ["git", "add", "."],
+        ["git", "commit", "-m", "base"],
+    ):
+        subprocess.run(command, cwd=workspace, check=True, capture_output=True, text=True)
+    return workspace, source
 
 
 def _git_workspace(tmp_path: Path) -> Path:
@@ -226,3 +296,46 @@ def test_final_export_prefers_stable_candidate_over_later_workspace_wip(tmp_path
         ["git", "diff", "--binary", "--no-ext-diff"], cwd=workspace,
         check=True, capture_output=True, text=True,
     ).stdout
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "issue", "sibling", "excluded"),
+    [
+        ("python38_compatibility", "Python runtime compatibility for target default config", False, False),
+        ("default_explicit_config", "target default and explicit config contract", False, False),
+        ("sibling_backend", "target backend sibling implementation contract", True, False),
+        ("exception_boundary", "target exception boundary validation", False, False),
+        ("baseline_existing_failure", "target default config retains baseline failure attribution", False, False),
+        ("virtualenv_exclusion", "target default config validation", False, True),
+    ],
+)
+def test_zero_provider_activation_fixtures_use_real_agent_request_path(
+    tmp_path: Path, fixture_name: str, issue: str, sibling: bool, excluded: bool,
+) -> None:
+    workspace, source = _activation_workspace(tmp_path, sibling=sibling, excluded=excluded)
+    artifact_root = tmp_path / "artifact"
+    client = _ActivationFixtureClient(
+        workspace, source, compatibility_roundtrip=fixture_name == "python38_compatibility",
+    )
+
+    asyncio.run(_agent(client, workspace, artifact_root).run_to_completion(issue))
+
+    summary = json.loads((artifact_root / "summary.json").read_text(encoding="utf-8"))
+    events = summary["events"]
+    event_types = [event["event_type"] for event in events]
+    assert client.systems and all("[Capability V3 evidence advice]" in system for system in client.systems)
+    assert "AdviceGenerated" in event_types
+    assert "AdviceInjected" in event_types
+    assert all(event["payload"]["present"] for event in events if event["event_type"] == "AdvicePresentInRequest")
+    assert "HypothesisProposed" in event_types
+    assert "ContractMatrixBuilt" in event_types
+    assert "ToolEvidenceObserved" in event_types
+    assert "BaselineObserved" in event_types and "PostObserved" in event_types
+    assert "Fixed" in event_types
+    assert summary["derived_state"]["candidate_snapshots"][-1]["level"] == "C3"
+    if excluded:
+        recommended = summary["derived_state"]["impact_slice"]["impacted_tests"]
+        assert all("venv" not in item["test"] and "site-packages" not in item["test"] for item in recommended)
+    if fixture_name == "python38_compatibility":
+        assert "RuntimeCompatibilityRiskDetected" in event_types
+        assert event_types.index("RuntimeCompatibilityRiskDetected") < event_types.index("CandidatePromoted")

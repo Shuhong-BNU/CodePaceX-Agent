@@ -629,6 +629,7 @@ class Agent:
                                  feature_flag=self.capability_v3_flag)
             if task:
                 controller.collect_evidence(task, Path(self.work_dir))
+                controller.initialize_contract_reasoning(task)
         except Exception as exc:
             try:
                 controller._fail_open("agent_start", exc)
@@ -643,6 +644,22 @@ class Agent:
                 return message.content
         return ""
 
+    def _inject_capability_v3_advice(self, system: str) -> str:
+        """Append advisory V3 evidence immediately before the transport boundary."""
+        controller = self.capability_v3_controller
+        if not controller.enabled:
+            return system
+        try:
+            advice = controller.request_advice()
+            if not advice:
+                return system
+            injected = f"{system}\n\n{advice}"
+            controller.record_advice_injected(advice, injected)
+            return injected
+        except Exception as exc:
+            controller._fail_open("inject_advice", exc)
+            return system
+
     def _observe_capability_v3_tool_result(
         self, tc: ToolCallComplete, tool: Any, result: ToolResult,
     ) -> None:
@@ -651,6 +668,11 @@ class Agent:
         if not controller.enabled:
             return
         try:
+            if tool.category == "read":
+                controller.observe_tool_evidence(
+                    tool_name=tc.tool_name, arguments=tc.arguments, output=result.output,
+                    is_error=result.is_error,
+                )
             if tool.category == "write" and not result.is_error:
                 diff = subprocess.run(
                     ["git", "diff", "--binary", "--no-ext-diff"], cwd=self.work_dir,
@@ -668,6 +690,7 @@ class Agent:
                     patch_path.write_text(diff.stdout, encoding="utf-8")
                     candidate = controller.observe_diff(
                         diff_text=diff.stdout, changed_files=changed_files, patch_path=patch_path,
+                        repository=Path(self.work_dir),
                     )
                     if candidate is not None:
                         controller.build_impact(
@@ -675,9 +698,21 @@ class Agent:
                             repository=Path(self.work_dir),
                         )
             if tc.tool_name == "RunTest":
-                controller.observe_test_result(
-                    passed=not result.is_error, test_evidence_id=tc.tool_id,
+                differential = controller.observe_test_execution(
+                    arguments=tc.arguments, output=result.output, is_error=result.is_error,
+                    test_evidence_id=tc.tool_id, candidate_exists=bool(controller.candidates),
                 )
+                no_new_regression = bool(
+                    differential is not None and not differential.new_regression_candidates
+                    and not differential.environment_errors
+                )
+                controller.observe_test_result(
+                    passed=not result.is_error or no_new_regression, test_evidence_id=tc.tool_id,
+                    regression_bounded=bool(
+                        controller.impact and controller.matrix and no_new_regression
+                    ),
+                )
+            controller.observe_advice_outcome(tool_name=tc.tool_name, arguments=tc.arguments)
         except Exception as exc:
             try:
                 controller._fail_open("agent_tool_result", exc)
@@ -1045,6 +1080,7 @@ class Agent:
                 coordinator_mode=self.coordinator_mode,
                 agent_catalog=self._agent_catalog_list or None,
             )
+            system = self._inject_capability_v3_advice(system)
 
             if self.plan_mode:
                 plan_path = str(self._get_plan_path())
@@ -2182,7 +2218,8 @@ class Agent:
                 append_replacement_records(self.session_dir, _new_records)
 
             collector = StreamCollector(self._index_runtime_event)
-            llm_stream = self.client.stream(api_conv, system=system, tools=tools)
+            request_system = self._inject_capability_v3_advice(system)
+            llm_stream = self.client.stream(api_conv, system=request_system, tools=tools)
             async for stream_event in collector.consume(llm_stream):
                 if event_callback and isinstance(stream_event, RuntimeManifestEvent):
                     event_callback(self._runtime_event_payload(stream_event))

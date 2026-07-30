@@ -26,6 +26,19 @@ from .models import (
 
 SCHEMA_VERSION = 1
 _WORDS = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
+_EXCLUDED_PATH_PARTS = frozenset({
+    ".git", ".venv", "venv", ".evaluation-v2-preflight-venv", "site-packages",
+    "build", "dist", "__pycache__", ".pytest_cache", ".mypy_cache",
+})
+_ISSUE_WRAPPERS = frozenset({
+    "after", "agent", "bug", "change", "code", "failure", "fix", "for", "from",
+    "implement", "issue", "must", "please", "problem", "project", "repository",
+    "should", "statement", "task", "test", "tests", "the", "this", "update", "with",
+})
+_CONTRACT_TERMS = frozenset({
+    "api", "backend", "compatibility", "config", "default", "exception", "python",
+    "runtime", "serializ", "type", "validation",
+})
 
 
 @dataclass(frozen=True)
@@ -98,19 +111,49 @@ class CapabilityV3Controller:
         return EvidenceRef(f"ev-{digest[:16]}", kind, str(path) if path else None, symbol,
                            line, line, commit, digest, text[:300], confidence)
 
+    @staticmethod
+    def _is_excluded_path(path: Path, repository: Path) -> bool:
+        try:
+            parts = path.relative_to(repository).parts
+        except ValueError:
+            return True
+        return any(part in _EXCLUDED_PATH_PARTS for part in parts)
+
+    @staticmethod
+    def _issue_entities(issue: str, target_symbols: Iterable[str]) -> tuple[str, ...]:
+        """Retain named task entities while discarding generic SWE task wrappers."""
+        explicit = [item.strip("`'\".,:;()[]{}") for item in target_symbols]
+        words = [word for word in _WORDS.findall(issue) if word.lower() not in _ISSUE_WRAPPERS]
+        # Mixed/capitalized identifiers and config-like names are higher value than prose.
+        ranked = sorted(
+            dict.fromkeys([*explicit, *words]),
+            key=lambda word: (
+                not ("_" in word or any(char.isupper() for char in word) or word.lower() in _CONTRACT_TERMS),
+                word.lower(),
+            ),
+        )
+        return tuple(word for word in ranked if word)[:12]
+
+    def _concrete_unknown(self, *, entities: tuple[str, ...], target_count: int) -> tuple[str, ...]:
+        if target_count:
+            return ()
+        if not entities:
+            return ("no named entity in issue statement",)
+        return ("no repository definition matched named entities: " + ", ".join(entities[:3]),)
+
     def collect_evidence(self, issue: str, repository: Path,
                          target_symbols: Iterable[str] = ()) -> ContractEvidencePacket | None:
         """Read only repository evidence, bounded by category and file size."""
         if not (self.enabled and self.config.contract_recovery_enabled):
             return None
         try:
-            symbols = tuple(dict.fromkeys([*target_symbols, *_WORDS.findall(issue)]))[:12]
+            symbols = self._issue_entities(issue, target_symbols)
             issue_ref = self._ref(kind="issue_statement", path=None, symbol=None, text=issue,
                                   commit=self.base_commit, confidence="high")
             buckets: dict[str, list[EvidenceRef]] = {name: [] for name in (
                 "target", "callers", "implementations", "tests", "defaults", "serialization")}
             for path in sorted(repository.rglob("*.py"))[:800]:
-                if any(part.startswith(".") for part in path.relative_to(repository).parts):
+                if self._is_excluded_path(path, repository):
                     continue
                 try:
                     text = path.read_text(encoding="utf-8", errors="replace")
@@ -153,7 +196,7 @@ class CapabilityV3Controller:
                 callers=tuple(buckets["callers"]), implementations=tuple(buckets["target"]),
                 tests_and_fixtures=tuple(buckets["tests"]), defaults_and_config=tuple(buckets["defaults"]),
                 serialization_and_output=tuple(buckets["serialization"]), conflicts=conflict,
-                unknowns=tuple() if buckets["target"] else ("no target-symbol anchor found",),
+                unknowns=self._concrete_unknown(entities=symbols, target_count=len(buckets["target"])),
             )
             self._emit("EvidenceCollected", packet=self.evidence)
             for item in conflict:
@@ -162,6 +205,110 @@ class CapabilityV3Controller:
         except Exception as exc:
             self._fail_open("collect_evidence", exc)
             return None
+
+    def observe_tool_evidence(self, *, tool_name: str, arguments: dict[str, Any], output: str,
+                              is_error: bool) -> EvidenceRef | None:
+        """Merge bounded read-tool facts into the single V3 evidence packet.
+
+        This is deliberately lossy: output is represented by a digest and a short
+        preview, so artifacts do not become a second transcript or secret store.
+        """
+        if not (self.enabled and self.evidence and not is_error):
+            return None
+        if tool_name not in {"ReadFile", "Grep", "Glob"} or not output:
+            return None
+        try:
+            raw_path = str(arguments.get("file_path") or arguments.get("path") or "")
+            path = Path(raw_path) if raw_path else None
+            kind = {"ReadFile": "tool_read", "Grep": "tool_grep", "Glob": "tool_glob"}[tool_name]
+            symbol = str(arguments.get("pattern") or "") or None
+            ref = self._ref(kind=kind, path=path, symbol=symbol, text=output,
+                            commit=self.base_commit, confidence="high")
+            packet = self.evidence
+            tests = list(packet.tests_and_fixtures)
+            callers = list(packet.callers)
+            if tool_name == "Glob" or "test" in output.lower() or "test" in raw_path.lower():
+                tests.append(ref)
+            else:
+                callers.append(ref)
+            self.evidence = ContractEvidencePacket(
+                **{**packet.__dict__, "callers": tuple(callers[:12]),
+                   "tests_and_fixtures": tuple(tests[:12])}
+            )
+            self._emit("ToolEvidenceObserved", tool_name=tool_name, evidence=ref)
+            self._update_hypotheses_from_evidence(ref)
+            return ref
+        except Exception as exc:
+            self._fail_open("observe_tool_evidence", exc)
+            return None
+
+    def initialize_contract_reasoning(self, issue: str) -> None:
+        """Create at most two evidence-backed alternatives for contract-heavy tasks."""
+        if not (self.enabled and self.evidence):
+            return
+        lowered = issue.lower()
+        if not any(term in lowered for term in _CONTRACT_TERMS):
+            return
+        evidence_ids = tuple(item.evidence_id for item in self.evidence.target_symbols[:2])
+        if not evidence_ids:
+            return
+        self.record_hypotheses((
+            HypothesisRecord("hyp-contract-current", "Existing target behavior is the intended contract.",
+                             evidence_ids, (), "A targeted test preserves the observed implementation behavior.",
+                             "Read target implementation", "proposed", self.budget.requests_used, self.budget.requests_used),
+            HypothesisRecord("hyp-contract-adjacent", "A caller, config, or sibling defines a different boundary.",
+                             evidence_ids, (), "A caller/config/sibling read contradicts the target-only interpretation.",
+                             "Grep named entity in project sources", "proposed", self.budget.requests_used, self.budget.requests_used),
+        ))
+        dimensions: list[ContractDimension] = []
+        if self.evidence.defaults_and_config:
+            dimensions.append(ContractDimension("configuration", ("default", "explicit"),
+                                                tuple(item.evidence_id for item in self.evidence.defaults_and_config[:2])))
+        if self.evidence.implementations or self.evidence.callers:
+            dimensions.append(ContractDimension("implementation_boundary", ("target", "adjacent"), evidence_ids))
+        if dimensions:
+            self.build_matrix(dimensions)
+
+    def _update_hypotheses_from_evidence(self, evidence: EvidenceRef) -> None:
+        for record in tuple(self.hypotheses):
+            if record.status != "proposed":
+                continue
+            if "adjacent" in record.hypothesis_id and evidence.evidence_type in {"tool_grep", "tool_read"}:
+                self.reject_hypothesis(record.hypothesis_id, tool_evidence_id=evidence.evidence_id)
+                break
+
+    def request_advice(self) -> str:
+        """Build a compact, bounded request supplement from the current evidence."""
+        if not self.enabled or not self.evidence:
+            return ""
+        entities = ", ".join(self.evidence.issue_entities[:6]) or "none"
+        targets = ", ".join(item.symbol or item.path or "evidence" for item in self.evidence.target_symbols[:3]) or "unresolved"
+        tests = ", ".join(item.test for item in (self.impact.impacted_tests if self.impact else ())[:4]) or "derive a targeted project test"
+        unknowns = "; ".join(self.evidence.unknowns[:2])
+        advice = "\n".join((
+            "[Capability V3 evidence advice]",
+            f"Entities: {entities}", f"Anchors: {targets}", f"Targeted validation: {tests}",
+            f"Unknowns: {unknowns or 'none'}", "Keep this advisory; inspect evidence before changing behavior.",
+        ))[:1800]
+        self._emit("AdviceGenerated", digest=self._hash(advice), preview=advice[:300], chars=len(advice))
+        return advice
+
+    def record_advice_injected(self, advice: str, request_system: str) -> None:
+        if not (self.enabled and advice):
+            return
+        digest = self._hash(advice)
+        self._emit("AdviceInjected", digest=digest, chars=len(advice))
+        self._emit("AdvicePresentInRequest", digest=digest, present=advice in request_system)
+
+    def observe_advice_outcome(self, *, tool_name: str, arguments: dict[str, Any]) -> None:
+        if not self.enabled or not self.evidence:
+            return
+        target = " ".join(str(value) for value in arguments.values())
+        recommended = tuple(item.test for item in (self.impact.impacted_tests if self.impact else ()))
+        if tool_name == "RunTest" and (not recommended or any(test in target for test in recommended)):
+            self._emit("AdviceReferenced", tool_name=tool_name)
+        elif tool_name in {"EditFile", "WriteFile", "RunTest"}:
+            self._emit("AdviceIgnoredOrRejected", tool_name=tool_name, reason="no matching advised validation")
 
     def record_hypotheses(self, records: Iterable[HypothesisRecord]) -> tuple[HypothesisRecord, ...]:
         if not (self.enabled and self.config.bounded_hypotheses_enabled):
@@ -234,7 +381,7 @@ class CapabilityV3Controller:
             symbols: set[str] = set()
             for name in files:
                 path = repository / name
-                if path.suffix == ".py" and path.exists():
+                if path.suffix == ".py" and path.exists() and not self._is_excluded_path(path, repository):
                     try:
                         symbols.update(node.name for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
                                        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)))
@@ -244,6 +391,8 @@ class CapabilityV3Controller:
             for test in sorted(set(prior_failing_tests) | set(f2p_tests)):
                 recommendations[test] = TestRecommendation(test, 10_000, ("prior_failure_or_f2p",), True)
             for path in sorted(repository.rglob("test*.py"))[:800]:
+                if self._is_excluded_path(path, repository):
+                    continue
                 try:
                     text = path.read_text(encoding="utf-8", errors="replace")
                 except OSError:
@@ -285,18 +434,37 @@ class CapabilityV3Controller:
             self.reproducer = evidence
             self._emit("ReproducerRegistered", reproducer=evidence)
 
-    def observe_diff(self, *, diff_text: str, changed_files: Iterable[str], patch_path: Path | None = None) -> CandidateSnapshot | None:
+    def observe_diff(self, *, diff_text: str, changed_files: Iterable[str], patch_path: Path | None = None,
+                     repository: Path | None = None) -> CandidateSnapshot | None:
         if not (self.enabled and self.config.candidate_snapshot_enabled):
             return None
         try:
             changed = tuple(changed_files)
             diff_sha = self._hash(diff_text)
             risks = self.inspect_oracle(changed_files=changed, diff_text=diff_text)
+            if repository is not None and self._has_python38_union_regression(diff_text, repository):
+                compatibility = OracleRisk(
+                    "python_runtime_compatibility", "high",
+                    "PEP 604 union syntax is incompatible with this repository's Python 3.8 runtime floor",
+                )
+                self.oracle_risks.append(compatibility)
+                risks = tuple(risks) + (compatibility,)
+                self._emit("RuntimeCompatibilityRiskDetected", risk=compatibility)
             return self.snapshot_candidate(CandidateLevel.C1, diff_sha=diff_sha, patch_path=patch_path,
                                            changed_files=changed, oracle_risks=risks)
         except Exception as exc:
             self._fail_open("observe_diff", exc)
             return None
+
+    @staticmethod
+    def _has_python38_union_regression(diff_text: str, repository: Path) -> bool:
+        if not re.search(r"^\+.*\b[A-Za-z_][A-Za-z0-9_]*\s*\|\s*(?:None|[A-Za-z_])", diff_text, re.M):
+            return False
+        try:
+            metadata = (repository / "pyproject.toml").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+        return bool(re.search(r"requires-python\s*=\s*['\"]>=\s*3\.(?:[0-8])", metadata))
 
     def snapshot_candidate(self, level: CandidateLevel, *, diff_sha: str, patch_path: Path | None,
                            changed_files: tuple[str, ...], test_evidence_ids: Iterable[str] = (),
@@ -341,9 +509,13 @@ class CapabilityV3Controller:
             self._emit("CandidateValidationFailed", candidate=failed, test_evidence_id=test_evidence_id)
             return failed
         level = latest.level
-        if passed and (reproducer_status is ReproducerStatus.PRE_FAIL_POST_PASS or test_evidence_id):
+        compatibility_risk = "python_runtime_compatibility" in latest.oracle_risks
+        if passed and compatibility_risk:
+            self._emit("CandidatePromotionDeferred", candidate=latest,
+                       reason="runtime compatibility risk requires a compatible patch")
+        elif passed and (reproducer_status is ReproducerStatus.PRE_FAIL_POST_PASS or test_evidence_id):
             level = max(level, CandidateLevel.C2, key=lambda item: list(CandidateLevel).index(item))
-        if passed and regression_bounded and self.impact and self.matrix:
+        if passed and not compatibility_risk and regression_bounded and self.impact and self.matrix:
             level = max(level, CandidateLevel.C3, key=lambda item: list(CandidateLevel).index(item))
         if level is latest.level:
             return latest
@@ -516,7 +688,51 @@ class CapabilityV3Controller:
                 baseline_existing=tuple(sorted(set(before) & set(after))), persistent_failures=tuple(sorted(set(before) & set(after))),
                 environment_errors=tuple(sorted(env)))
         self._emit("FailureAttributionCompleted", attribution=self.differential)
+        if self.differential.unknown:
+            self._emit("DifferentialIncomparable", reasons=self.differential.unknown)
+        if self.differential.incomparable:
+            self._emit("DifferentialIncomparable", reasons=self.differential.incomparable)
+        for failure_id in self.differential.resolved_failures:
+            self._emit("Fixed", failure_id=failure_id)
+        for failure_id in self.differential.new_regression_candidates:
+            self._emit("New", failure_id=failure_id)
+        for failure_id in self.differential.persistent_failures:
+            self._emit("Persistent", failure_id=failure_id)
         return self.differential
+
+    def observe_test_execution(self, *, arguments: dict[str, Any], output: str, is_error: bool,
+                               test_evidence_id: str, candidate_exists: bool) -> FailureAttribution | None:
+        """Record a comparable actual RunTest result as baseline or post-patch evidence."""
+        if not self.enabled:
+            return None
+        try:
+            command = tuple(str(item) for item in arguments.get("argv", ()))
+            identity = ComparableRunIdentity(
+                self.base_commit, str(arguments.get("cwd", "")), "local", "python",
+                command, self._hash("\0".join(command))[:16], "offline", int(arguments.get("timeout_seconds", 120)),
+            )
+            failure = self._failure_records(output, command) if is_error else ()
+            baseline = getattr(self, "_baseline_test_result", None)
+            if not candidate_exists and baseline is None:
+                self._baseline_test_result = (failure, identity)
+                self._emit("BaselineObserved", test_evidence_id=test_evidence_id, failures=failure, identity=identity)
+                return None
+            self._emit("PostObserved", test_evidence_id=test_evidence_id, failures=failure, identity=identity)
+            before, before_identity = baseline if baseline is not None else (None, None)
+            return self.attribute_failures(before, failure, baseline_identity=before_identity, post_identity=identity)
+        except Exception as exc:
+            self._fail_open("observe_test_execution", exc)
+            return None
+
+    def _failure_records(self, output: str, command: tuple[str, ...]) -> tuple[FailureRecord, ...]:
+        nodeids = re.findall(r"^FAILED\s+([^\s]+)", output, re.M)
+        if not nodeids:
+            nodeids = [command[0] if command else self._hash(output)[:16]]
+        category = "collection" if "collect" in output.lower() else "failure"
+        return tuple(
+            FailureRecord(nodeid, nodeid, category, nodeid)
+            for nodeid in sorted(set(nodeids))
+        )
 
     def before_tool_call(self, tool_name: str) -> V3Advice:
         if not self.enabled:
