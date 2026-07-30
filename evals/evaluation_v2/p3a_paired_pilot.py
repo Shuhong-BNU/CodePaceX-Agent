@@ -382,9 +382,10 @@ def _shadow_evaluator(**kwargs: Any) -> subprocess.CompletedProcess[str]:
 
 def _rehearsal_gate(root: Path, frozen: Mapping[str, Any], artifact_root: Path) -> PaidRunGate:
     pricing = load_pricing(root / full_replay.PRICING_PATH)
+    hard_cap = Decimal(str(frozen["budget_proposal"]["hard_cap_proposal_cny"]))
     authorization = BudgetAuthorization(
-        authorized_total_cny=Decimal(str(frozen["budget_proposal"]["hard_cap_proposal_cny"])),
-        stage_limits_cny={"A": Decimal("0"), "B": Decimal("0"), "C": Decimal(str(frozen["budget_proposal"]["hard_cap_proposal_cny"]))},
+        authorized_total_cny=hard_cap,
+        stage_limits_cny={"A": hard_cap, "B": hard_cap, "C": hard_cap},
         pricing_snapshot_hash=pricing_snapshot_hash(pricing), experiment_commit=BOUND_MAIN_COMMIT,
         authorized_at="p3a-zero-provider-rehearsal", authorized_by="user",
     )
