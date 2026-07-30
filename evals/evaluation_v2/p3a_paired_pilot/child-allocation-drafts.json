@@ -1,0 +1,92 @@
+{
+  "child_allocation_drafts": [
+    {
+      "child_allocation_id": "p3a-paired-pilot-parent-authorization-draft-run-01",
+      "child_allocation_sha256": "9ec378fdd484ebf2dfb77151c2c1f567c76d6e11c4e552049ce826ec362d7456",
+      "expected_artifact_path": "runs/01-V2_CONTROL/tasks/beetbox__beets-5457",
+      "instance_id": "beetbox__beets-5457",
+      "parent_authorization_id": "p3a-paired-pilot-parent-authorization-draft",
+      "status": "draft_not_authorized",
+      "task_run_id": "p3a-01-beetbox__beets-5457-V2_CONTROL",
+      "theoretical_ceiling_cny": "73.236480",
+      "treatment": "V2_CONTROL"
+    },
+    {
+      "child_allocation_id": "p3a-paired-pilot-parent-authorization-draft-run-02",
+      "child_allocation_sha256": "93b8953cc79a874dbd813e41ecf89c5ccaf1daa590d121a86ece0929a6b68502",
+      "expected_artifact_path": "runs/02-V3_CORE/tasks/beetbox__beets-5457",
+      "instance_id": "beetbox__beets-5457",
+      "parent_authorization_id": "p3a-paired-pilot-parent-authorization-draft",
+      "status": "draft_not_authorized",
+      "task_run_id": "p3a-02-beetbox__beets-5457-V3_CORE",
+      "theoretical_ceiling_cny": "73.236480",
+      "treatment": "V3_CORE"
+    },
+    {
+      "child_allocation_id": "p3a-paired-pilot-parent-authorization-draft-run-03",
+      "child_allocation_sha256": "af803cb993051784dbce904f5d1c26dd79fb0822588c2d063d6a89ef2d6946a7",
+      "expected_artifact_path": "runs/03-V3_CORE/tasks/deepset-ai__haystack-8489",
+      "instance_id": "deepset-ai__haystack-8489",
+      "parent_authorization_id": "p3a-paired-pilot-parent-authorization-draft",
+      "status": "draft_not_authorized",
+      "task_run_id": "p3a-03-deepset-ai__haystack-8489-V3_CORE",
+      "theoretical_ceiling_cny": "73.236480",
+      "treatment": "V3_CORE"
+    },
+    {
+      "child_allocation_id": "p3a-paired-pilot-parent-authorization-draft-run-04",
+      "child_allocation_sha256": "1bea3fa75bde254314982f232d5661984b43bca76c894590df453ea143bf43de",
+      "expected_artifact_path": "runs/04-V2_CONTROL/tasks/deepset-ai__haystack-8489",
+      "instance_id": "deepset-ai__haystack-8489",
+      "parent_authorization_id": "p3a-paired-pilot-parent-authorization-draft",
+      "status": "draft_not_authorized",
+      "task_run_id": "p3a-04-deepset-ai__haystack-8489-V2_CONTROL",
+      "theoretical_ceiling_cny": "73.236480",
+      "treatment": "V2_CONTROL"
+    },
+    {
+      "child_allocation_id": "p3a-paired-pilot-parent-authorization-draft-run-05",
+      "child_allocation_sha256": "8f9ee1b1bbc38dc6fbf167e1ac65f6e8244b0b40a1e5fc4a684af2ea035d0629",
+      "expected_artifact_path": "runs/05-V2_CONTROL/tasks/dynaconf__dynaconf-1249",
+      "instance_id": "dynaconf__dynaconf-1249",
+      "parent_authorization_id": "p3a-paired-pilot-parent-authorization-draft",
+      "status": "draft_not_authorized",
+      "task_run_id": "p3a-05-dynaconf__dynaconf-1249-V2_CONTROL",
+      "theoretical_ceiling_cny": "73.236480",
+      "treatment": "V2_CONTROL"
+    },
+    {
+      "child_allocation_id": "p3a-paired-pilot-parent-authorization-draft-run-06",
+      "child_allocation_sha256": "f8e8f40acf9f7d2a515b801198838bad9f9fbcd8e2cb99cc9643c74b398af5c1",
+      "expected_artifact_path": "runs/06-V3_CORE/tasks/dynaconf__dynaconf-1249",
+      "instance_id": "dynaconf__dynaconf-1249",
+      "parent_authorization_id": "p3a-paired-pilot-parent-authorization-draft",
+      "status": "draft_not_authorized",
+      "task_run_id": "p3a-06-dynaconf__dynaconf-1249-V3_CORE",
+      "theoretical_ceiling_cny": "73.236480",
+      "treatment": "V3_CORE"
+    },
+    {
+      "child_allocation_id": "p3a-paired-pilot-parent-authorization-draft-run-07",
+      "child_allocation_sha256": "69f09c7173782c57357258d519883d71986c6e8d2c6416fb5b1a3c5256b014a1",
+      "expected_artifact_path": "runs/07-V3_CORE/tasks/delgan__loguru-1297",
+      "instance_id": "delgan__loguru-1297",
+      "parent_authorization_id": "p3a-paired-pilot-parent-authorization-draft",
+      "status": "draft_not_authorized",
+      "task_run_id": "p3a-07-delgan__loguru-1297-V3_CORE",
+      "theoretical_ceiling_cny": "73.236480",
+      "treatment": "V3_CORE"
+    },
+    {
+      "child_allocation_id": "p3a-paired-pilot-parent-authorization-draft-run-08",
+      "child_allocation_sha256": "a8dbbd238a351c15d3984b71f7ca793cea65cc0b2d7096d53e5479c47c4bca8e",
+      "expected_artifact_path": "runs/08-V2_CONTROL/tasks/delgan__loguru-1297",
+      "instance_id": "delgan__loguru-1297",
+      "parent_authorization_id": "p3a-paired-pilot-parent-authorization-draft",
+      "status": "draft_not_authorized",
+      "task_run_id": "p3a-08-delgan__loguru-1297-V2_CONTROL",
+      "theoretical_ceiling_cny": "73.236480",
+      "treatment": "V2_CONTROL"
+    }
+  ]
+}

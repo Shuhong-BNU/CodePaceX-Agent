@@ -1,0 +1,355 @@
+{
+  "bound_main_commit": "9e076874894ccf155d990fa8a176b2191e258652",
+  "budget_proposal": {
+    "authorization": "proposal_only_requires_new_explicit_P3_B_paid_authorization",
+    "conservative_proposal_cny": "292.9459200",
+    "currency": "CNY",
+    "derivation": "expected=2*sum(selected Goal 4 costs for the four tasks); conservative=max(1.5*expected, 50%*hard-cap); hard-cap=8*40*frozen per-request worst case",
+    "expected_proposal_cny": "74.592144",
+    "hard_cap_proposal_cny": "585.891840",
+    "historical_selected_cost_cny_by_task": {
+      "beetbox__beets-5457": "13.291632",
+      "deepset-ai__haystack-8489": "5.881188",
+      "delgan__loguru-1297": "1.475676",
+      "dynaconf__dynaconf-1249": "16.647576"
+    },
+    "historical_source": "Goal 4 selected terminal cost rows committed in full_replay payloads",
+    "one_request_theoretical_exposure_cny": "1.830912",
+    "per_run_theoretical_exposure_cny": "73.236480",
+    "pricing_snapshot_path": "evals/goal2/pricing_bailian_qwen37_max_2026-07-13.json",
+    "pricing_snapshot_sha256": "a09eb6e6955b9fb68d3e011771c948f7a14b7bbca5316a2433cab099d0b643d3",
+    "request_ceiling_per_run": 40,
+    "safety_reserve_cny": "0.000001",
+    "schema_version": 1
+  },
+  "child_allocation_drafts": [
+    {
+      "child_allocation_id": "p3a-paired-pilot-parent-authorization-draft-run-01",
+      "child_allocation_sha256": "9ec378fdd484ebf2dfb77151c2c1f567c76d6e11c4e552049ce826ec362d7456",
+      "expected_artifact_path": "runs/01-V2_CONTROL/tasks/beetbox__beets-5457",
+      "instance_id": "beetbox__beets-5457",
+      "parent_authorization_id": "p3a-paired-pilot-parent-authorization-draft",
+      "status": "draft_not_authorized",
+      "task_run_id": "p3a-01-beetbox__beets-5457-V2_CONTROL",
+      "theoretical_ceiling_cny": "73.236480",
+      "treatment": "V2_CONTROL"
+    },
+    {
+      "child_allocation_id": "p3a-paired-pilot-parent-authorization-draft-run-02",
+      "child_allocation_sha256": "93b8953cc79a874dbd813e41ecf89c5ccaf1daa590d121a86ece0929a6b68502",
+      "expected_artifact_path": "runs/02-V3_CORE/tasks/beetbox__beets-5457",
+      "instance_id": "beetbox__beets-5457",
+      "parent_authorization_id": "p3a-paired-pilot-parent-authorization-draft",
+      "status": "draft_not_authorized",
+      "task_run_id": "p3a-02-beetbox__beets-5457-V3_CORE",
+      "theoretical_ceiling_cny": "73.236480",
+      "treatment": "V3_CORE"
+    },
+    {
+      "child_allocation_id": "p3a-paired-pilot-parent-authorization-draft-run-03",
+      "child_allocation_sha256": "af803cb993051784dbce904f5d1c26dd79fb0822588c2d063d6a89ef2d6946a7",
+      "expected_artifact_path": "runs/03-V3_CORE/tasks/deepset-ai__haystack-8489",
+      "instance_id": "deepset-ai__haystack-8489",
+      "parent_authorization_id": "p3a-paired-pilot-parent-authorization-draft",
+      "status": "draft_not_authorized",
+      "task_run_id": "p3a-03-deepset-ai__haystack-8489-V3_CORE",
+      "theoretical_ceiling_cny": "73.236480",
+      "treatment": "V3_CORE"
+    },
+    {
+      "child_allocation_id": "p3a-paired-pilot-parent-authorization-draft-run-04",
+      "child_allocation_sha256": "1bea3fa75bde254314982f232d5661984b43bca76c894590df453ea143bf43de",
+      "expected_artifact_path": "runs/04-V2_CONTROL/tasks/deepset-ai__haystack-8489",
+      "instance_id": "deepset-ai__haystack-8489",
+      "parent_authorization_id": "p3a-paired-pilot-parent-authorization-draft",
+      "status": "draft_not_authorized",
+      "task_run_id": "p3a-04-deepset-ai__haystack-8489-V2_CONTROL",
+      "theoretical_ceiling_cny": "73.236480",
+      "treatment": "V2_CONTROL"
+    },
+    {
+      "child_allocation_id": "p3a-paired-pilot-parent-authorization-draft-run-05",
+      "child_allocation_sha256": "8f9ee1b1bbc38dc6fbf167e1ac65f6e8244b0b40a1e5fc4a684af2ea035d0629",
+      "expected_artifact_path": "runs/05-V2_CONTROL/tasks/dynaconf__dynaconf-1249",
+      "instance_id": "dynaconf__dynaconf-1249",
+      "parent_authorization_id": "p3a-paired-pilot-parent-authorization-draft",
+      "status": "draft_not_authorized",
+      "task_run_id": "p3a-05-dynaconf__dynaconf-1249-V2_CONTROL",
+      "theoretical_ceiling_cny": "73.236480",
+      "treatment": "V2_CONTROL"
+    },
+    {
+      "child_allocation_id": "p3a-paired-pilot-parent-authorization-draft-run-06",
+      "child_allocation_sha256": "f8e8f40acf9f7d2a515b801198838bad9f9fbcd8e2cb99cc9643c74b398af5c1",
+      "expected_artifact_path": "runs/06-V3_CORE/tasks/dynaconf__dynaconf-1249",
+      "instance_id": "dynaconf__dynaconf-1249",
+      "parent_authorization_id": "p3a-paired-pilot-parent-authorization-draft",
+      "status": "draft_not_authorized",
+      "task_run_id": "p3a-06-dynaconf__dynaconf-1249-V3_CORE",
+      "theoretical_ceiling_cny": "73.236480",
+      "treatment": "V3_CORE"
+    },
+    {
+      "child_allocation_id": "p3a-paired-pilot-parent-authorization-draft-run-07",
+      "child_allocation_sha256": "69f09c7173782c57357258d519883d71986c6e8d2c6416fb5b1a3c5256b014a1",
+      "expected_artifact_path": "runs/07-V3_CORE/tasks/delgan__loguru-1297",
+      "instance_id": "delgan__loguru-1297",
+      "parent_authorization_id": "p3a-paired-pilot-parent-authorization-draft",
+      "status": "draft_not_authorized",
+      "task_run_id": "p3a-07-delgan__loguru-1297-V3_CORE",
+      "theoretical_ceiling_cny": "73.236480",
+      "treatment": "V3_CORE"
+    },
+    {
+      "child_allocation_id": "p3a-paired-pilot-parent-authorization-draft-run-08",
+      "child_allocation_sha256": "a8dbbd238a351c15d3984b71f7ca793cea65cc0b2d7096d53e5479c47c4bca8e",
+      "expected_artifact_path": "runs/08-V2_CONTROL/tasks/delgan__loguru-1297",
+      "instance_id": "delgan__loguru-1297",
+      "parent_authorization_id": "p3a-paired-pilot-parent-authorization-draft",
+      "status": "draft_not_authorized",
+      "task_run_id": "p3a-08-delgan__loguru-1297-V2_CONTROL",
+      "theoretical_ceiling_cny": "73.236480",
+      "treatment": "V2_CONTROL"
+    }
+  ],
+  "execution_contract": {
+    "automatic_retry_rerun_or_continuation": false,
+    "fallback": false,
+    "only_treatment_difference": "treatment",
+    "paid_execution": false,
+    "request_ceiling_per_run": 40,
+    "retry": 0,
+    "strict_serial": true
+  },
+  "experiment_name": "p3a-strict-paired-pilot",
+  "frozen_identities": {
+    "model": {
+      "model_id": "qwen3.7-max-2026-06-08"
+    },
+    "official_evaluator": {
+      "commit": "ad79b850f15e33992e96f03f6e97f05ddf9aa0be",
+      "dataset": "SWE-bench-Live/SWE-bench-Live",
+      "namespace": "starryzhang",
+      "report_selection": "detailed_then_summary_fail_closed-v1",
+      "repository": "https://github.com/microsoft/SWE-bench-Live",
+      "split": "lite"
+    },
+    "pricing": {
+      "path": "evals/goal2/pricing_bailian_qwen37_max_2026-07-13.json",
+      "snapshot_sha256": "a09eb6e6955b9fb68d3e011771c948f7a14b7bbca5316a2433cab099d0b643d3"
+    },
+    "prompt": {
+      "construction": "goal3-swe-inference-prompt-v1",
+      "system_instruction_sha256": "f43af3f8b81f58b2970571afb86f69641caf0da49c191cffe4026cf732abd36c"
+    },
+    "provider": {
+      "base_url": "https://llm-ipge9fy38w648m28.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+      "fallback_enabled": false,
+      "model_id": "qwen3.7-max-2026-06-08",
+      "protocol": "openai-compat",
+      "provider": "bailian-qwen37-max",
+      "provider_secret_name": "BAILIAN_API_KEY",
+      "retry": 0,
+      "strict_serial": true
+    },
+    "tools_and_permissions": {
+      "agent_dispatch_coverage_contract": "every-capability-terminal-requires-live-executor-provider-request-and-settlement-v1",
+      "agent_entrypoint": "Agent.run (CLI stream-json)",
+      "candidate_export_contract": "git-diff-binary-sha256-bound-v1",
+      "capability_v3_artifact_contract": "V3_CORE requires raw summary.json, nonempty events.jsonl, and selected final.patch at task-root/capability-v3-v1",
+      "capability_v3_feature_flag": "V2_CONTROL",
+      "host_runtime_integrity_contract": "before-after-runtime-fingerprint-equality-fail-closed-v1",
+      "phase_transition_contract": "dispatch-evidenced-capability-terminals-continue-infrastructure-stop-v2",
+      "pilot_config_max_iterations": 50,
+      "provider_request_budget_bridge_ceiling": 40,
+      "runtime_source_sha256": {
+        ".github/workflows/evaluation-v2-full-20-replay.yml": "38329d1f6b866193ed86137c840019df5c3120162da70c7a9fec188543269de0",
+        "codepacex/agent.py": "064ca1054d4d0268b629a1d15b685f32042c61d3408415d0c6cc3540f697d8d4",
+        "codepacex/capability_v3/config.py": "ad810ab41bd4ff83608dbf1e1d307cff9c2ac69bcb7f30555f6bbc55d639970b",
+        "codepacex/capability_v3/controller.py": "863f0afbb3162064b7b52b88e69fe3c55019191dae0c6a6a31911224204273c9",
+        "codepacex/capability_v3/models.py": "b72e9d689742afa7a10e24022e4f190fc96618a2e628ec52a0eb2b14c8371beb",
+        "codepacex/client.py": "09bc2c696628f1431e9eadd890947b9c798798b200002f0557f224dfcf1e7a5a",
+        "codepacex/permissions/checker.py": "bab12d8cde66fac86bdb6df8e63c8540e0dba43dd8b2ae461047144afa380cd2",
+        "codepacex/tools/edit_file.py": "495231404680b588a7ac14b2d2807aa156e832136c14459f923ac3276dab750f",
+        "codepacex/tools/run_test.py": "19335d85dbd43ea6062e419bfcc089eb98da15c928bb1fcb6280705bc27b52fe",
+        "evals/evaluation_v2/control_canary.py": "54c3ec068e28d5a2d9dff26a329b408de04f5b43ad8c06f881cb6cf5c6b4d2c4",
+        "evals/evaluation_v2/full_replay.py": "37c6479b023e8fbad70504d338135ba764912ee734f785a42a9318b0c9c75d39",
+        "evals/paid_gate.py": "7406e79cf8e1e4827d347ca8cad4ff1d30cb83c4912c50910bf4d871a1c382b9",
+        "evals/pilot.py": "855c4cba3a2bf379e9b5d325115e90c743a6e88f466605171ecf579f2620ecec"
+      },
+      "schema_version": 1,
+      "system_instruction_sha256": "f43af3f8b81f58b2970571afb86f69641caf0da49c191cffe4026cf732abd36c",
+      "task_python_isolation_contract": "fresh-no-system-site-packages-venv-path-bound-python-python3-pip-pip3-v1",
+      "tool_schemas_sha256": "72ae1262c5acd1a8b21c3f0964cdcb210508f1b780590b79b0ec2cc2eba07aea"
+    }
+  },
+  "p3_b": "blocked_pending_new_explicit_paid_authorization",
+  "paired_artifact_schema": {
+    "comparison_key": [
+      "pair_index",
+      "instance_id",
+      "repo",
+      "base_commit",
+      "problem_statement_sha256"
+    ],
+    "merge_rule": "exactly one V2_CONTROL and one V3_CORE record per identical comparison key; reject all other joins",
+    "required_result_fields": [
+      "task_run_id",
+      "pair_index",
+      "instance_id",
+      "treatment",
+      "provider_requests",
+      "usage",
+      "charge_cny",
+      "provider_secret_read",
+      "artifact_path",
+      "terminal_status"
+    ],
+    "required_treatments": [
+      "V2_CONTROL",
+      "V3_CORE"
+    ],
+    "schema_version": 1,
+    "v2_contract": "V2_CONTROL has no V3 Advice or V3 activation Artifact requirement",
+    "v3_contract": "V3_CORE records Advice/activation expectation and raw V3 Artifact requirement"
+  },
+  "parent_authorization_draft": {
+    "authorization_id": "p3a-paired-pilot-parent-authorization-draft",
+    "bound_main_commit": "9e076874894ccf155d990fa8a176b2191e258652",
+    "hard_cap_proposal_cny": "585.891840",
+    "requires_new_explicit_paid_authorization": true,
+    "safety_reserve_cny": "0.000001",
+    "status": "draft_not_authorized"
+  },
+  "schema_version": 1,
+  "source_formal_freeze": {
+    "path": "evals/evaluation_v2/full_replay_payloads/full-20-freeze.json",
+    "sha256": "a4b1231244cd32ab751ca9c248f9496ee1753ba877d3496fd4545e3b1e2753e1"
+  },
+  "status": "frozen_zero_provider_readiness_only",
+  "task_runs": [
+    {
+      "base_commit": "03f1205629ad17f123a190040361babc41c18afc",
+      "expected_artifact_path": "runs/01-V2_CONTROL/tasks/beetbox__beets-5457",
+      "instance_id": "beetbox__beets-5457",
+      "ordinal": 1,
+      "pair_index": 1,
+      "problem_statement_sha256": "cd40853caf942eb05d178bc3ccbe2524673ed7ba38d35fe9c2f5fad8f333617e",
+      "repo": "beetbox/beets",
+      "task_run_id": "p3a-01-beetbox__beets-5457-V2_CONTROL",
+      "treatment": "V2_CONTROL"
+    },
+    {
+      "base_commit": "03f1205629ad17f123a190040361babc41c18afc",
+      "expected_artifact_path": "runs/02-V3_CORE/tasks/beetbox__beets-5457",
+      "instance_id": "beetbox__beets-5457",
+      "ordinal": 2,
+      "pair_index": 1,
+      "problem_statement_sha256": "cd40853caf942eb05d178bc3ccbe2524673ed7ba38d35fe9c2f5fad8f333617e",
+      "repo": "beetbox/beets",
+      "task_run_id": "p3a-02-beetbox__beets-5457-V3_CORE",
+      "treatment": "V3_CORE"
+    },
+    {
+      "base_commit": "906177329bcc54f6946af361fcd3d0e334e6ce5f",
+      "expected_artifact_path": "runs/03-V3_CORE/tasks/deepset-ai__haystack-8489",
+      "instance_id": "deepset-ai__haystack-8489",
+      "ordinal": 3,
+      "pair_index": 2,
+      "problem_statement_sha256": "bebd5d176bbc67a3682acf2e2886ae5410196e73943012ce4fdc72f316083463",
+      "repo": "deepset-ai/haystack",
+      "task_run_id": "p3a-03-deepset-ai__haystack-8489-V3_CORE",
+      "treatment": "V3_CORE"
+    },
+    {
+      "base_commit": "906177329bcc54f6946af361fcd3d0e334e6ce5f",
+      "expected_artifact_path": "runs/04-V2_CONTROL/tasks/deepset-ai__haystack-8489",
+      "instance_id": "deepset-ai__haystack-8489",
+      "ordinal": 4,
+      "pair_index": 2,
+      "problem_statement_sha256": "bebd5d176bbc67a3682acf2e2886ae5410196e73943012ce4fdc72f316083463",
+      "repo": "deepset-ai/haystack",
+      "task_run_id": "p3a-04-deepset-ai__haystack-8489-V2_CONTROL",
+      "treatment": "V2_CONTROL"
+    },
+    {
+      "base_commit": "71ea887ade58f57cbc5b37f311188bfb7cda8ca5",
+      "expected_artifact_path": "runs/05-V2_CONTROL/tasks/dynaconf__dynaconf-1249",
+      "instance_id": "dynaconf__dynaconf-1249",
+      "ordinal": 5,
+      "pair_index": 3,
+      "problem_statement_sha256": "038c14518f3117f0a31d3ecf566e55d7f13ecebd5a6e3eccf11cc9eb27ee1702",
+      "repo": "dynaconf/dynaconf",
+      "task_run_id": "p3a-05-dynaconf__dynaconf-1249-V2_CONTROL",
+      "treatment": "V2_CONTROL"
+    },
+    {
+      "base_commit": "71ea887ade58f57cbc5b37f311188bfb7cda8ca5",
+      "expected_artifact_path": "runs/06-V3_CORE/tasks/dynaconf__dynaconf-1249",
+      "instance_id": "dynaconf__dynaconf-1249",
+      "ordinal": 6,
+      "pair_index": 3,
+      "problem_statement_sha256": "038c14518f3117f0a31d3ecf566e55d7f13ecebd5a6e3eccf11cc9eb27ee1702",
+      "repo": "dynaconf/dynaconf",
+      "task_run_id": "p3a-06-dynaconf__dynaconf-1249-V3_CORE",
+      "treatment": "V3_CORE"
+    },
+    {
+      "base_commit": "e310e2029102b5d63a679a2b64501c045aa86336",
+      "expected_artifact_path": "runs/07-V3_CORE/tasks/delgan__loguru-1297",
+      "instance_id": "delgan__loguru-1297",
+      "ordinal": 7,
+      "pair_index": 4,
+      "problem_statement_sha256": "0368432d5d613af17b313606c7f68dcfb831a4a8c5cfb8e5c8e1170593fa49cc",
+      "repo": "Delgan/loguru",
+      "task_run_id": "p3a-07-delgan__loguru-1297-V3_CORE",
+      "treatment": "V3_CORE"
+    },
+    {
+      "base_commit": "e310e2029102b5d63a679a2b64501c045aa86336",
+      "expected_artifact_path": "runs/08-V2_CONTROL/tasks/delgan__loguru-1297",
+      "instance_id": "delgan__loguru-1297",
+      "ordinal": 8,
+      "pair_index": 4,
+      "problem_statement_sha256": "0368432d5d613af17b313606c7f68dcfb831a4a8c5cfb8e5c8e1170593fa49cc",
+      "repo": "Delgan/loguru",
+      "task_run_id": "p3a-08-delgan__loguru-1297-V2_CONTROL",
+      "treatment": "V2_CONTROL"
+    }
+  ],
+  "task_runs_sha256": "3bca28ea8266fc92790853f16b62e36cfbbeb9963a4d36991554235fb3644185",
+  "treatment_order": [
+    {
+      "instance_id": "beetbox__beets-5457",
+      "order": [
+        "V2_CONTROL",
+        "V3_CORE"
+      ],
+      "pair_index": 1
+    },
+    {
+      "instance_id": "deepset-ai__haystack-8489",
+      "order": [
+        "V3_CORE",
+        "V2_CONTROL"
+      ],
+      "pair_index": 2
+    },
+    {
+      "instance_id": "dynaconf__dynaconf-1249",
+      "order": [
+        "V2_CONTROL",
+        "V3_CORE"
+      ],
+      "pair_index": 3
+    },
+    {
+      "instance_id": "delgan__loguru-1297",
+      "order": [
+        "V3_CORE",
+        "V2_CONTROL"
+      ],
+      "pair_index": 4
+    }
+  ]
+}

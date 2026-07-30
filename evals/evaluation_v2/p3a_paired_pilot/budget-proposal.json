@@ -1,0 +1,22 @@
+{
+  "authorization": "proposal_only_requires_new_explicit_P3_B_paid_authorization",
+  "conservative_proposal_cny": "292.9459200",
+  "currency": "CNY",
+  "derivation": "expected=2*sum(selected Goal 4 costs for the four tasks); conservative=max(1.5*expected, 50%*hard-cap); hard-cap=8*40*frozen per-request worst case",
+  "expected_proposal_cny": "74.592144",
+  "hard_cap_proposal_cny": "585.891840",
+  "historical_selected_cost_cny_by_task": {
+    "beetbox__beets-5457": "13.291632",
+    "deepset-ai__haystack-8489": "5.881188",
+    "delgan__loguru-1297": "1.475676",
+    "dynaconf__dynaconf-1249": "16.647576"
+  },
+  "historical_source": "Goal 4 selected terminal cost rows committed in full_replay payloads",
+  "one_request_theoretical_exposure_cny": "1.830912",
+  "per_run_theoretical_exposure_cny": "73.236480",
+  "pricing_snapshot_path": "evals/goal2/pricing_bailian_qwen37_max_2026-07-13.json",
+  "pricing_snapshot_sha256": "a09eb6e6955b9fb68d3e011771c948f7a14b7bbca5316a2433cab099d0b643d3",
+  "request_ceiling_per_run": 40,
+  "safety_reserve_cny": "0.000001",
+  "schema_version": 1
+}

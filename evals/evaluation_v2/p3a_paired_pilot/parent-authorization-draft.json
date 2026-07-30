@@ -1,0 +1,8 @@
+{
+  "authorization_id": "p3a-paired-pilot-parent-authorization-draft",
+  "bound_main_commit": "9e076874894ccf155d990fa8a176b2191e258652",
+  "hard_cap_proposal_cny": "585.891840",
+  "requires_new_explicit_paid_authorization": true,
+  "safety_reserve_cny": "0.000001",
+  "status": "draft_not_authorized"
+}
