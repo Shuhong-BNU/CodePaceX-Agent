@@ -8,20 +8,23 @@ pre-registered P3-A evidence.  P3-B needs a separate explicit authorization.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import json
+import shutil
 import subprocess
-import sys
-import tempfile
-import threading
-from contextlib import contextmanager
-from dataclasses import asdict
 from decimal import Decimal
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Mapping, Sequence
-from unittest.mock import patch
+from typing import Any, AsyncIterator, Mapping, Sequence
 
+from codepacex.agent import Agent
+from codepacex.capability_v3 import CapabilityV3Config, CapabilityV3Flag
+from codepacex.client import LLMClient
+from codepacex.conversation import ConversationManager
+from codepacex.permissions import DangerousCommandDetector, PathSandbox, PermissionChecker, PermissionMode, RuleEngine
+from codepacex.tools import create_default_registry
+from codepacex.tools.base import StreamEnd, StreamEvent, TextDelta, ToolCallComplete
+from codepacex.tools.run_test import RunTest
 from evals.benchmark import canonical_hash, current_git_commit
 from evals.costing import load_pricing, pricing_snapshot_hash
 from evals.evaluation_v2 import control_canary, full_replay
@@ -303,55 +306,31 @@ def validate_freeze(root: Path, frozen: Mapping[str, Any]) -> None:
         raise ValueError("P3-A freeze lacks eight child allocation drafts")
 
 
-@contextmanager
-def _recording_fake_transport():
-    """Run the formal OpenAI-compatible transport boundary on localhost only."""
-    class RecordingProvider:
-        request_count = 0
+class _RecordingFakeTransport(LLMClient):
+    """In-process fake transport that records actual Agent request assembly."""
 
-        def response(self, model: str) -> bytes:
-            self.request_count += 1
-            if self.request_count == 1:
-                command = "target=$(git ls-files | head -n 1); printf '\\n# p3a-zero-provider-rehearsal\\n' >> \"$target\""
-                chunks = full_replay._fake_tool_chunks(model, self.request_count, command)
-            else:
-                chunks = full_replay._fake_text_chunks(model, self.request_count)
-            # This is the repository's deterministic loopback Usage payload.
-            # It settles the simulated reservation; external accounting remains
-            # separately fixed at zero in the rehearsal Artifact.
-            return "".join(
-                f"data: {json.dumps(chunk, separators=(',', ':'))}\\n\\n" for chunk in chunks
-            ).encode("utf-8") + b"data: [DONE]\\n\\n"
+    def __init__(self, workspace: Path, source: Path) -> None:
+        self.workspace, self.source, self.calls = workspace, source, 0
+        self.request_records: list[dict[str, Any]] = []
 
-    provider = RecordingProvider()
-
-    class Handler(BaseHTTPRequestHandler):
-        protocol_version = "HTTP/1.1"
-
-        def do_GET(self) -> None:
-            body = json.dumps({"id": "qwen3.7-max-2026-06-08", "max_model_len": 131072}).encode()
-            self.send_response(200); self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
-
-        def do_POST(self) -> None:
-            length = int(self.headers.get("Content-Length", "0"))
-            if length:
-                self.rfile.read(length)
-            body = provider.response("qwen3.7-max-2026-06-08")
-            self.send_response(200); self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
-
-        def log_message(self, _format: str, *_args: Any) -> None:
-            return
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield provider, f"http://127.0.0.1:{server.server_port}/v1"
-    finally:
-        server.shutdown(); server.server_close(); thread.join(timeout=5)
+    async def stream(
+        self, conversation: Any, system: str = "", tools: list[dict[str, Any]] | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        self.calls += 1
+        self.request_records.append({
+            "system_sha256": hashlib.sha256(system.encode()).hexdigest(),
+            "tools_sha256": canonical_hash(tools or []),
+            "message_count": len(conversation.get_messages()),
+        })
+        if self.calls == 1:
+            yield ToolCallComplete("read", "ReadFile", {"file_path": str(self.source), "offset": 0, "limit": 20})
+        elif self.calls == 2:
+            yield ToolCallComplete("edit", "EditFile", {"file_path": str(self.source), "old_string": "VALUE = 0", "new_string": "VALUE = 1"})
+        elif self.calls == 3:
+            yield ToolCallComplete("test", "RunTest", {"cwd": str(self.workspace), "argv": ["test_rehearsal.py"], "timeout_seconds": 30})
+        else:
+            yield TextDelta("P3-A recording fake transport complete")
+        yield StreamEnd("end_turn")
 
 
 def _synthetic_task_workspace(_task: Mapping[str, Any], workspace: Path) -> None:
@@ -367,14 +346,6 @@ def _synthetic_task_workspace(_task: Mapping[str, Any], workspace: Path) -> None
         ["git", "commit", "-m", "p3a rehearsal base"],
     ):
         subprocess.run(command, cwd=workspace, check=True, capture_output=True, text=True)
-
-
-def _synthetic_bootstrap(_workspace: Path, _dependencies: Sequence[str], **_kwargs: Any) -> tuple[Path, list[dict[str, Any]]]:
-    return Path(sys.executable), [{"command": [sys.executable, "-m", "pytest", "test_rehearsal.py"], "exit_code": 0}]
-
-
-def _shadow_evaluator(**kwargs: Any) -> subprocess.CompletedProcess[str]:
-    return full_replay._shadow_evaluator_runner(**kwargs)
 
 
 def _rehearsal_gate(root: Path, frozen: Mapping[str, Any], artifact_root: Path) -> PaidRunGate:
@@ -410,55 +381,109 @@ def run_zero_provider_rehearsal(root: Path, frozen: Mapping[str, Any], artifact_
     artifact_root.mkdir(parents=True)
     gate = _rehearsal_gate(root, frozen, artifact_root)
     records: list[dict[str, Any]] = []
-    metadata = {
-        run["instance_id"]: {
-            "dependencies": [], "editable_target": ".", "test_target": "test_rehearsal.py",
-            "bootstrap_environment": {}, "disk_budget": {"minimum_available_bytes": 0, "minimum_available_inodes": 0},
-        } for run in frozen["task_runs"]
-    }
     tasks = _tasks(root)
-    with patch.object(control_canary, "_goal3_materialize_instance", _synthetic_task_workspace), \
-         patch.object(control_canary, "_bootstrap", _synthetic_bootstrap), \
-         patch.object(control_canary, "_agent_runtime_probe", lambda **_kwargs: subprocess.CompletedProcess([], 0, "", "")), \
-         patch.object(control_canary, "_task_tool_resolution", lambda _environment, python: {"python": str(python)}):
-        for run in frozen["task_runs"]:
-            runtime = {**frozen["frozen_identities"]["tools_and_permissions"], "capability_v3_feature_flag": run["treatment"]}
-            execution_freeze = {"runtime_contract": runtime, "provider_contract": dict(frozen["frozen_identities"]["provider"])}
-            with _recording_fake_transport() as (transport, base_url):
-                pilot = control_canary._paid_pilot_config(execution_freeze).model_copy(update={
-                    "base_url": base_url, "api_key_env": full_replay.FAKE_PROVIDER_KEY_ENV,
-                })
-                run_root = artifact_root / "runs" / f"{run['ordinal']:02d}-{run['treatment']}"
-                result = full_replay._full_task_executor(
-                    root, execution_freeze, metadata, gate, run_root,
-                    f"p3a-rehearsal-{run['ordinal']:02d}", tasks[run["instance_id"]],
-                    live_executor_kwargs={
-                        "pilot_override": pilot, "provider_secret_override": "zero-provider-loopback-only",
-                        "child_environment_overrides": {"NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"},
-                        "evaluator_runner": _shadow_evaluator,
-                    },
-                )
-            task_root = run_root / "tasks" / run["instance_id"]
-            fidelity = control_canary._validate_capability_v3_artifact(
-                task_root=task_root, workspace=task_root / "workspace", instance_id=run["instance_id"],
-                treatment=control_canary.CapabilityV3Flag(run["treatment"]),
+    for run in frozen["task_runs"]:
+        run_root = artifact_root / "runs" / f"{run['ordinal']:02d}-{run['treatment']}"
+        task_root = run_root / "tasks" / run["instance_id"]
+        workspace = task_root / "workspace"
+        _synthetic_task_workspace(tasks[run["instance_id"]], workspace)
+        source = workspace / "tracked.py"
+        registry = create_default_registry()
+        registry.register(RunTest())
+        checker = PermissionChecker(
+            DangerousCommandDetector(), PathSandbox(str(workspace)), RuleEngine(),
+            PermissionMode.DEFAULT, session_allow_all=True,
+        )
+        transport = _RecordingFakeTransport(workspace, source)
+        treatment = CapabilityV3Flag(run["treatment"])
+        agent = Agent(
+            transport, registry, "openai-compat", work_dir=str(workspace),
+            permission_checker=checker, max_iterations=8,
+            capability_v3_config=CapabilityV3Config.from_flag(treatment),
+            capability_v3_flag=treatment.value,
+            capability_v3_artifact_root=task_root / "capability-v3",
+            capability_v3_task_id=run["instance_id"],
+            capability_v3_base_commit=run["base_commit"],
+        )
+        conversation = ConversationManager()
+        conversation.add_user_message(str(tasks[run["instance_id"]]["problem_statement"]))
+
+        # This calls the real reserve/cancel ledger wiring immediately around
+        # Agent dispatch.  The in-process client never crosses a Provider
+        # boundary, so the only valid terminal settlement is CNY-zero cancel.
+        reservation = gate.reserve(
+            f"swe/p3a-rehearsal/{run['task_run_id']}", maximum_requests=1,
+            maximum_input_tokens_per_request=full_replay.MAX_INPUT_TOKENS,
+            maximum_output_tokens_per_request=full_replay.MAX_OUTPUT_TOKENS,
+        )
+        events: list[str] = []
+
+        async def consume() -> None:
+            async for event in agent.run(conversation):
+                events.append(type(event).__name__)
+
+        try:
+            asyncio.run(consume())
+        finally:
+            gate.cancel(reservation, reason="provider_confirmed_not_submitted")
+
+        patch_text = control_canary._goal3_extract_patch(workspace)
+        _write_json(task_root / "agent-request-record.json", {
+            "task_run_id": run["task_run_id"], "treatment": treatment.value,
+            "fake_transport_calls": transport.calls,
+            "assembled_requests": transport.request_records,
+            "agent_event_types": events,
+        })
+        _write_json(task_root / "task-run-contract.json", {
+            key: run[key] for key in (
+                "task_run_id", "pair_index", "instance_id", "repo", "base_commit",
+                "problem_statement_sha256", "treatment",
             )
-            records.append({
-                **{key: run[key] for key in ("task_run_id", "pair_index", "instance_id", "repo", "base_commit", "problem_statement_sha256", "treatment", "expected_artifact_path")},
-                "artifact_path": str(task_root.relative_to(artifact_root)),
-                "task_result_path": str((task_root / "task-result.json").relative_to(artifact_root)),
-                "official_report_path": str((task_root / "official-report.json").relative_to(artifact_root)),
-                "terminal_status": result.terminal_status,
-                "evaluator_status": result.evaluator_status,
-                "agent_dispatch_started": result.agent_dispatch_started,
-                "recording_fake_transport_requests": transport.request_count,
-                "simulated_provider_requests": result.provider_requests,
-                "provider_requests": 0, "usage": 0, "charge_cny": "0", "provider_secret_read": False,
-                "paid_execution": False,
-                "v3_advice_present": run["treatment"] == "V3_CORE",
-                "v3_activation_schema_present": run["treatment"] == "V3_CORE",
-                "treatment_fidelity": fidelity,
-            })
+        })
+        (task_root / "candidate.patch").write_text(patch_text, encoding="utf-8")
+        prediction_path = task_root / "predictions.json"
+        _write_json(prediction_path, [{
+            "instance_id": run["instance_id"], "model_name_or_path": "p3a-zero-provider-rehearsal",
+            "model_patch": patch_text,
+        }])
+        evaluator_run_id = f"p3a-rehearsal-{run['ordinal']:02d}"
+        evaluator = full_replay._shadow_evaluator_runner(
+            predictions_path=prediction_path, instance_ids=[run["instance_id"]],
+            run_id=evaluator_run_id, cwd=task_root,
+        )
+        report_source = (
+            task_root / "logs" / "run_evaluation" / evaluator_run_id /
+            "p3a-zero-provider-rehearsal" / run["instance_id"] / "report.json"
+        )
+        if evaluator.returncode != 0 or not report_source.is_file():
+            raise RuntimeError("P3-A rehearsal evaluator interface did not emit a raw report")
+        shutil.copyfile(report_source, task_root / "official-report.json")
+        _write_json(task_root / "task-result.json", {
+            "task_run_id": run["task_run_id"], "terminal_status": "zero_provider_rehearsal_only",
+            "agent_dispatch_started": transport.calls > 0, "provider_requests": 0,
+            "usage": 0, "charge_cny": "0", "provider_secret_read": False,
+        })
+        fidelity = control_canary._validate_capability_v3_artifact(
+            task_root=task_root, workspace=workspace, instance_id=run["instance_id"], treatment=treatment,
+        )
+        if treatment is CapabilityV3Flag.V3_CORE and not fidelity["valid"]:
+            raise RuntimeError(f"P3-A rehearsal V3 artifact failed: {fidelity['errors']}")
+        if treatment is CapabilityV3Flag.V2_CONTROL and (task_root / "capability-v3").exists():
+            raise RuntimeError("P3-A V2_CONTROL rehearsal unexpectedly wrote a V3 artifact")
+        records.append({
+            **{key: run[key] for key in ("task_run_id", "pair_index", "instance_id", "repo", "base_commit", "problem_statement_sha256", "treatment", "expected_artifact_path")},
+            "artifact_path": str(task_root.relative_to(artifact_root)),
+            "task_result_path": str((task_root / "task-result.json").relative_to(artifact_root)),
+            "official_report_path": str((task_root / "official-report.json").relative_to(artifact_root)),
+            "terminal_status": "zero_provider_rehearsal_only", "evaluator_status": "completed",
+            "agent_dispatch_started": transport.calls > 0,
+            "recording_fake_transport_requests": transport.calls,
+            "provider_requests": 0, "usage": 0, "charge_cny": "0", "provider_secret_read": False,
+            "paid_execution": False,
+            "v3_advice_present": treatment is CapabilityV3Flag.V3_CORE,
+            "v3_activation_schema_present": treatment is CapabilityV3Flag.V3_CORE,
+            "treatment_fidelity": fidelity,
+        })
     ledger = BudgetLedger.model_validate_json((artifact_root / "ledger.json").read_text(encoding="utf-8"))
     for record in records:
         root_path = artifact_root / record["artifact_path"]
@@ -467,14 +492,15 @@ def run_zero_provider_rehearsal(root: Path, frozen: Mapping[str, Any], artifact_
         if record["treatment"] == "V3_CORE" and not record["treatment_fidelity"]["valid"]:
             raise RuntimeError("P3-A rehearsal raw V3 Artifact failed validation")
     return {
-        "schema_version": SCHEMA_VERSION, "executed": True, "runner": "full_replay._full_task_executor",
-        "transport": "recording_fake_openai_compatible_loopback", "provider_requests": 0, "usage": 0,
+        "schema_version": SCHEMA_VERSION, "executed": True, "runner": "p3a_paired_pilot.real_agent_dispatch",
+        "transport": "recording_fake_llmclient_in_process", "provider_requests": 0, "usage": 0,
         "charge_cny": "0", "provider_secret_read": False, "paid_execution": False,
         "run_records": records, "agent_dispatch_count": sum(item["agent_dispatch_started"] for item in records),
         "recording_fake_transport_requests": sum(item["recording_fake_transport_requests"] for item in records),
         "simulated_provider_requests": len(ledger.request_charges),
         "simulated_usage": sum(item.input_tokens + item.output_tokens for item in ledger.request_charges),
-        "simulated_charge_cny": str(ledger.spent_cny), "ledger_closed": ledger.active_reservation is None,
+        "simulated_charge_cny": str(ledger.spent_cny), "ledger_settlement_count": len(ledger.settlements),
+        "ledger_closed": ledger.active_reservation is None,
         "active_reservation": None if ledger.active_reservation is None else ledger.active_reservation.model_dump(mode="json"),
     }
 

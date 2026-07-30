@@ -91,6 +91,7 @@ def test_readiness_rejects_an_unexecuted_or_invalid_rehearsal(tmp_path: Path) ->
         {},
         {"executed": True, "ledger_closed": True, "active_reservation": None, "provider_requests": 1, "usage": 0, "charge_cny": "0", "provider_secret_read": False, "agent_dispatch_count": 8, "recording_fake_transport_requests": 8},
         {"executed": True, "ledger_closed": False, "active_reservation": None, "provider_requests": 0, "usage": 0, "charge_cny": "0", "provider_secret_read": False, "agent_dispatch_count": 8, "recording_fake_transport_requests": 8},
+        {"executed": True, "ledger_closed": True, "active_reservation": {"reservation_id": "open"}, "provider_requests": 0, "usage": 0, "charge_cny": "0", "provider_secret_read": False, "agent_dispatch_count": 8, "recording_fake_transport_requests": 8},
     ):
         with pytest.raises(ValueError, match="rehearsal"):
             p3a.readiness_payload(ROOT, frozen, freeze_path=freeze_path, rehearsal=rehearsal)
@@ -114,16 +115,18 @@ def test_actual_zero_provider_rehearsal_binds_runner_artifacts_evaluator_ledger_
     assert readiness["provider_requests"] == readiness["usage"] == 0
     assert readiness["charge_cny"] == "0" and readiness["provider_secret_read"] is False
     rehearsal = readiness["rehearsal"]
-    assert rehearsal["executed"] is True and rehearsal["runner"] == "full_replay._full_task_executor"
+    assert rehearsal["executed"] is True and rehearsal["runner"] == "p3a_paired_pilot.real_agent_dispatch"
     assert rehearsal["ledger_closed"] is True and rehearsal["active_reservation"] is None
     assert rehearsal["agent_dispatch_count"] == 8 and rehearsal["recording_fake_transport_requests"] >= 8
-    assert rehearsal["simulated_provider_requests"] >= 8 and rehearsal["simulated_usage"] > 0
-    assert float(rehearsal["simulated_charge_cny"]) > 0
+    assert rehearsal["simulated_provider_requests"] == rehearsal["simulated_usage"] == 0
+    assert rehearsal["simulated_charge_cny"] == "0" and rehearsal["ledger_settlement_count"] == 8
     assert readiness["task_run_count"] == readiness["unique_task_run_count"] == 8
     assert readiness["paired_result_merge_count"] == 4
     for record in rehearsal["run_records"]:
         task_root = output / p3a.REHEARSAL_DIRECTORY / record["artifact_path"]
-        assert (task_root / "task-result.json").is_file() and (task_root / "official-report.json").is_file()
+        assert all((task_root / name).is_file() for name in (
+            "task-result.json", "official-report.json", "agent-request-record.json", "candidate.patch",
+        ))
         if record["treatment"] == "V2_CONTROL":
             assert record["v3_advice_present"] is False and record["v3_activation_schema_present"] is False
             assert not (task_root / "capability-v3").exists()
@@ -133,3 +136,16 @@ def test_actual_zero_provider_rehearsal_binds_runner_artifacts_evaluator_ledger_
             assert all((task_root / "capability-v3" / name).is_file() for name in ("summary.json", "events.jsonl", "final.patch"))
     with pytest.raises(ValueError, match="overwrite"):
         p3a.write_artifacts(ROOT, output)
+
+
+def test_readiness_rejects_missing_raw_artifact_after_rehearsal(tmp_path: Path) -> None:
+    output = tmp_path / "artifact"
+    p3a.write_artifacts(ROOT, output)
+    frozen = json.loads((output / p3a.FREEZE_NAME).read_text())
+    readiness = json.loads((output / p3a.READINESS_NAME).read_text())
+    first = readiness["rehearsal"]["run_records"][0]
+    (output / p3a.REHEARSAL_DIRECTORY / first["artifact_path"] / "official-report.json").unlink()
+    with pytest.raises(ValueError, match="raw task and evaluator"):
+        p3a.readiness_payload(
+            ROOT, frozen, freeze_path=output / p3a.FREEZE_NAME, rehearsal=readiness["rehearsal"],
+        )
