@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-from evals.evaluation_v2 import full_replay
+from evals.evaluation_v2 import full_replay, v3_core_full20
 from evals.paid_gate import BudgetLedger
 
 
@@ -359,14 +359,37 @@ def test_usage_contract_violation_is_an_infrastructure_stop() -> None:
 
 def test_full_replay_workflow_keeps_paid_path_explicit_and_zero_provider_path_complete() -> None:
     workflow = (ROOT / full_replay.WORKFLOW_PATH).read_text(encoding="utf-8")
-    assert "inputs.paid_execution == false" in workflow
+    assert "inputs.paid_execution == false && inputs.controlled_pilot_paid_execution == false && inputs.v3_core_full20_paid_execution == false" in workflow
     assert "BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}" in workflow
     assert "full_replay preflight" in workflow
     assert "full_replay shadow" in workflow
     assert "full_replay paid-run --confirm-paid-execution" in workflow
     assert "expected_freeze_sha256" in workflow
     assert "approved_total_hard_cap_cny" in workflow
-    assert workflow.count("python-version: '3.11'") == 4
+    assert workflow.count("python-version: '3.11'") == 6
     assert "zero-provider-controlled-pilot-readiness" in workflow
     assert "controlled-pilot-paid-execution" in workflow
-    assert "inputs.controlled_pilot_paid_execution == false" in workflow
+    assert "v3-core-full20-paid-execution" in workflow
+    assert "zero-provider-v3-core-full20-readiness" in workflow
+    assert "inputs.controlled_pilot_paid_execution == false && inputs.v3_core_full20_paid_execution == false" in workflow
+    v3_readiness = workflow[workflow.index("zero-provider-v3-core-full20-readiness"):workflow.index("v3-core-full20-paid-execution")]
+    v3_paid = workflow[workflow.index("v3-core-full20-paid-execution"):workflow.index("zero-provider-controlled-pilot-readiness")]
+    assert v3_readiness.count("Install project and frozen official evaluator") == 1
+    assert v3_paid.count("Install project and frozen official evaluator") == 1
+    assert "EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be" in v3_readiness
+    assert "EVALUATOR_COMMIT: ad79b850f15e33992e96f03f6e97f05ddf9aa0be" in v3_paid
+
+
+def test_v3_core_full20_freeze_is_serial_v3_only_and_has_twenty_unique_allocations(
+    tmp_path: Path,
+) -> None:
+    result = v3_core_full20.write_freeze(ROOT, tmp_path / "freeze", run_id="v3-full20-test")
+    frozen = json.loads((tmp_path / "freeze" / v3_core_full20.FREEZE_NAME).read_text(encoding="utf-8"))
+    assert v3_core_full20.validate_freeze(ROOT, tmp_path / "freeze")["valid"] is True
+    assert frozen["execution_order"] == "strictly_serial_v3_core_only"
+    assert frozen["treatments"] == ["V3_CORE"]
+    assert len(frozen["task_runs"]) == 20
+    assert all(item["capability_v3_flag"] == "V3_CORE" for item in frozen["task_runs"])
+    allocation_ids = [item["task_run_allocation_id"] for item in frozen["allocation_binding"]["task_run_allocations"]]
+    assert len(allocation_ids) == len(set(allocation_ids)) == 20
+    assert result["allocation_hash"] == frozen["allocation_binding"]["allocation_hash"]

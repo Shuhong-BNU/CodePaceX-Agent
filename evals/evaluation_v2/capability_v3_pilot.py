@@ -124,8 +124,8 @@ def task_runs(root: Path) -> list[dict[str, Any]]:
                 "capability_v3_flag": flag.value,
                 "expected_artifact_path": f"runs/{ordinal:02d}-{flag.value}/tasks/{instance_id}",
             })
-    if len(runs) != 12:
-        raise AssertionError("controlled Pilot must materialize exactly twelve task-runs")
+    if len(runs) != len(PILOT_TASK_IDS) * len(TREATMENTS):
+        raise AssertionError("controlled Pilot task-run materialization is incomplete")
     return runs
 
 
@@ -706,7 +706,7 @@ def rehearse(root: Path, freeze: Path, preflight_summary: Path, artifact_root: P
         "sequential_post_tool_observer_coverage": sequential_coverage,
         "sequential_post_tool_observer_coverage_count": len(sequential_coverage),
         "candidate_selection_rehearsal": candidate_selection_rehearsal,
-        "completed": len(run_artifacts) == 12,
+        "completed": len(run_artifacts) == len(frozen["task_runs"]),
     }
     _write_json(artifact_root / "controlled-pilot-rehearsal-summary.json", summary)
     return summary
@@ -811,7 +811,7 @@ def run_paid_pilot(root: Path, freeze: Path, artifact_root: Path, *, expected_fr
         "task_run_allocations": binding["task_run_allocations"],
         "provider_requests": len(ledger.request_charges), "usage": sum(item.input_tokens + item.output_tokens for item in ledger.request_charges),
         "charge_cny": str(ledger.spent_cny), "ledger_closed": ledger.active_reservation is None,
-        "completed": len(results) == 12 and ledger.active_reservation is None,
+        "completed": len(results) == len(frozen["task_runs"]) and ledger.active_reservation is None,
     }
     _write_json(artifact_root / "controlled-pilot-paid-summary.json", summary)
     return summary
@@ -830,8 +830,9 @@ def assert_paid_pilot_terminal_contract(summary_path: Path) -> dict[str, Any]:
         reasons.append("completed=false")
     if summary.get("ledger_closed") is not True:
         reasons.append("ledger_closed=false")
-    if len(summary.get("results", [])) != 12:
-        reasons.append("task_run_count!=12")
+    expected_runs = len(summary.get("task_run_allocations", [])) or 12
+    if len(summary.get("results", [])) != expected_runs:
+        reasons.append(f"task_run_count!={expected_runs}")
     if reasons:
         raise RuntimeError(
             "controlled Pilot paid terminal contract failed: " + ", ".join(reasons)
