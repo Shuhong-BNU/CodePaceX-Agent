@@ -386,7 +386,7 @@ def _rehearsal_gate(root: Path, frozen: Mapping[str, Any], artifact_root: Path) 
         authorized_total_cny=Decimal(str(frozen["budget_proposal"]["hard_cap_proposal_cny"])),
         stage_limits_cny={"A": Decimal("0"), "B": Decimal("0"), "C": Decimal(str(frozen["budget_proposal"]["hard_cap_proposal_cny"]))},
         pricing_snapshot_hash=pricing_snapshot_hash(pricing), experiment_commit=BOUND_MAIN_COMMIT,
-        authorized_at="p3a-zero-provider-rehearsal", authorized_by="zero-provider-rehearsal",
+        authorized_at="p3a-zero-provider-rehearsal", authorized_by="user",
     )
     ledger = BudgetLedger(authorization_hash=authorization_hash(authorization), updated_at="p3a-zero-provider-rehearsal")
     authorization_path, ledger_path = artifact_root / "authorization.json", artifact_root / "ledger.json"
