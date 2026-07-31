@@ -36,6 +36,8 @@ PAID_INPUT_PREFLIGHT_NAME = "paid-input-preflight.json"
 PREFLIGHT_FAILURE_NAME = "preflight-failure.json"
 REQUIRED_ACKNOWLEDGEMENT_PREFIX = "P3B_PAID_AUTHORIZATION:"
 INPUT_BUNDLE_SCHEMA_VERSION = 2
+SAFE_FIRST_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+SAFE_REST_ALPHABET = SAFE_FIRST_ALPHABET + "._-"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 _ACKNOWLEDGEMENT_SUFFIX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,255}$")
@@ -154,6 +156,27 @@ def write_canonical_paid_input_bundle(path: Path, bundle: Mapping[str, Any]) -> 
     return final_input_bundle_sha256(raw)
 
 
+def _generate_safe_run_identity_suffix(
+    *, length: int = 18, random_choice: Callable[[str], str] | None = None,
+) -> str:
+    """Generate a cryptographically random suffix matching the identity regex.
+
+    The first character is sampled from a stricter alphabet so URL-safe random
+    punctuation can never make an otherwise valid generated identity fail.
+    ``random_choice`` is a test-only injection point; production uses
+    ``secrets.choice`` directly.
+    """
+    if length < 8:
+        raise ValueError("P3-B generator random suffix length is too short")
+    chooser = secrets.choice if random_choice is None else random_choice
+    suffix = chooser(SAFE_FIRST_ALPHABET) + "".join(
+        chooser(SAFE_REST_ALPHABET) for _ in range(length - 1)
+    )
+    if not _SAFE_RUN_IDENTITY.fullmatch(suffix):
+        raise ValueError("P3-B generator random suffix is invalid")
+    return suffix
+
+
 def generate_paid_input_bundle(
     root: Path, *, test_only: bool, provider_secret_present: bool, generated_at: str | None = None,
     random_suffix: str | None = None,
@@ -171,7 +194,7 @@ def generate_paid_input_bundle(
     stamp = generated_at or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     if not _GENERATED_AT.fullmatch(stamp):
         raise ValueError("P3-B generator generated_at is invalid")
-    suffix = random_suffix or secrets.token_urlsafe(18)
+    suffix = random_suffix or _generate_safe_run_identity_suffix()
     if not _SAFE_RUN_IDENTITY.fullmatch(suffix):
         raise ValueError("P3-B generator random suffix is invalid")
     mode = "test-only" if test_only else "authorized"

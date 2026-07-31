@@ -18,6 +18,6 @@ P3-B 仍处于 `blocked_pending_new_explicit_paid_authorization`。本轮不 dis
 
 ## 保留事实
 
-历史机器标签 `blocked_preflight_task_environment_missing`、精确因果根因 `production_adapter_argument_shape_mismatch` 与 A2 近端根因 `authorization_acknowledgement_protocol_prefix_mismatch` 均为不可互换的历史事实。当前新增根因是 `canonical_identity_generation_and_bundle_byte_binding_missing`。
+历史机器标签 `blocked_preflight_task_environment_missing`、精确因果根因 `production_adapter_argument_shape_mismatch` 与 A2 近端根因 `authorization_acknowledgement_protocol_prefix_mismatch` 均为不可互换的历史事实。当前新增根因是 `canonical_identity_generation_and_bundle_byte_binding_missing`。其后续修复审计确认了 `canonical_identity_random_alphabet_contract_mismatch`：`token_urlsafe()` 可生成 `-` 或 `_` 首字符，但 P3-B 安全身份正则要求首字符为字母或数字。当前集中式修复改为 `secrets.choice` 的显式安全首字符/后续字符字母表；不放宽正则、不改变 canonical bytes 或 bundle SHA 绑定。
 
 历史失败 Run 30620506129 保持不可变：0/8 task-run、Artifact=0、Provider requests / Usage / charge=`0 / 0 / CNY 0`、active_reservation=null。
