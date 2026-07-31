@@ -9,12 +9,15 @@ production default delegates to the shared full-replay task executor.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
 import re
+import secrets
 import subprocess
 from dataclasses import asdict
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -32,15 +35,17 @@ PAIRED_RESULTS_NAME = "p3b-paired-results.json"
 PAID_INPUT_PREFLIGHT_NAME = "paid-input-preflight.json"
 PREFLIGHT_FAILURE_NAME = "preflight-failure.json"
 REQUIRED_ACKNOWLEDGEMENT_PREFIX = "P3B_PAID_AUTHORIZATION:"
-INPUT_BUNDLE_SCHEMA_VERSION = 1
+INPUT_BUNDLE_SCHEMA_VERSION = 2
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 _ACKNOWLEDGEMENT_SUFFIX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,255}$")
 _SAFE_RUN_IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$")
+_GENERATED_AT = re.compile(r"^[0-9]{8}T[0-9]{6}Z$")
 _INPUT_BUNDLE_FIELDS = (
-    "expected_main_sha", "expected_freeze_sha256", "expected_allocation_hash",
-    "approved_parent_cap_cny", "authorization_acknowledgement", "dispatch_token",
-    "run_id", "provider_secret_present",
+    "schema_version", "identity_mode", "generated_at", "expected_main_sha",
+    "expected_freeze_sha256", "expected_allocation_hash", "approved_parent_cap_cny",
+    "authorization_acknowledgement", "dispatch_token", "run_id",
+    "provider_secret_present",
 )
 _HASHED_INPUT_FIELDS = (
     "expected_main_sha", "expected_freeze_sha256", "expected_allocation_hash",
@@ -57,14 +62,32 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def canonical_paid_input_bundle(
-    *, expected_main_sha: str, expected_freeze_sha256: str, expected_allocation_hash: str,
-    approved_parent_cap_cny: str, authorization_acknowledgement: str, dispatch_token: str,
-    run_id: str, provider_secret_present: bool,
+def canonical_paid_input_bundle_bytes(bundle: Mapping[str, Any]) -> bytes:
+    """Serialize the fixed P3-B schema once, as UTF-8 compact JSON plus LF.
+
+    The output is deliberately the byte-level object that both preflight and
+    paid execution open.  Never parse and dump it again before hashing.
+    """
+    if tuple(bundle) != _INPUT_BUNDLE_FIELDS:
+        raise ValueError("P3-B canonical paid input bundle field order is invalid")
+    return json.dumps(bundle, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8") + b"\n"
+
+
+def final_input_bundle_sha256(bundle_bytes: bytes) -> str:
+    return hashlib.sha256(bundle_bytes).hexdigest()
+
+
+def _canonical_paid_input_bundle(
+    *, identity_mode: str, generated_at: str, expected_main_sha: str,
+    expected_freeze_sha256: str, expected_allocation_hash: str, approved_parent_cap_cny: str,
+    authorization_acknowledgement: str, dispatch_token: str, run_id: str,
+    provider_secret_present: bool,
 ) -> dict[str, Any]:
-    """Return the single machine-readable contract used by preflight and paid execution."""
+    """Return the fixed-order payload used by the generator only."""
     return {
         "schema_version": INPUT_BUNDLE_SCHEMA_VERSION,
+        "identity_mode": identity_mode,
+        "generated_at": generated_at,
         "expected_main_sha": expected_main_sha,
         "expected_freeze_sha256": expected_freeze_sha256,
         "expected_allocation_hash": expected_allocation_hash,
@@ -76,17 +99,95 @@ def canonical_paid_input_bundle(
     }
 
 
-def _load_paid_input_bundle(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise ValueError("P3-B paid input bundle has duplicate field")
+        payload[key] = value
+    return payload
+
+
+def _parse_paid_input_bundle_bytes(raw: bytes) -> dict[str, Any]:
+    if not raw.endswith(b"\n") or raw.count(b"\n") != 1:
+        raise ValueError("P3-B canonical paid input bundle requires exactly one final newline")
+    try:
+        payload = json.loads(raw.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("P3-B paid input bundle JSON is invalid") from error
     if not isinstance(payload, dict) or payload.get("schema_version") != INPUT_BUNDLE_SCHEMA_VERSION:
         raise ValueError("P3-B paid input bundle schema is invalid")
-    if set(payload) != {"schema_version", *_INPUT_BUNDLE_FIELDS}:
+    if tuple(payload) != _INPUT_BUNDLE_FIELDS:
         raise ValueError("P3-B paid input bundle fields are invalid")
     if not isinstance(payload["provider_secret_present"], bool):
         raise ValueError("P3-B paid input bundle Secret presence is invalid")
-    if any(not isinstance(payload[field], str) for field in _INPUT_BUNDLE_FIELDS[:-1]):
+    if any(not isinstance(payload[field], str) for field in _INPUT_BUNDLE_FIELDS[1:-1]):
         raise ValueError("P3-B paid input bundle identities are invalid")
-    return {field: payload[field] for field in _INPUT_BUNDLE_FIELDS}
+    if payload["identity_mode"] not in {"test-only", "authorized"}:
+        raise ValueError("P3-B paid input bundle identity mode is invalid")
+    if not _GENERATED_AT.fullmatch(payload["generated_at"]):
+        raise ValueError("P3-B paid input bundle generated_at is invalid")
+    if canonical_paid_input_bundle_bytes(payload) != raw:
+        raise ValueError("P3-B paid input bundle bytes are not canonical")
+    return payload
+
+
+def _load_paid_input_bundle(path: Path) -> dict[str, Any]:
+    return _parse_paid_input_bundle_bytes(path.read_bytes())
+
+
+def load_verified_paid_input_bundle(path: Path, expected_final_input_bundle_sha256: str) -> tuple[dict[str, Any], str]:
+    """Hash raw bytes before parsing; reject any preflight/executor mismatch."""
+    if not _SHA256.fullmatch(expected_final_input_bundle_sha256):
+        raise ValueError("P3-B final input bundle SHA-256 is invalid")
+    raw = path.read_bytes()
+    actual = final_input_bundle_sha256(raw)
+    if actual != expected_final_input_bundle_sha256:
+        raise ValueError("P3-B final input bundle SHA-256 does not match raw bytes")
+    return _parse_paid_input_bundle_bytes(raw), actual
+
+
+def write_canonical_paid_input_bundle(path: Path, bundle: Mapping[str, Any]) -> str:
+    raw = canonical_paid_input_bundle_bytes(bundle)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+    return final_input_bundle_sha256(raw)
+
+
+def generate_paid_input_bundle(
+    root: Path, *, test_only: bool, provider_secret_present: bool, generated_at: str | None = None,
+    random_suffix: str | None = None,
+) -> tuple[dict[str, Any], bytes, str]:
+    """Generate the sole canonical P3-B identity bundle.
+
+    Tests must use ``test_only=True``.  The prefix is never supplied by a
+    caller: it is derived exclusively from REQUIRED_ACKNOWLEDGEMENT_PREFIX.
+    """
+    root = root.resolve()
+    frozen, freeze_sha = _committed_freeze(root)
+    main_sha = _git(root, "rev-parse", "HEAD")
+    if not _GIT_SHA.fullmatch(main_sha):
+        raise ValueError("P3-B generator requires an exact main SHA")
+    stamp = generated_at or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    if not _GENERATED_AT.fullmatch(stamp):
+        raise ValueError("P3-B generator generated_at is invalid")
+    suffix = random_suffix or secrets.token_urlsafe(18)
+    if not _SAFE_RUN_IDENTITY.fullmatch(suffix):
+        raise ValueError("P3-B generator random suffix is invalid")
+    mode = "test-only" if test_only else "authorized"
+    marker = "testonly" if test_only else "authorized"
+    stem = f"p3b-{marker}-{main_sha[:12]}-{stamp}-{suffix}"
+    bundle = _canonical_paid_input_bundle(
+        identity_mode=mode, generated_at=stamp, expected_main_sha=main_sha,
+        expected_freeze_sha256=freeze_sha,
+        expected_allocation_hash=str(frozen["formal_stage_c_allocation"]["allocation_hash"]),
+        approved_parent_cap_cny=str(p3b.PARENT_CAP),
+        authorization_acknowledgement=f"{REQUIRED_ACKNOWLEDGEMENT_PREFIX}{stem}",
+        dispatch_token=f"{stem}-dispatch", run_id=f"{stem}-run",
+        provider_secret_present=provider_secret_present,
+    )
+    raw = canonical_paid_input_bundle_bytes(bundle)
+    return bundle, raw, final_input_bundle_sha256(raw)
 
 
 def _input_hashes(inputs: Mapping[str, Any]) -> dict[str, str]:
@@ -95,6 +196,10 @@ def _input_hashes(inputs: Mapping[str, Any]) -> dict[str, str]:
         for field in _HASHED_INPUT_FIELDS
         if isinstance((value := inputs.get(field)), str)
     }
+
+
+def _validation_inputs(bundle: Mapping[str, Any]) -> dict[str, Any]:
+    return {field: bundle[field] for field in _INPUT_BUNDLE_FIELDS if field != "schema_version"}
 
 
 def _content_identities(root: Path) -> dict[str, str]:
@@ -165,7 +270,7 @@ def _validate_expected_main_sha(value: str) -> None:
 
 def validate_paid_inputs(
     root: Path,
-    *, expected_main_sha: str, expected_freeze_sha256: str,
+    *, identity_mode: str, generated_at: str, expected_main_sha: str, expected_freeze_sha256: str,
     expected_allocation_hash: str,
     approved_parent_cap_cny: str,
     authorization_acknowledgement: str,
@@ -176,6 +281,10 @@ def validate_paid_inputs(
 ) -> dict[str, Any]:
     """Validate all externally supplied paid identities before any workspace."""
     root = root.resolve()
+    if identity_mode not in {"test-only", "authorized"}:
+        raise ValueError("P3-B paid execution identity mode is invalid")
+    if not _GENERATED_AT.fullmatch(generated_at):
+        raise ValueError("P3-B paid execution generated_at is invalid")
     _validate_expected_main_sha(expected_main_sha)
     frozen, actual_freeze_sha = _committed_freeze(root)
     if not _SHA256.fullmatch(expected_freeze_sha256) or expected_freeze_sha256 != actual_freeze_sha:
@@ -215,7 +324,9 @@ def _preflight_failure_classification(error: Exception) -> str:
     return "paid_input_validation_failed"
 
 
-def _preflight_failure_payload(inputs: Mapping[str, Any], error: Exception) -> dict[str, Any]:
+def _preflight_failure_payload(
+    inputs: Mapping[str, Any], error: Exception, *, final_input_bundle_sha256: str | None = None,
+) -> dict[str, Any]:
     return {
         "schema_version": 1,
         "phase": "validate_paid_inputs",
@@ -223,6 +334,7 @@ def _preflight_failure_payload(inputs: Mapping[str, Any], error: Exception) -> d
         "expected_main_sha": inputs.get("expected_main_sha"),
         "expected_freeze_sha256": inputs.get("expected_freeze_sha256"),
         "expected_allocation_hash": inputs.get("expected_allocation_hash"),
+        "final_input_bundle_sha256": final_input_bundle_sha256,
         "exception_classification": _preflight_failure_classification(error),
         "provider_reached": False,
         "provider_secret_read": False,
@@ -235,23 +347,34 @@ def _preflight_failure_payload(inputs: Mapping[str, Any], error: Exception) -> d
 
 def _write_preflight_failure(
     artifact_root: Path, inputs: Mapping[str, Any], error: Exception, *, artifact_created: bool,
+    final_input_bundle_sha256: str | None = None,
 ) -> None:
     if not artifact_created:
         artifact_root.mkdir(parents=True, exist_ok=False)
-    _write_json(artifact_root / PREFLIGHT_FAILURE_NAME, _preflight_failure_payload(inputs, error))
+    _write_json(artifact_root / PREFLIGHT_FAILURE_NAME, _preflight_failure_payload(
+        inputs, error, final_input_bundle_sha256=final_input_bundle_sha256,
+    ))
 
 
 def validate_inputs_only(
-    root: Path, artifact_root: Path, *, require_main: bool = True, **inputs: Any,
+    root: Path, artifact_root: Path, *, input_bundle_path: Path,
+    expected_final_input_bundle_sha256: str, require_main: bool = True,
 ) -> dict[str, Any]:
     """Run the exact paid input gate without workspace, Provider, or ledger creation."""
     root, artifact_root = root.resolve(), artifact_root.resolve()
     artifact_root.mkdir(parents=True, exist_ok=False)
-    safe_inputs = dict(inputs)
+    safe_inputs: dict[str, Any] = {}
+    actual_bundle_sha: str | None = None
     try:
-        checked = validate_paid_inputs(root, require_main=require_main, **safe_inputs)
+        safe_inputs, actual_bundle_sha = load_verified_paid_input_bundle(
+            input_bundle_path, expected_final_input_bundle_sha256,
+        )
+        checked = validate_paid_inputs(root, require_main=require_main, **_validation_inputs(safe_inputs))
     except Exception as error:
-        _write_preflight_failure(artifact_root, safe_inputs, error, artifact_created=True)
+        _write_preflight_failure(
+            artifact_root, safe_inputs, error, artifact_created=True,
+            final_input_bundle_sha256=expected_final_input_bundle_sha256,
+        )
         raise
     payload = {
         "schema_version": 1,
@@ -262,6 +385,7 @@ def validate_inputs_only(
         "expected_main_sha": safe_inputs["expected_main_sha"],
         "expected_freeze_sha256": checked["freeze_sha256"],
         "expected_allocation_hash": checked["allocation_hash"],
+        "final_input_bundle_sha256": actual_bundle_sha,
         "execution_main_head": checked["execution_main_head"],
         **_content_identities(root),
         "provider_reached": False,
@@ -411,20 +535,21 @@ def _continues(result: control_canary.PaidTaskResult, ledger: BudgetLedger) -> b
 
 
 def run_paid_executor(
-    root: Path, artifact_root: Path, *, expected_main_sha: str, expected_freeze_sha256: str, expected_allocation_hash: str,
-    approved_parent_cap_cny: str, authorization_acknowledgement: str, dispatch_token: str,
-    run_id: str, provider_secret_present: bool, task_executor: TaskExecutor | None = None,
-    require_main: bool = True,
+    root: Path, artifact_root: Path, *, input_bundle_path: Path,
+    expected_final_input_bundle_sha256: str, task_executor: TaskExecutor | None = None,
+    require_main: bool = True, allow_test_only_identity: bool = False,
 ) -> dict[str, Any]:
     """Execute exactly one strict-serial P3-B dispatch after all fail-closed gates."""
     root, artifact_root = root.resolve(), artifact_root.resolve()
-    checked = validate_paid_inputs(
-        root, expected_main_sha=expected_main_sha, expected_freeze_sha256=expected_freeze_sha256,
-        expected_allocation_hash=expected_allocation_hash,
-        approved_parent_cap_cny=approved_parent_cap_cny, authorization_acknowledgement=authorization_acknowledgement,
-        dispatch_token=dispatch_token, run_id=run_id, provider_secret_present=provider_secret_present,
-        require_main=require_main,
+    inputs, actual_bundle_sha = load_verified_paid_input_bundle(
+        input_bundle_path, expected_final_input_bundle_sha256,
     )
+    if inputs["identity_mode"] != "authorized" and not allow_test_only_identity:
+        raise ValueError("P3-B paid execution rejects test-only identity bundles")
+    checked = validate_paid_inputs(root, require_main=require_main, **_validation_inputs(inputs))
+    authorization_acknowledgement = str(inputs["authorization_acknowledgement"])
+    dispatch_token = str(inputs["dispatch_token"])
+    run_id = str(inputs["run_id"])
     if artifact_root.exists():
         raise ValueError("P3-B paid executor refuses to overwrite an Artifact")
     frozen = checked["freeze"]
@@ -474,6 +599,7 @@ def run_paid_executor(
     summary = {
         "schema_version": 1, "paid_execution": task_executor is None, "run_id": run_id,
         "dispatch_token_sha256": hashlib.sha256(dispatch_token.encode()).hexdigest(),
+        "final_input_bundle_sha256": actual_bundle_sha,
         "freeze_sha256": checked["freeze_sha256"], "allocation_hash": checked["allocation_hash"],
         "freeze_base_commit": p3b.BOUND_MAIN_COMMIT, "execution_main_head": checked["execution_main_head"],
         **_content_identities(root),
@@ -493,46 +619,48 @@ def run_paid_executor(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="P3-B strict serial paid executor")
     parser.add_argument("--root", type=Path, required=True)
-    parser.add_argument("--artifact-root", type=Path, required=True)
+    parser.add_argument("--artifact-root", type=Path)
     parser.add_argument("--input-bundle", type=Path)
-    parser.add_argument("--expected-main-sha")
-    parser.add_argument("--expected-freeze-sha256")
-    parser.add_argument("--expected-allocation-hash")
-    parser.add_argument("--approved-parent-cap-cny")
-    parser.add_argument("--authorization-acknowledgement")
-    parser.add_argument("--dispatch-token")
-    parser.add_argument("--run-id")
-    parser.add_argument("--provider-secret-present", choices=("true", "false"))
+    parser.add_argument("--expected-final-input-bundle-sha256")
+    parser.add_argument("--generate-test-only-bundle", action="store_true")
+    parser.add_argument("--output-bundle", type=Path)
     parser.add_argument("--validate-inputs-only", action="store_true")
     parser.add_argument("--confirm-paid-execution", action="store_true")
     args = parser.parse_args(argv)
-    direct = {
-        "expected_main_sha": args.expected_main_sha,
-        "expected_freeze_sha256": args.expected_freeze_sha256,
-        "expected_allocation_hash": args.expected_allocation_hash,
-        "approved_parent_cap_cny": args.approved_parent_cap_cny,
-        "authorization_acknowledgement": args.authorization_acknowledgement,
-        "dispatch_token": args.dispatch_token,
-        "run_id": args.run_id,
-        "provider_secret_present": args.provider_secret_present == "true" if args.provider_secret_present else None,
-    }
-    inputs: dict[str, Any] = direct
+    if args.generate_test_only_bundle:
+        if args.output_bundle is None or args.artifact_root is not None or args.input_bundle is not None:
+            raise ValueError("P3-B test-only bundle generation requires only --root and --output-bundle")
+        bundle, _raw, digest = generate_paid_input_bundle(
+            args.root, test_only=True, provider_secret_present=False,
+        )
+        write_canonical_paid_input_bundle(args.output_bundle, bundle)
+        print(json.dumps({
+            "status": "generated_test_only_paid_input_bundle",
+            "identity_mode": "test-only",
+            "final_input_bundle_sha256": digest,
+        }, sort_keys=True))
+        return 0
+    if args.artifact_root is None:
+        raise ValueError("P3-B paid executor requires --artifact-root")
+    inputs: dict[str, Any] = {}
     try:
-        if args.input_bundle:
-            if any(value is not None for value in direct.values()):
-                raise ValueError("P3-B input bundle cannot be mixed with direct paid inputs")
-            inputs = _load_paid_input_bundle(args.input_bundle)
-        elif any(value is None for value in direct.values()):
-            raise ValueError("P3-B paid executor requires a complete canonical input bundle")
+        if not args.input_bundle or not args.expected_final_input_bundle_sha256:
+            raise ValueError("P3-B paid executor requires a bundle path and final raw-byte SHA-256")
         if args.validate_inputs_only:
             if args.confirm_paid_execution:
                 raise ValueError("P3-B validate-only mode cannot confirm paid execution")
-            payload = validate_inputs_only(args.root, args.artifact_root, **inputs)
+            payload = validate_inputs_only(
+                args.root, args.artifact_root, input_bundle_path=args.input_bundle,
+                expected_final_input_bundle_sha256=args.expected_final_input_bundle_sha256,
+            )
         else:
             payload = None
     except Exception as error:
         if args.validate_inputs_only and not args.artifact_root.exists():
-            _write_preflight_failure(args.artifact_root, inputs, error, artifact_created=False)
+            _write_preflight_failure(
+                args.artifact_root, inputs, error, artifact_created=False,
+                final_input_bundle_sha256=args.expected_final_input_bundle_sha256,
+            )
             return 2
         if args.validate_inputs_only:
             return 2
@@ -544,7 +672,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.confirm_paid_execution:
         raise ValueError("P3-B paid execution requires --confirm-paid-execution")
     summary = run_paid_executor(
-        args.root, args.artifact_root, **inputs,
+        args.root, args.artifact_root, input_bundle_path=args.input_bundle,
+        expected_final_input_bundle_sha256=args.expected_final_input_bundle_sha256,
     )
     print(json.dumps(summary, sort_keys=True))
     return 0

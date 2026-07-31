@@ -91,10 +91,11 @@ def test_unique_workflow_is_default_zero_provider_and_paid_fail_closed() -> None
     assert "p3b-paid-execution:" in workflow
     assert "inputs.paid_execution == true" in workflow
     assert "github.ref == 'refs/heads/main'" in workflow
-    assert "approved_parent_cap_cny == '292.945921'" in workflow
-    assert "expected_freeze_sha256" in workflow
-    assert "expected_allocation_hash" in workflow
-    assert "dispatch_token" in workflow and "run_id" in workflow
+    assert "canonical_bundle_base64" in workflow
+    assert "expected_final_input_bundle_sha256" in workflow
+    assert "expected_freeze_sha256" not in workflow
+    assert "expected_allocation_hash" not in workflow
+    assert "authorization_acknowledgement" not in workflow
     assert "cancel-in-progress: false" in workflow
     assert "P3B_PROVIDER_SECRET_PRESENT: ${{ secrets.BAILIAN_API_KEY != '' }}" in workflow
     assert "production_adapter_preflight" in workflow
