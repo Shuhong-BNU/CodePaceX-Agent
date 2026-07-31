@@ -832,6 +832,7 @@ class PaidRunGate:
     ) -> Reservation:
         validate_authorization(
             self.authorization, root=self.root, pricing=self.pricing,
+            allow_descendant_head=self.allow_descendant_head,
         )
         ledger = self._load_ledger()
         if ledger.active_reservation is not None:
