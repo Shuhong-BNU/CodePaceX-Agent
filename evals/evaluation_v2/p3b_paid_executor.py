@@ -288,7 +288,9 @@ def run_paid_executor(
         child = child_by_id.get(str(run["task_run_id"]))
         if child is None:
             raise ValueError("P3-B task-run has no child allocation")
-        identity = TaskRunBudgetIdentity.model_validate(child.model_dump(mode="json"))
+        identity = TaskRunBudgetIdentity.model_validate(child.model_dump(
+            mode="json", exclude={"execution_run_id", "theoretical_ceiling_cny"},
+        ))
         execution_run_id = child.execution_run_id
         run_root = artifact_root / "runs" / f"{run['ordinal']:02d}-{run['treatment']}"
         result = executor(frozen, _execution_freeze(root, frozen, str(run["treatment"])), gate, run_root, execution_run_id, tasks[str(run["instance_id"])], identity)

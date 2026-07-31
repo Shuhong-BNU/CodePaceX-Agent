@@ -66,6 +66,7 @@ def _sha256(path: Path) -> str:
 def _runtime_hashes(root: Path) -> dict[str, str]:
     paths = [
         Path("evals/evaluation_v2/p3b_post_merge_rebind.py"), WORKFLOW_PATH,
+        Path("evals/evaluation_v2/p3b_paid_executor.py"),
         Path("evals/paid_gate.py"), Path("evals/evaluation_v2/p3a_paired_pilot.py"),
         Path("evals/evaluation_v2/control_canary.py"), Path("evals/evaluation_v2/full_replay.py"),
         Path("codepacex/agent.py"), Path("codepacex/client.py"),
