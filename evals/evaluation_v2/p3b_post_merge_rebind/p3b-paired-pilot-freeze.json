@@ -11,7 +11,7 @@
   },
   "content_identities": {
     "freeze_base_commit": "2794e27220d3fada3bd0fdd3a1a14ff50e3a6034",
-    "paid_executor_content_sha256": "f0ba9762bcde05139b1ae9b0e7bc624923bd632e95b0cd4fd53858ae1db0db36",
+    "paid_executor_content_sha256": "034f5787d7bfbb840c972ea7a808c48d1a6fb1628cfa5ffc05d6d26f26c5dd6d",
     "paid_gate_content_sha256": "8399579370ec7cfee1a2eb1b72638068665b100fe3b09bcc4135642731f942dc",
     "workflow_content_sha256": "dfd00c1d651dd29830ede8215bff08bedb80fc0af557ff4473e941f78b5621bd"
   },
@@ -314,7 +314,7 @@
     "evals/evaluation_v2/control_canary.py": "54c3ec068e28d5a2d9dff26a329b408de04f5b43ad8c06f881cb6cf5c6b4d2c4",
     "evals/evaluation_v2/full_replay.py": "37c6479b023e8fbad70504d338135ba764912ee734f785a42a9318b0c9c75d39",
     "evals/evaluation_v2/p3a_paired_pilot.py": "554885bb02c3c42eea7725f2448246d16bfa2f471ec563c336c6dd13cfb7024e",
-    "evals/evaluation_v2/p3b_paid_executor.py": "f0ba9762bcde05139b1ae9b0e7bc624923bd632e95b0cd4fd53858ae1db0db36",
+    "evals/evaluation_v2/p3b_paid_executor.py": "034f5787d7bfbb840c972ea7a808c48d1a6fb1628cfa5ffc05d6d26f26c5dd6d",
     "evals/evaluation_v2/p3b_post_merge_rebind.py": "0654ff1f318f256ad46482f14a0e08297700dfa84322858a1b60caa03fa54e19",
     "evals/paid_gate.py": "8399579370ec7cfee1a2eb1b72638068665b100fe3b09bcc4135642731f942dc"
   },

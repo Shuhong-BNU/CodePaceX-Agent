@@ -70,6 +70,68 @@ def test_generator_emits_test_only_identity_and_unique_values(tmp_path: Path) ->
     assert executor._SAFE_RUN_IDENTITY.fullmatch(first["run_id"])
 
 
+def test_generated_suffix_uses_safe_first_and_rest_alphabets() -> None:
+    calls: list[str] = []
+
+    def choose(alphabet: str) -> str:
+        calls.append(alphabet)
+        return alphabet[-1]
+
+    suffix = executor._generate_safe_run_identity_suffix(random_choice=choose)
+    assert suffix[0] in executor.SAFE_FIRST_ALPHABET
+    assert all(char in executor.SAFE_REST_ALPHABET for char in suffix[1:])
+    assert executor._SAFE_RUN_IDENTITY.fullmatch(suffix)
+    assert calls[0] == executor.SAFE_FIRST_ALPHABET
+    assert all(value == executor.SAFE_REST_ALPHABET for value in calls[1:])
+
+
+def test_generated_suffix_remains_valid_when_boundary_rest_chars_are_punctuation() -> None:
+    values = iter(["A", "-", "_", "."])
+
+    def choose(_alphabet: str) -> str:
+        return next(values, "0")
+
+    suffix = executor._generate_safe_run_identity_suffix(random_choice=choose)
+    assert suffix[0] == "A"
+    assert suffix[1:4] == "-_."
+    assert executor._SAFE_RUN_IDENTITY.fullmatch(suffix)
+
+
+def test_generator_never_uses_urlsafe_random_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(executor.secrets, "token_urlsafe", lambda _length: "-invalid-leading-candidate")
+    monkeypatch.setattr(executor.secrets, "choice", lambda alphabet: alphabet[0])
+    bundle, _raw, _digest = executor.generate_paid_input_bundle(
+        ROOT, test_only=True, provider_secret_present=False,
+        generated_at="20260731T220000Z",
+    )
+    suffix = bundle["dispatch_token"].split("-dispatch", 1)[0].rsplit("-", 1)[-1]
+    assert suffix[0].isalnum()
+    assert executor._SAFE_RUN_IDENTITY.fullmatch(suffix)
+
+
+def test_generator_supports_authorized_mode_with_fixed_test_fixture() -> None:
+    bundle, raw, digest = executor.generate_paid_input_bundle(
+        ROOT, test_only=False, provider_secret_present=True,
+        generated_at="20260731T220000Z", random_suffix="authorized-fixture-001",
+    )
+    assert bundle["identity_mode"] == "authorized"
+    assert bundle["authorization_acknowledgement"].startswith(executor.REQUIRED_ACKNOWLEDGEMENT_PREFIX)
+    assert executor._SAFE_RUN_IDENTITY.fullmatch(bundle["dispatch_token"])
+    assert executor._SAFE_RUN_IDENTITY.fullmatch(bundle["run_id"])
+    assert digest == executor.final_input_bundle_sha256(raw)
+
+
+def test_two_normal_generator_calls_produce_distinct_safe_identities() -> None:
+    first, _first_raw, _first_digest = executor.generate_paid_input_bundle(
+        ROOT, test_only=True, provider_secret_present=False,
+    )
+    second, _second_raw, _second_digest = executor.generate_paid_input_bundle(
+        ROOT, test_only=True, provider_secret_present=False,
+    )
+    assert first["dispatch_token"] != second["dispatch_token"]
+    assert first["run_id"] != second["run_id"]
+
+
 def test_cli_generates_only_a_test_only_bundle(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     path = tmp_path / "generated.json"
     assert executor.main([
