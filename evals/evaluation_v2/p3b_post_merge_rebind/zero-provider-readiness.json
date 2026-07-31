@@ -1,7 +1,7 @@
 {
   "charge_cny": "0",
-  "freeze_canonical_sha256": "e43f7adebb54457a079d8b9cef5af073d61ee247105c396cc94bb8d7ddc1e0a1",
-  "freeze_sha256": "b88cb56cd00eaf52b2a910b4c389f233d01829fb4d1a735ef0e1d0db41941a0b",
+  "freeze_canonical_sha256": "e81a5e90b6ca96672fbf8b6fa6d2379be1157c69681fd4e477dba6ad186e4f0f",
+  "freeze_sha256": "78f2f9350c0d21302d54c2fce2e36d9db14c3376c14834dc3719489eb4c9e28b",
   "p3_b": "blocked_pending_separate_explicit_paid_authorization",
   "paid_job": "skipped",
   "paired_result_merge_count": 4,
