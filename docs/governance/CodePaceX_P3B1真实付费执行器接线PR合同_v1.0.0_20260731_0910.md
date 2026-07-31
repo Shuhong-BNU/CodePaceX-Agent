@@ -1,10 +1,10 @@
 # CodePaceX P3-B1 真实付费执行器接线 PR 合同
 
-> 版本：v1.0.0  
-> 时间：2026-07-31 09:10（UTC+8）  
-> 状态：可执行  
-> 语言：中文  
-> 正式基线：`origin/main@3e18174bd110502d8b8baecd67c12027a8b2520a`  
+> 版本：v1.0.0
+> 时间：2026-07-31 09:10（UTC+8）
+> 状态：可执行
+> 语言：中文
+> 正式基线：`origin/main@3e18174bd110502d8b8baecd67c12027a8b2520a`
 > 性质：zero-provider engineering only
 
 ## 唯一目标
