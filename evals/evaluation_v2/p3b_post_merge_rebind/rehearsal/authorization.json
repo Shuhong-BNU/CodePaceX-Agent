@@ -1,0 +1,14 @@
+{
+  "authorized_at": "p3b0-post-merge-rebind-proposal",
+  "authorized_by": "user",
+  "authorized_total_cny": "292.945921",
+  "currency": "CNY",
+  "experiment_commit": "2794e27220d3fada3bd0fdd3a1a14ff50e3a6034",
+  "pricing_snapshot_hash": "a09eb6e6955b9fb68d3e011771c948f7a14b7bbca5316a2433cab099d0b643d3",
+  "schema_version": 2,
+  "stage_limits_cny": {
+    "A": "292.945921",
+    "B": "292.945921",
+    "C": "292.945921"
+  }
+}

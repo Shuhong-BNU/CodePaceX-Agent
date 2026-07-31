@@ -1,0 +1,7 @@
+[
+  {
+    "instance_id": "delgan__loguru-1297",
+    "model_name_or_path": "p3b-zero-provider-rehearsal",
+    "model_patch": "diff --git a/tracked.py b/tracked.py\nindex 61313a6..b15b1b0 100644\n--- a/tracked.py\n+++ b/tracked.py\n@@ -1 +1 @@\n-VALUE = 0\n+VALUE = 1\n"
+  }
+]
