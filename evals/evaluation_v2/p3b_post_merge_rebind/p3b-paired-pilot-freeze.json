@@ -276,7 +276,7 @@
   "inherits_p3a_freeze": {
     "historical_bound_main_commit": "9e076874894ccf155d990fa8a176b2191e258652",
     "path": "evals/evaluation_v2/p3a_paired_pilot/p3a-paired-pilot-freeze.json",
-    "sha256": "c62fcd9c9a0a87c5b76e6bc3227d09f559106b0d8151e1b61180a1612d27abc7"
+    "sha256": "06d61e6d097bae1cf0125902f1f84669d9efa4def1fa29b7c262af42673f04ea"
   },
   "p3_b": "blocked_pending_separate_explicit_paid_authorization",
   "paired_artifact_schema": {
