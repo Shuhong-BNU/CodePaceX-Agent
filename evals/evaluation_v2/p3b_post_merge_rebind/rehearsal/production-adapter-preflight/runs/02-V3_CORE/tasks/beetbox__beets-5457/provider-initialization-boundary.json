@@ -1,0 +1,18 @@
+{
+  "instance_id": "beetbox__beets-5457",
+  "metadata": {
+    "bootstrap_environment": {},
+    "disk_budget": {
+      "minimum_available_bytes": 4294967296,
+      "minimum_available_inodes": 100000
+    },
+    "editable_target": ".",
+    "preflight_dependencies": [
+      "responses>=0.3.0"
+    ],
+    "test_target": "test/plugins/test_lyrics.py"
+  },
+  "provider_initialization_boundary_reached": true,
+  "provider_secret_read": false,
+  "provider_transport_reached": false
+}

@@ -1,0 +1,15 @@
+{
+  "active_reservation": null,
+  "allocation_hash": null,
+  "authorization_hash": "b9dfe904ad3b4728b00f2109459e99ac6464e1cd8311b74ee3ef3a882b310d51",
+  "authorization_rebinds": [],
+  "budget_blocks": [],
+  "currency": "CNY",
+  "provider_request_ceiling_blocks": [],
+  "request_charges": [],
+  "schema_version": 2,
+  "settlements": [],
+  "spent_cny": "0",
+  "updated_at": "p3b-r1-production-adapter-preflight",
+  "usage_contract_violations": []
+}

@@ -3,11 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from evals.evaluation_v2 import p3b_paid_executor as executor
 from evals.evaluation_v2 import p3b_post_merge_rebind as p3b
+from evals.evaluation_v2 import full_replay
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +55,73 @@ def test_recording_fake_exercises_the_paid_coordinator_for_all_eight_runs(tmp_pa
         (artifact / record["expected_artifact_path"] / "candidate.patch").is_file()
         for record in summary["records"]
     )
+
+
+def test_production_adapter_exercises_all_runs_without_provider_transport(tmp_path: Path) -> None:
+    """The coordinator reaches the real adapter and shared executor unchanged."""
+    captured: list[dict] = []
+
+    def provider_initialization_boundary(**kwargs: object) -> object:
+        task = kwargs["task"]  # type: ignore[index]
+        metadata = kwargs["metadata"]  # type: ignore[index]
+        task_root = Path(kwargs["artifact_root"]) / "tasks" / task["instance_id"]  # type: ignore[index, arg-type]
+        task_root.mkdir(parents=True, exist_ok=True)
+        patch_text = "diff --git a/tracked.py b/tracked.py\n--- a/tracked.py\n+++ b/tracked.py\n@@ -1 +1 @@\n-value = 'base'\n+value = 'adapter-preflight'\n"
+        (task_root / "candidate.patch").write_text(patch_text, encoding="utf-8")
+        (task_root / "agent-request-record.json").write_text("{}\n", encoding="utf-8")
+        (task_root / "official-report.json").write_text("{}\n", encoding="utf-8")
+        treatment = kwargs["freeze_payload"]["runtime_contract"]["capability_v3_feature_flag"]  # type: ignore[index]
+        if treatment == "V3_CORE":
+            v3 = task_root / "capability-v3"
+            v3.mkdir()
+            (v3 / "summary.json").write_text("{}\n", encoding="utf-8")
+            (v3 / "events.jsonl").write_text("{}\n", encoding="utf-8")
+            (v3 / "final.patch").write_text(patch_text, encoding="utf-8")
+        (task_root / "task-result.json").write_text("{}\n", encoding="utf-8")
+        captured.append({"instance_id": task["instance_id"], "metadata": metadata})  # type: ignore[index]
+        return executor.control_canary.PaidTaskResult(
+            task["instance_id"], "not_started", "not_exported", "not_run", "not_run",  # type: ignore[index]
+            "completed", "pre_transport_blocked", terminal_status="unresolved",
+            live_executor_invoked=True,
+        )
+
+    with patch.object(executor.control_canary, "_live_task_executor", provider_initialization_boundary), patch.object(
+        full_replay, "_full_task_executor", wraps=full_replay._full_task_executor,
+    ) as shared_executor:
+        summary = executor.run_paid_executor(
+            ROOT, tmp_path / "paid-artifact", require_main=False, **_inputs(),  # type: ignore[arg-type]
+        )
+
+    assert summary["completed"] is True
+    assert summary["provider_requests"] == summary["usage"] == 0
+    assert summary["charge_cny"] == "0"
+    assert summary["active_reservation"] is None
+    assert summary["provider_secret_read"] is False
+    assert len(captured) == 8
+    assert {item["instance_id"] for item in captured} == {
+        "beetbox__beets-5457", "deepset-ai__haystack-8489",
+        "dynaconf__dynaconf-1249", "delgan__loguru-1297",
+    }
+    assert all(call.args[2].keys() == full_replay._task_environment_contract(ROOT).keys() for call in shared_executor.call_args_list)
+    assert all(item["metadata"]["test_target"] for item in captured)
+
+
+def test_production_adapter_reports_a_missing_environment_instance(tmp_path: Path) -> None:
+    frozen = json.loads((ROOT / p3b.ARTIFACT_DIRECTORY / p3b.FREEZE_NAME).read_text(encoding="utf-8"))
+    task = next(item for item in full_replay.load_tasks(ROOT) if item["instance_id"] == "beetbox__beets-5457")
+    missing = full_replay._task_environment_contract(ROOT)
+    missing.pop(task["instance_id"])
+
+    class Gate:
+        root = ROOT
+
+    with patch.object(full_replay, "_task_environment_contract", return_value=missing), pytest.raises(
+        ValueError, match="missing instance: beetbox__beets-5457",
+    ):
+        executor._real_task_executor(
+            frozen, executor._execution_freeze(ROOT, frozen, "V2_CONTROL"), Gate(),
+            tmp_path, "p3b-adapter-missing-environment", task, object(),  # type: ignore[arg-type]
+        )
 
 
 @pytest.mark.parametrize("field,value,match", [

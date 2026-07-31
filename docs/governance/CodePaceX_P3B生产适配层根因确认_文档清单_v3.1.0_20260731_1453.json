@@ -1,0 +1,35 @@
+{
+  "generated_at": "2026-07-31T14:53:00+08:00",
+  "status": "current",
+  "root_cause": "production_adapter_argument_shape_mismatch",
+  "files": {
+    "CodePaceX_当前状态快照_P3B生产适配层参数错误_v3.1.0_20260731_1453.md": {
+      "bytes": 3730,
+      "sha256": "55734cc3c42db20a385e74b7efee0db8ea71e4dca5af172a29ef51c3dfce10f1"
+    },
+    "CodePaceX_P3B首次付费执行失败审计摘要_v1.1.0_20260731_1453.md": {
+      "bytes": 2819,
+      "sha256": "9421660c276004fb8e1c0d98cdf937149654baab5e9732c2870a95c033a35881"
+    },
+    "CodePaceX_P3BR1生产适配层零Provider修复合同_v1.1.0_20260731_1453.md": {
+      "bytes": 2945,
+      "sha256": "80e46ed2d6f0f8da53935a58be3efeb4aa59feaf4d2b0e0b8573b14775227e3e"
+    },
+    "CodePaceX_后续整体工作方案_v1.9.0_20260731_1453.md": {
+      "bytes": 2992,
+      "sha256": "b9c061292427594ea2cd9db9e5651c7eec61ab12498b77804d7d364b15c98b4d"
+    },
+    "CodePaceX_版本与文档总索引_v1.9.0_20260731_1453.md": {
+      "bytes": 2359,
+      "sha256": "ae497ca5fe5dd33a702c7ce30817c2f61de836c74cf50f18c68fd79d7ab41561"
+    },
+    "给Codex_P3BR1生产适配层零Provider修复提示词_20260731_1453.md": {
+      "bytes": 6336,
+      "sha256": "78acb38117b4d0afbefdfe62be54b9d6dc9e8ff5df24687a276ba1d4fd186a92"
+    },
+    "CodePaceX_上下文迁移包_GPT_24_20260731_1453.md": {
+      "bytes": 3200,
+      "sha256": "397cf96d8074b1dac3381f23164550f811d5b6e20c63656356a58630ab04c365"
+    }
+  }
+}

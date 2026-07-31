@@ -14,6 +14,7 @@ import json
 import shutil
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
 
 from codepacex.agent import Agent
@@ -27,6 +28,7 @@ from evals.costing import load_pricing, pricing_snapshot_hash
 from evals.evaluation_v2 import control_canary, full_replay, p3a_paired_pilot as p3a
 from evals.paid_gate import (
     BudgetAuthorization, BudgetLedger, Settlement, StageCBudgetAllocation,
+    TaskRunBudgetIdentity,
     TaskRunBudgetAllocation, allocation_hash, authorization_hash,
     ledger_fingerprint, task_run_allocation_hash,
 )
@@ -261,6 +263,125 @@ def _settle_zero_cost(ledger: BudgetLedger, allocation: StageCBudgetAllocation, 
     ))
 
 
+def _production_adapter_preflight(
+    root: Path, frozen: Mapping[str, Any], artifact_root: Path,
+    authorization: BudgetAuthorization, allocation: StageCBudgetAllocation,
+) -> dict[str, Any]:
+    """Exercise the paid adapter through the Provider initialization boundary.
+
+    The replacement is deliberately installed only at the final shared live
+    executor boundary.  P3-B's real adapter and full replay's environment
+    lookup both execute unchanged, while no Provider client or transport can
+    be created during zero-provider readiness.
+    """
+    from evals.evaluation_v2 import p3b_paid_executor as paid_executor
+
+    preflight_root = artifact_root / "production-adapter-preflight"
+    ledger_path = preflight_root / "ledger.json"
+    _write_json(ledger_path, BudgetLedger(
+        authorization_hash=authorization_hash(authorization),
+        updated_at="p3b-r1-production-adapter-preflight",
+    ).model_dump(mode="json"))
+    # The boundary stub never reserves or settles, so this is intentionally
+    # not a PaidRunGate: readiness must work from an uncommitted PR checkout.
+    gate = SimpleNamespace(root=root)
+    tasks = {item["instance_id"]: item for item in full_replay.load_tasks(root)}
+    environments = full_replay._task_environment_contract(root)
+    children = {item.task_run_id: item for item in allocation.task_run_allocations}
+    records: list[dict[str, Any]] = []
+
+    def provider_initialization_boundary(**kwargs: Any) -> control_canary.PaidTaskResult:
+        task = kwargs["task"]
+        metadata = kwargs["metadata"]
+        task_root = Path(kwargs["artifact_root"]) / "tasks" / str(task["instance_id"])
+        _write_json(task_root / "provider-initialization-boundary.json", {
+            "instance_id": task["instance_id"],
+            "provider_initialization_boundary_reached": True,
+            "provider_transport_reached": False,
+            "provider_secret_read": False,
+            "metadata": metadata,
+        })
+        return control_canary.PaidTaskResult(
+            str(task["instance_id"]), "not_started", "not_exported", "not_run", "not_run",
+            "completed", "pre_transport_blocked", terminal_status="pre_agent_blocked",
+            failure_classification="zero_provider_provider_initialization_boundary",
+            pre_agent_blocker="zero_provider_provider_initialization_boundary",
+            live_executor_invoked=True,
+        )
+
+    original_live_executor = control_canary._live_task_executor
+    control_canary._live_task_executor = provider_initialization_boundary
+    try:
+        for ordinal, run in enumerate(frozen["task_runs"], start=1):
+            if run["ordinal"] != ordinal:
+                raise ValueError("strict serial adapter preflight rejected out-of-order task-run")
+            instance_id = str(run["instance_id"])
+            child = children.get(str(run["task_run_id"]))
+            if child is None:
+                raise ValueError("P3-B adapter preflight has no child allocation")
+            identity = TaskRunBudgetIdentity.model_validate(child.model_dump(
+                mode="json", exclude={"execution_run_id", "theoretical_ceiling_cny"},
+            ))
+            result = paid_executor._real_task_executor(
+                frozen,
+                paid_executor._execution_freeze(root, frozen, str(run["treatment"])),
+                gate,
+                preflight_root / "runs" / f"{ordinal:02d}-{run['treatment']}",
+                child.execution_run_id,
+                tasks[instance_id],
+                identity,
+            )
+            if result.terminal_status != "pre_agent_blocked" or result.pre_agent_blocker != (
+                "zero_provider_provider_initialization_boundary"
+            ):
+                raise RuntimeError("P3-B adapter preflight did not stop at Provider initialization boundary")
+            contract = environments.get(instance_id)
+            if contract is None:
+                raise ValueError(f"P3-B task environment contract missing instance: {instance_id}")
+            records.append({
+                "ordinal": ordinal,
+                "instance_id": instance_id,
+                "treatment": run["treatment"],
+                "adapter_path": "p3b_paid_executor._real_task_executor->full_replay._full_task_executor->control_canary._live_task_executor",
+                "environment_mapping_lookup": {
+                    "instance_id": instance_id,
+                    "mapping_contains_instance": True,
+                    "mapping_key_count": len(environments),
+                },
+                "workspace_bootstrap_evaluator_identity": {
+                    "editable_target": contract["editable_target"],
+                    "dependencies": contract["dependencies"],
+                    "test_target": contract["test_target"],
+                    "official_evaluator": frozen["frozen_identities"]["official_evaluator"],
+                },
+                "provider_initialization_boundary_reached": True,
+                "provider_transport_reached": False,
+                "provider_secret_read": False,
+                "terminal_preflight_status": "passed_provider_initialization_boundary",
+            })
+    finally:
+        control_canary._live_task_executor = original_live_executor
+
+    ledger = BudgetLedger.model_validate_json(ledger_path.read_text(encoding="utf-8"))
+    unique_instances = {record["instance_id"] for record in records}
+    if len(records) != 8 or len(unique_instances) != 4:
+        raise ValueError("P3-B adapter preflight requires all eight runs and four unique instances")
+    if ledger.active_reservation is not None or ledger.request_charges or ledger.spent_cny != 0:
+        raise ValueError("P3-B adapter preflight crossed the Provider accounting boundary")
+    return {
+        "executed": True,
+        "provider_transport_hard_disabled": True,
+        "provider_requests": 0,
+        "usage": 0,
+        "charge_cny": "0",
+        "provider_secret_read": False,
+        "active_reservation": None,
+        "task_run_count": len(records),
+        "unique_instance_count": len(unique_instances),
+        "records": records,
+    }
+
+
 def run_zero_provider_rehearsal(root: Path, frozen: Mapping[str, Any], artifact_root: Path) -> dict[str, Any]:
     """Run the future strict-serial shape through Agent and fake transport only."""
     validate_freeze(root, frozen)
@@ -287,6 +408,9 @@ def run_zero_provider_rehearsal(root: Path, frozen: Mapping[str, Any], artifact_
             guard.claim(dispatch_token=next_token, run_id=next_run)
         except ValueError as exc:
             guard_results.append(str(exc))
+    adapter_preflight = _production_adapter_preflight(
+        root, frozen, artifact_root, authorization, allocation,
+    )
     tasks = {item["instance_id"]: item for item in full_replay.load_tasks(root)}
     records: list[dict[str, Any]] = []
     previous_ordinal = 0
@@ -332,12 +456,24 @@ def run_zero_provider_rehearsal(root: Path, frozen: Mapping[str, Any], artifact_
         _settle_zero_cost(ledger, allocation, run)
         records.append({**run, "artifact_path": str(task_root.relative_to(artifact_root)), "official_report_path": str((task_root / "official-report.json").relative_to(artifact_root)), "terminal_status": "zero_provider_rehearsal_only", "agent_dispatch_started": True, "recording_fake_transport_requests": transport.calls, "provider_requests": 0, "usage": 0, "charge_cny": "0", "provider_secret_read": False, "v3_advice_present": treatment is CapabilityV3Flag.V3_CORE, "v3_activation_schema_present": treatment is CapabilityV3Flag.V3_CORE, "treatment_fidelity": fidelity})
     _write_json(artifact_root / "ledger.json", ledger.model_dump(mode="json"))
-    return {"executed": True, "runner": "p3b_post_merge_rebind.strict_serial_agent_dispatch", "transport": "recording_fake_llmclient_in_process", "paid_execution": False, "dispatch_identity": DISPATCH_IDENTITY, "dispatch_guard_rejections": guard_results, "provider_requests": 0, "usage": 0, "charge_cny": "0", "provider_secret_read": False, "run_records": records, "agent_dispatch_count": len(records), "recording_fake_transport_requests": sum(item["recording_fake_transport_requests"] for item in records), "ledger_settlement_count": len(ledger.settlements), "ledger_closed": ledger.active_reservation is None, "active_reservation": None, "allocation_hash": allocation_hash(allocation)}
+    return {"executed": True, "runner": "p3b_post_merge_rebind.strict_serial_agent_dispatch", "transport": "recording_fake_llmclient_in_process", "paid_execution": False, "dispatch_identity": DISPATCH_IDENTITY, "dispatch_guard_rejections": guard_results, "provider_requests": 0, "usage": 0, "charge_cny": "0", "provider_secret_read": False, "run_records": records, "agent_dispatch_count": len(records), "recording_fake_transport_requests": sum(item["recording_fake_transport_requests"] for item in records), "ledger_settlement_count": len(ledger.settlements), "ledger_closed": ledger.active_reservation is None, "active_reservation": None, "allocation_hash": allocation_hash(allocation), "production_adapter_preflight": adapter_preflight}
 
 
 def readiness_payload(root: Path, frozen: Mapping[str, Any], *, freeze_path: Path, rehearsal: Mapping[str, Any]) -> dict[str, Any]:
     validate_freeze(root, frozen)
-    requirements = (rehearsal.get("executed") is True, rehearsal.get("ledger_closed") is True, rehearsal.get("active_reservation") is None, rehearsal.get("provider_requests") == 0, rehearsal.get("usage") == 0, rehearsal.get("charge_cny") == "0", rehearsal.get("provider_secret_read") is False, rehearsal.get("agent_dispatch_count") == 8, rehearsal.get("recording_fake_transport_requests") == 32, rehearsal.get("dispatch_guard_rejections") == ["duplicate dispatch rejected", "second dispatch rejected"])
+    adapter_preflight = rehearsal.get("production_adapter_preflight")
+    adapter_ready = isinstance(adapter_preflight, Mapping) and (
+        adapter_preflight.get("executed") is True
+        and adapter_preflight.get("task_run_count") == 8
+        and adapter_preflight.get("unique_instance_count") == 4
+        and adapter_preflight.get("provider_transport_hard_disabled") is True
+        and adapter_preflight.get("provider_requests") == 0
+        and adapter_preflight.get("usage") == 0
+        and adapter_preflight.get("charge_cny") == "0"
+        and adapter_preflight.get("provider_secret_read") is False
+        and adapter_preflight.get("active_reservation") is None
+    )
+    requirements = (rehearsal.get("executed") is True, rehearsal.get("ledger_closed") is True, rehearsal.get("active_reservation") is None, rehearsal.get("provider_requests") == 0, rehearsal.get("usage") == 0, rehearsal.get("charge_cny") == "0", rehearsal.get("provider_secret_read") is False, rehearsal.get("agent_dispatch_count") == 8, rehearsal.get("recording_fake_transport_requests") == 32, rehearsal.get("dispatch_guard_rejections") == ["duplicate dispatch rejected", "second dispatch rejected"], adapter_ready)
     if not all(requirements):
         raise ValueError("P3-B readiness requires complete zero-provider rehearsal and dispatch protection")
     records = rehearsal.get("run_records")

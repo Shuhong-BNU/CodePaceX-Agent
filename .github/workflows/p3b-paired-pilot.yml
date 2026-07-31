@@ -83,6 +83,12 @@ jobs:
           assert readiness['charge_cny'] == '0' and readiness['provider_secret_read'] is False
           assert readiness['rehearsal']['ledger_closed'] and readiness['rehearsal']['active_reservation'] is None
           assert readiness['paired_result_merge_count'] == 4
+          adapter = readiness['rehearsal']['production_adapter_preflight']
+          assert adapter['task_run_count'] == 8 and adapter['unique_instance_count'] == 4
+          assert adapter['provider_transport_hard_disabled'] is True
+          assert adapter['provider_requests'] == adapter['usage'] == 0
+          assert adapter['charge_cny'] == '0' and adapter['active_reservation'] is None
+          assert all(item['provider_transport_reached'] is False for item in adapter['records'])
           assert '${{ env.P3B_PROVIDER_SECRET_PRESENT }}' in {'true', 'false'}
           PY
       - uses: actions/upload-artifact@v4

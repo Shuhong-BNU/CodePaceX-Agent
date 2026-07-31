@@ -1,0 +1,19 @@
+{
+  "instance_id": "deepset-ai__haystack-8489",
+  "metadata": {
+    "bootstrap_environment": {},
+    "disk_budget": {
+      "minimum_available_bytes": 4294967296,
+      "minimum_available_inodes": 100000
+    },
+    "editable_target": ".[test]",
+    "preflight_dependencies": [
+      "ddtrace==2.15.0rc2",
+      "opentelemetry-sdk"
+    ],
+    "test_target": "test/tracing/test_tracer.py"
+  },
+  "provider_initialization_boundary_reached": true,
+  "provider_secret_read": false,
+  "provider_transport_reached": false
+}
