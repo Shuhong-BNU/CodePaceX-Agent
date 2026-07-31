@@ -1,5 +1,4 @@
 {
-  "bound_main_commit": "2794e27220d3fada3bd0fdd3a1a14ff50e3a6034",
   "budget_proposal": {
     "authorization": "proposal_only_not_paid_authorization",
     "child_cap_each_proposal_cny": "36.618240",
@@ -10,9 +9,16 @@
     "safety_reserve_cny": "0.000001",
     "spendable_total_cny": "292.945920"
   },
+  "content_identities": {
+    "freeze_base_commit": "2794e27220d3fada3bd0fdd3a1a14ff50e3a6034",
+    "paid_executor_content_sha256": "5eca4015570f9f9744bd4fbe4d4a6ba667baa0c29731bd47a83864396585bb46",
+    "paid_gate_content_sha256": "8399579370ec7cfee1a2eb1b72638068665b100fe3b09bcc4135642731f942dc",
+    "workflow_content_sha256": "0a48f655f8a6cb12347e5c794bbc6b321284c258f3b27f1672d0e0db0860eab6"
+  },
   "dispatch_contract": {
     "future_inputs": [
       "paid_execution",
+      "expected_main_sha",
       "expected_freeze_sha256",
       "expected_allocation_hash",
       "approved_parent_cap_cny",
@@ -242,6 +248,7 @@
     },
     "status": "formal_proposal_not_authorized"
   },
+  "freeze_base_commit": "2794e27220d3fada3bd0fdd3a1a14ff50e3a6034",
   "frozen_identities": {
     "model": {
       "model_id": "qwen3.7-max-2026-06-08"
@@ -274,7 +281,7 @@
     }
   },
   "inherits_p3a_freeze": {
-    "historical_bound_main_commit": "9e076874894ccf155d990fa8a176b2191e258652",
+    "historical_freeze_base_commit": "9e076874894ccf155d990fa8a176b2191e258652",
     "path": "evals/evaluation_v2/p3a_paired_pilot/p3a-paired-pilot-freeze.json",
     "sha256": "06d61e6d097bae1cf0125902f1f84669d9efa4def1fa29b7c262af42673f04ea"
   },
@@ -303,16 +310,16 @@
     "v2_contract": "V2_CONTROL must not contain V3 Advice or activation artifact",
     "v3_contract": "V3_CORE requires raw capability-v3 summary.json, events.jsonl, and final.patch"
   },
-  "runtime_source_sha256": {
-    ".github/workflows/p3b-paired-pilot.yml": "1bdd9fc1980eb91493fdcb13d47dacfc2a2554f41ba7433554a629c50f7fd098",
+  "runtime_content_sha256": {
+    ".github/workflows/p3b-paired-pilot.yml": "0a48f655f8a6cb12347e5c794bbc6b321284c258f3b27f1672d0e0db0860eab6",
     "codepacex/agent.py": "064ca1054d4d0268b629a1d15b685f32042c61d3408415d0c6cc3540f697d8d4",
     "codepacex/capability_v3/controller.py": "863f0afbb3162064b7b52b88e69fe3c55019191dae0c6a6a31911224204273c9",
     "codepacex/client.py": "09bc2c696628f1431e9eadd890947b9c798798b200002f0557f224dfcf1e7a5a",
     "evals/evaluation_v2/control_canary.py": "54c3ec068e28d5a2d9dff26a329b408de04f5b43ad8c06f881cb6cf5c6b4d2c4",
     "evals/evaluation_v2/full_replay.py": "37c6479b023e8fbad70504d338135ba764912ee734f785a42a9318b0c9c75d39",
     "evals/evaluation_v2/p3a_paired_pilot.py": "554885bb02c3c42eea7725f2448246d16bfa2f471ec563c336c6dd13cfb7024e",
-    "evals/evaluation_v2/p3b_paid_executor.py": "55ba2f218b3bebdb6e060b3c38d48b3143bc416ff3d00040a11bba34cccbd2ac",
-    "evals/evaluation_v2/p3b_post_merge_rebind.py": "8e86b458cf2c3b7c65c5950dfea0e858287cce50705e82a6d41444fa96d40d11",
+    "evals/evaluation_v2/p3b_paid_executor.py": "5eca4015570f9f9744bd4fbe4d4a6ba667baa0c29731bd47a83864396585bb46",
+    "evals/evaluation_v2/p3b_post_merge_rebind.py": "f7fa77e44a61e9991b00ba0efda25eed7d7c3d2e545467db2100bd93fc0b2f67",
     "evals/paid_gate.py": "8399579370ec7cfee1a2eb1b72638068665b100fe3b09bcc4135642731f942dc"
   },
   "schema_version": 1,

@@ -11,6 +11,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import re
 import subprocess
 from dataclasses import asdict
 from decimal import Decimal
@@ -27,8 +29,23 @@ from evals.paid_gate import (
 
 PAID_SUMMARY_NAME = "p3b-paid-execution-summary.json"
 PAIRED_RESULTS_NAME = "p3b-paired-results.json"
+PAID_INPUT_PREFLIGHT_NAME = "paid-input-preflight.json"
+PREFLIGHT_FAILURE_NAME = "preflight-failure.json"
 REQUIRED_ACKNOWLEDGEMENT_PREFIX = "P3B_PAID_AUTHORIZATION:"
-_SHA256 = __import__("re").compile(r"^[0-9a-f]{64}$")
+INPUT_BUNDLE_SCHEMA_VERSION = 1
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
+_ACKNOWLEDGEMENT_SUFFIX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,255}$")
+_SAFE_RUN_IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$")
+_INPUT_BUNDLE_FIELDS = (
+    "expected_main_sha", "expected_freeze_sha256", "expected_allocation_hash",
+    "approved_parent_cap_cny", "authorization_acknowledgement", "dispatch_token",
+    "run_id", "provider_secret_present",
+)
+_HASHED_INPUT_FIELDS = (
+    "expected_main_sha", "expected_freeze_sha256", "expected_allocation_hash",
+    "approved_parent_cap_cny", "authorization_acknowledgement", "dispatch_token", "run_id",
+)
 
 
 def _write_json(path: Path, value: Any) -> None:
@@ -40,6 +57,55 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def canonical_paid_input_bundle(
+    *, expected_main_sha: str, expected_freeze_sha256: str, expected_allocation_hash: str,
+    approved_parent_cap_cny: str, authorization_acknowledgement: str, dispatch_token: str,
+    run_id: str, provider_secret_present: bool,
+) -> dict[str, Any]:
+    """Return the single machine-readable contract used by preflight and paid execution."""
+    return {
+        "schema_version": INPUT_BUNDLE_SCHEMA_VERSION,
+        "expected_main_sha": expected_main_sha,
+        "expected_freeze_sha256": expected_freeze_sha256,
+        "expected_allocation_hash": expected_allocation_hash,
+        "approved_parent_cap_cny": approved_parent_cap_cny,
+        "authorization_acknowledgement": authorization_acknowledgement,
+        "dispatch_token": dispatch_token,
+        "run_id": run_id,
+        "provider_secret_present": provider_secret_present,
+    }
+
+
+def _load_paid_input_bundle(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or payload.get("schema_version") != INPUT_BUNDLE_SCHEMA_VERSION:
+        raise ValueError("P3-B paid input bundle schema is invalid")
+    if set(payload) != {"schema_version", *_INPUT_BUNDLE_FIELDS}:
+        raise ValueError("P3-B paid input bundle fields are invalid")
+    if not isinstance(payload["provider_secret_present"], bool):
+        raise ValueError("P3-B paid input bundle Secret presence is invalid")
+    if any(not isinstance(payload[field], str) for field in _INPUT_BUNDLE_FIELDS[:-1]):
+        raise ValueError("P3-B paid input bundle identities are invalid")
+    return {field: payload[field] for field in _INPUT_BUNDLE_FIELDS}
+
+
+def _input_hashes(inputs: Mapping[str, Any]) -> dict[str, str]:
+    return {
+        field: hashlib.sha256(value.encode("utf-8")).hexdigest()
+        for field in _HASHED_INPUT_FIELDS
+        if isinstance((value := inputs.get(field)), str)
+    }
+
+
+def _content_identities(root: Path) -> dict[str, str]:
+    return {
+        "workflow_content_sha256": _sha256(root / p3b.WORKFLOW_PATH),
+        "paid_executor_content_sha256": _sha256(root / "evals/evaluation_v2/p3b_paid_executor.py"),
+        "paid_gate_content_sha256": _sha256(root / "evals/paid_gate.py"),
+        "freeze_base_commit": p3b.BOUND_MAIN_COMMIT,
+    }
+
+
 def _git(root: Path, *args: str) -> str:
     result = subprocess.run(["git", "-C", str(root), *args], text=True, capture_output=True, check=False)
     if result.returncode:
@@ -48,17 +114,24 @@ def _git(root: Path, *args: str) -> str:
 
 
 def _require_safe_run_identity(value: str, field: str, minimum: int = 8) -> None:
-    if len(value) < minimum or Path(value).name != value or any(char.isspace() for char in value):
+    if len(value) < minimum or not _SAFE_RUN_IDENTITY.fullmatch(value):
         raise ValueError(f"P3-B paid executor requires a safe nonempty {field}")
 
 
-def _require_main_checkout(root: Path) -> str:
-    github_ref = str(__import__("os").environ.get("GITHUB_REF", ""))
+def _require_main_checkout(root: Path, expected_main_sha: str) -> str:
+    if not _GIT_SHA.fullmatch(expected_main_sha):
+        raise ValueError("P3-B paid execution requires an exact expected main SHA")
+    github_ref = str(os.environ.get("GITHUB_REF", ""))
     if github_ref and github_ref != "refs/heads/main":
         raise ValueError("P3-B paid execution is restricted to main")
     if not github_ref and _git(root, "branch", "--show-current") != "main":
         raise ValueError("P3-B paid execution is restricted to main")
     head = _git(root, "rev-parse", "HEAD")
+    if head != expected_main_sha:
+        raise ValueError("P3-B paid execution HEAD does not match expected main SHA")
+    github_sha = str(os.environ.get("GITHUB_SHA", ""))
+    if github_sha and github_sha != expected_main_sha:
+        raise ValueError("P3-B paid execution workflow SHA does not match expected main SHA")
     ancestor = subprocess.run(
         ["git", "-C", str(root), "merge-base", "--is-ancestor", p3b.BOUND_MAIN_COMMIT, head],
         text=True, capture_output=True, check=False,
@@ -77,9 +150,22 @@ def _committed_freeze(root: Path) -> tuple[dict[str, Any], str]:
     return frozen, _sha256(path)
 
 
+def _validate_acknowledgement(value: str) -> None:
+    if not value.startswith(REQUIRED_ACKNOWLEDGEMENT_PREFIX):
+        raise ValueError("paid execution requires the explicit P3-B authorization acknowledgement")
+    suffix = value[len(REQUIRED_ACKNOWLEDGEMENT_PREFIX):]
+    if not _ACKNOWLEDGEMENT_SUFFIX.fullmatch(suffix):
+        raise ValueError("P3-B authorization acknowledgement format is invalid")
+
+
+def _validate_expected_main_sha(value: str) -> None:
+    if not _GIT_SHA.fullmatch(value):
+        raise ValueError("P3-B paid execution requires an exact expected main SHA")
+
+
 def validate_paid_inputs(
     root: Path,
-    *, expected_freeze_sha256: str,
+    *, expected_main_sha: str, expected_freeze_sha256: str,
     expected_allocation_hash: str,
     approved_parent_cap_cny: str,
     authorization_acknowledgement: str,
@@ -90,6 +176,7 @@ def validate_paid_inputs(
 ) -> dict[str, Any]:
     """Validate all externally supplied paid identities before any workspace."""
     root = root.resolve()
+    _validate_expected_main_sha(expected_main_sha)
     frozen, actual_freeze_sha = _committed_freeze(root)
     if not _SHA256.fullmatch(expected_freeze_sha256) or expected_freeze_sha256 != actual_freeze_sha:
         raise ValueError("expected freeze SHA-256 does not match the committed P3-B freeze")
@@ -98,8 +185,7 @@ def validate_paid_inputs(
         raise ValueError("expected allocation hash does not match the committed P3-B allocation")
     if Decimal(approved_parent_cap_cny) != p3b.PARENT_CAP:
         raise ValueError("approved P3-B parent cap does not match the frozen proposal")
-    if not authorization_acknowledgement.startswith(REQUIRED_ACKNOWLEDGEMENT_PREFIX):
-        raise ValueError("paid execution requires the explicit P3-B authorization acknowledgement")
+    _validate_acknowledgement(authorization_acknowledgement)
     _require_safe_run_identity(dispatch_token, "dispatch token", minimum=12)
     _require_safe_run_identity(run_id, "run ID")
     if not provider_secret_present:
@@ -108,8 +194,85 @@ def validate_paid_inputs(
         "freeze": frozen,
         "freeze_sha256": actual_freeze_sha,
         "allocation_hash": actual_allocation_hash,
-        "main_head": _require_main_checkout(root) if require_main else None,
+        "execution_main_head": _require_main_checkout(root, expected_main_sha) if require_main else None,
     }
+
+
+def _preflight_failure_classification(error: Exception) -> str:
+    message = str(error)
+    if "acknowledgement" in message:
+        return "authorization_acknowledgement_protocol_prefix_or_syntax_mismatch"
+    if "main SHA" in message or "main" in message:
+        return "expected_main_sha_mismatch"
+    if "freeze" in message:
+        return "freeze_identity_mismatch"
+    if "allocation" in message:
+        return "allocation_identity_mismatch"
+    if "parent cap" in message:
+        return "budget_cap_mismatch"
+    if "dispatch token" in message or "run ID" in message:
+        return "unsafe_dispatch_identity"
+    return "paid_input_validation_failed"
+
+
+def _preflight_failure_payload(inputs: Mapping[str, Any], error: Exception) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "phase": "validate_paid_inputs",
+        "input_hashes": _input_hashes(inputs),
+        "expected_main_sha": inputs.get("expected_main_sha"),
+        "expected_freeze_sha256": inputs.get("expected_freeze_sha256"),
+        "expected_allocation_hash": inputs.get("expected_allocation_hash"),
+        "exception_classification": _preflight_failure_classification(error),
+        "provider_reached": False,
+        "provider_secret_read": False,
+        "provider_requests": 0,
+        "usage": 0,
+        "charge_cny": "0",
+        "active_reservation": None,
+    }
+
+
+def _write_preflight_failure(
+    artifact_root: Path, inputs: Mapping[str, Any], error: Exception, *, artifact_created: bool,
+) -> None:
+    if not artifact_created:
+        artifact_root.mkdir(parents=True, exist_ok=False)
+    _write_json(artifact_root / PREFLIGHT_FAILURE_NAME, _preflight_failure_payload(inputs, error))
+
+
+def validate_inputs_only(
+    root: Path, artifact_root: Path, *, require_main: bool = True, **inputs: Any,
+) -> dict[str, Any]:
+    """Run the exact paid input gate without workspace, Provider, or ledger creation."""
+    root, artifact_root = root.resolve(), artifact_root.resolve()
+    artifact_root.mkdir(parents=True, exist_ok=False)
+    safe_inputs = dict(inputs)
+    try:
+        checked = validate_paid_inputs(root, require_main=require_main, **safe_inputs)
+    except Exception as error:
+        _write_preflight_failure(artifact_root, safe_inputs, error, artifact_created=True)
+        raise
+    payload = {
+        "schema_version": 1,
+        "status": "passed_validate_paid_inputs",
+        "phase": "validate_paid_inputs",
+        "required_acknowledgement_prefix": REQUIRED_ACKNOWLEDGEMENT_PREFIX,
+        "input_hashes": _input_hashes(safe_inputs),
+        "expected_main_sha": safe_inputs["expected_main_sha"],
+        "expected_freeze_sha256": checked["freeze_sha256"],
+        "expected_allocation_hash": checked["allocation_hash"],
+        "execution_main_head": checked["execution_main_head"],
+        **_content_identities(root),
+        "provider_reached": False,
+        "provider_secret_read": False,
+        "provider_requests": 0,
+        "usage": 0,
+        "charge_cny": "0",
+        "active_reservation": None,
+    }
+    _write_json(artifact_root / PAID_INPUT_PREFLIGHT_NAME, payload)
+    return payload
 
 
 def _formal_bindings(frozen: Mapping[str, Any]) -> tuple[BudgetAuthorization, StageCBudgetAllocation]:
@@ -248,7 +411,7 @@ def _continues(result: control_canary.PaidTaskResult, ledger: BudgetLedger) -> b
 
 
 def run_paid_executor(
-    root: Path, artifact_root: Path, *, expected_freeze_sha256: str, expected_allocation_hash: str,
+    root: Path, artifact_root: Path, *, expected_main_sha: str, expected_freeze_sha256: str, expected_allocation_hash: str,
     approved_parent_cap_cny: str, authorization_acknowledgement: str, dispatch_token: str,
     run_id: str, provider_secret_present: bool, task_executor: TaskExecutor | None = None,
     require_main: bool = True,
@@ -256,7 +419,8 @@ def run_paid_executor(
     """Execute exactly one strict-serial P3-B dispatch after all fail-closed gates."""
     root, artifact_root = root.resolve(), artifact_root.resolve()
     checked = validate_paid_inputs(
-        root, expected_freeze_sha256=expected_freeze_sha256, expected_allocation_hash=expected_allocation_hash,
+        root, expected_main_sha=expected_main_sha, expected_freeze_sha256=expected_freeze_sha256,
+        expected_allocation_hash=expected_allocation_hash,
         approved_parent_cap_cny=approved_parent_cap_cny, authorization_acknowledgement=authorization_acknowledgement,
         dispatch_token=dispatch_token, run_id=run_id, provider_secret_present=provider_secret_present,
         require_main=require_main,
@@ -311,7 +475,8 @@ def run_paid_executor(
         "schema_version": 1, "paid_execution": task_executor is None, "run_id": run_id,
         "dispatch_token_sha256": hashlib.sha256(dispatch_token.encode()).hexdigest(),
         "freeze_sha256": checked["freeze_sha256"], "allocation_hash": checked["allocation_hash"],
-        "bound_main_commit": p3b.BOUND_MAIN_COMMIT, "main_head": checked["main_head"],
+        "freeze_base_commit": p3b.BOUND_MAIN_COMMIT, "execution_main_head": checked["execution_main_head"],
+        **_content_identities(root),
         "strict_serial": True, "request_ceiling_per_run": p3b.REQUEST_CEILING, "retry": 0, "fallback": False,
         "records": records, "paired_result_merge_count": len(paired), "stop_reason": stop_reason,
         "provider_requests": len(ledger.request_charges),
@@ -329,22 +494,57 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="P3-B strict serial paid executor")
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--artifact-root", type=Path, required=True)
-    parser.add_argument("--expected-freeze-sha256", required=True)
-    parser.add_argument("--expected-allocation-hash", required=True)
-    parser.add_argument("--approved-parent-cap-cny", required=True)
-    parser.add_argument("--authorization-acknowledgement", required=True)
-    parser.add_argument("--dispatch-token", required=True)
-    parser.add_argument("--run-id", required=True)
-    parser.add_argument("--provider-secret-present", required=True, choices=("true", "false"))
+    parser.add_argument("--input-bundle", type=Path)
+    parser.add_argument("--expected-main-sha")
+    parser.add_argument("--expected-freeze-sha256")
+    parser.add_argument("--expected-allocation-hash")
+    parser.add_argument("--approved-parent-cap-cny")
+    parser.add_argument("--authorization-acknowledgement")
+    parser.add_argument("--dispatch-token")
+    parser.add_argument("--run-id")
+    parser.add_argument("--provider-secret-present", choices=("true", "false"))
+    parser.add_argument("--validate-inputs-only", action="store_true")
     parser.add_argument("--confirm-paid-execution", action="store_true")
     args = parser.parse_args(argv)
+    direct = {
+        "expected_main_sha": args.expected_main_sha,
+        "expected_freeze_sha256": args.expected_freeze_sha256,
+        "expected_allocation_hash": args.expected_allocation_hash,
+        "approved_parent_cap_cny": args.approved_parent_cap_cny,
+        "authorization_acknowledgement": args.authorization_acknowledgement,
+        "dispatch_token": args.dispatch_token,
+        "run_id": args.run_id,
+        "provider_secret_present": args.provider_secret_present == "true" if args.provider_secret_present else None,
+    }
+    inputs: dict[str, Any] = direct
+    try:
+        if args.input_bundle:
+            if any(value is not None for value in direct.values()):
+                raise ValueError("P3-B input bundle cannot be mixed with direct paid inputs")
+            inputs = _load_paid_input_bundle(args.input_bundle)
+        elif any(value is None for value in direct.values()):
+            raise ValueError("P3-B paid executor requires a complete canonical input bundle")
+        if args.validate_inputs_only:
+            if args.confirm_paid_execution:
+                raise ValueError("P3-B validate-only mode cannot confirm paid execution")
+            payload = validate_inputs_only(args.root, args.artifact_root, **inputs)
+        else:
+            payload = None
+    except Exception as error:
+        if args.validate_inputs_only and not args.artifact_root.exists():
+            _write_preflight_failure(args.artifact_root, inputs, error, artifact_created=False)
+            return 2
+        if args.validate_inputs_only:
+            return 2
+        raise
+    if args.validate_inputs_only:
+        assert payload is not None
+        print(json.dumps(payload, sort_keys=True))
+        return 0
     if not args.confirm_paid_execution:
         raise ValueError("P3-B paid execution requires --confirm-paid-execution")
     summary = run_paid_executor(
-        args.root, args.artifact_root, expected_freeze_sha256=args.expected_freeze_sha256,
-        expected_allocation_hash=args.expected_allocation_hash, approved_parent_cap_cny=args.approved_parent_cap_cny,
-        authorization_acknowledgement=args.authorization_acknowledgement, dispatch_token=args.dispatch_token,
-        run_id=args.run_id, provider_secret_present=args.provider_secret_present == "true",
+        args.root, args.artifact_root, **inputs,
     )
     print(json.dumps(summary, sort_keys=True))
     return 0

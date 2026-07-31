@@ -47,7 +47,7 @@
         "known_failures": [],
         "level": "C1",
         "oracle_risks": [],
-        "patch_path": "/private/tmp/p3b-generated-artifact/rehearsal/runs/06-V3_CORE/tasks/dynaconf__dynaconf-1249/capability-v3/candidate-001.patch",
+        "patch_path": "/private/tmp/codepacex-p3b-r4-workflow-fix.ITvtXI/artifact/rehearsal/runs/06-V3_CORE/tasks/dynaconf__dynaconf-1249/capability-v3/candidate-001.patch",
         "restorable": true,
         "test_evidence_ids": [],
         "unknowns": []
@@ -65,7 +65,7 @@
         "known_failures": [],
         "level": "C2",
         "oracle_risks": [],
-        "patch_path": "/private/tmp/p3b-generated-artifact/rehearsal/runs/06-V3_CORE/tasks/dynaconf__dynaconf-1249/capability-v3/candidate-001.patch",
+        "patch_path": "/private/tmp/codepacex-p3b-r4-workflow-fix.ITvtXI/artifact/rehearsal/runs/06-V3_CORE/tasks/dynaconf__dynaconf-1249/capability-v3/candidate-001.patch",
         "restorable": true,
         "test_evidence_ids": [
           "test"
@@ -96,7 +96,7 @@
           "excerpt_hash": "2b169c56b0e4773ca9504252237ba5b0d10155464b4e18dca91bce1e3e4570de",
           "line_end": null,
           "line_start": null,
-          "path": "/private/tmp/p3b-generated-artifact/rehearsal/runs/06-V3_CORE/tasks/dynaconf__dynaconf-1249/workspace/tracked.py",
+          "path": "/private/tmp/codepacex-p3b-r4-workflow-fix.ITvtXI/artifact/rehearsal/runs/06-V3_CORE/tasks/dynaconf__dynaconf-1249/workspace/tracked.py",
           "summary": "1\tVALUE = 0",
           "symbol": null
         }
@@ -314,7 +314,7 @@
           "excerpt_hash": "2b169c56b0e4773ca9504252237ba5b0d10155464b4e18dca91bce1e3e4570de",
           "line_end": null,
           "line_start": null,
-          "path": "/private/tmp/p3b-generated-artifact/rehearsal/runs/06-V3_CORE/tasks/dynaconf__dynaconf-1249/workspace/tracked.py",
+          "path": "/private/tmp/codepacex-p3b-r4-workflow-fix.ITvtXI/artifact/rehearsal/runs/06-V3_CORE/tasks/dynaconf__dynaconf-1249/workspace/tracked.py",
           "summary": "1\tVALUE = 0",
           "symbol": null
         },
@@ -367,7 +367,7 @@
           "known_failures": [],
           "level": "C1",
           "oracle_risks": [],
-          "patch_path": "/private/tmp/p3b-generated-artifact/rehearsal/runs/06-V3_CORE/tasks/dynaconf__dynaconf-1249/capability-v3/candidate-001.patch",
+          "patch_path": "/private/tmp/codepacex-p3b-r4-workflow-fix.ITvtXI/artifact/rehearsal/runs/06-V3_CORE/tasks/dynaconf__dynaconf-1249/capability-v3/candidate-001.patch",
           "restorable": true,
           "test_evidence_ids": [],
           "unknowns": []
@@ -453,7 +453,7 @@
             "test_rehearsal.py"
           ],
           "dependency_fingerprint": "local",
-          "environment_fingerprint": "/private/tmp/p3b-generated-artifact/rehearsal/runs/06-V3_CORE/tasks/dynaconf__dynaconf-1249/workspace",
+          "environment_fingerprint": "/private/tmp/codepacex-p3b-r4-workflow-fix.ITvtXI/artifact/rehearsal/runs/06-V3_CORE/tasks/dynaconf__dynaconf-1249/workspace",
           "execution_commit": "71ea887ade58f57cbc5b37f311188bfb7cda8ca5",
           "interpreter": "python",
           "network_mode": "offline",
@@ -510,7 +510,7 @@
           "known_failures": [],
           "level": "C2",
           "oracle_risks": [],
-          "patch_path": "/private/tmp/p3b-generated-artifact/rehearsal/runs/06-V3_CORE/tasks/dynaconf__dynaconf-1249/capability-v3/candidate-001.patch",
+          "patch_path": "/private/tmp/codepacex-p3b-r4-workflow-fix.ITvtXI/artifact/rehearsal/runs/06-V3_CORE/tasks/dynaconf__dynaconf-1249/capability-v3/candidate-001.patch",
           "restorable": true,
           "test_evidence_ids": [
             "test"
@@ -617,7 +617,7 @@
           "known_failures": [],
           "level": "C2",
           "oracle_risks": [],
-          "patch_path": "/private/tmp/p3b-generated-artifact/rehearsal/runs/06-V3_CORE/tasks/dynaconf__dynaconf-1249/capability-v3/candidate-001.patch",
+          "patch_path": "/private/tmp/codepacex-p3b-r4-workflow-fix.ITvtXI/artifact/rehearsal/runs/06-V3_CORE/tasks/dynaconf__dynaconf-1249/capability-v3/candidate-001.patch",
           "restorable": true,
           "test_evidence_ids": [
             "test"
@@ -632,7 +632,7 @@
     {
       "event_type": "V3Completed",
       "payload": {
-        "exported_patch": "/private/tmp/p3b-generated-artifact/rehearsal/runs/06-V3_CORE/tasks/dynaconf__dynaconf-1249/capability-v3/candidate-001.patch",
+        "exported_patch": "/private/tmp/codepacex-p3b-r4-workflow-fix.ITvtXI/artifact/rehearsal/runs/06-V3_CORE/tasks/dynaconf__dynaconf-1249/capability-v3/candidate-001.patch",
         "reason": "agent_stream_finalized"
       },
       "schema_version": 1,

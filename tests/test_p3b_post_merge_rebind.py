@@ -24,8 +24,8 @@ def _records(frozen: dict) -> list[dict]:
 def test_freeze_rebinds_merged_main_and_preserves_p3a_conditions() -> None:
     frozen = p3b.freeze_payload(ROOT)
     prior = p3a.freeze_payload(ROOT)
-    assert frozen["bound_main_commit"] == p3b.BOUND_MAIN_COMMIT
-    assert frozen["bound_main_commit"] != prior["bound_main_commit"]
+    assert frozen["freeze_base_commit"] == p3b.BOUND_MAIN_COMMIT
+    assert frozen["freeze_base_commit"] != prior["bound_main_commit"]
     assert frozen["task_runs_sha256"] != prior["task_runs_sha256"]
     assert [run["instance_id"] for run in frozen["task_runs"]] == [run["instance_id"] for run in prior["task_runs"]]
     assert [run["treatment"] for run in frozen["task_runs"]] == [run["treatment"] for run in prior["task_runs"]]
@@ -35,7 +35,11 @@ def test_freeze_rebinds_merged_main_and_preserves_p3a_conditions() -> None:
         "automatic_retry_rerun_or_continuation": False, "only_treatment_difference": "treatment",
         "future_paid_execution_requires_new_user_authorization": True,
     }
-    assert set(frozen["runtime_source_sha256"]) >= {str(p3b.WORKFLOW_PATH), "evals/evaluation_v2/p3b_post_merge_rebind.py"}
+    assert set(frozen["runtime_content_sha256"]) >= {str(p3b.WORKFLOW_PATH), "evals/evaluation_v2/p3b_post_merge_rebind.py"}
+    assert set(frozen["content_identities"]) == {
+        "workflow_content_sha256", "paid_executor_content_sha256",
+        "paid_gate_content_sha256", "freeze_base_commit",
+    }
 
 
 def test_formal_parent_and_children_close_exactly() -> None:
