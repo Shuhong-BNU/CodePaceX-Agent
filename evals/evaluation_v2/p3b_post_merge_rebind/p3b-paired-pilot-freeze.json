@@ -304,15 +304,15 @@
     "v3_contract": "V3_CORE requires raw capability-v3 summary.json, events.jsonl, and final.patch"
   },
   "runtime_source_sha256": {
-    ".github/workflows/p3b-paired-pilot.yml": "aeef442b1e0cd8626f8e21e22cd711b654d616697d30e0d8020c784e077b0e1b",
+    ".github/workflows/p3b-paired-pilot.yml": "1bdd9fc1980eb91493fdcb13d47dacfc2a2554f41ba7433554a629c50f7fd098",
     "codepacex/agent.py": "064ca1054d4d0268b629a1d15b685f32042c61d3408415d0c6cc3540f697d8d4",
     "codepacex/capability_v3/controller.py": "863f0afbb3162064b7b52b88e69fe3c55019191dae0c6a6a31911224204273c9",
     "codepacex/client.py": "09bc2c696628f1431e9eadd890947b9c798798b200002f0557f224dfcf1e7a5a",
     "evals/evaluation_v2/control_canary.py": "54c3ec068e28d5a2d9dff26a329b408de04f5b43ad8c06f881cb6cf5c6b4d2c4",
     "evals/evaluation_v2/full_replay.py": "37c6479b023e8fbad70504d338135ba764912ee734f785a42a9318b0c9c75d39",
     "evals/evaluation_v2/p3a_paired_pilot.py": "554885bb02c3c42eea7725f2448246d16bfa2f471ec563c336c6dd13cfb7024e",
-    "evals/evaluation_v2/p3b_paid_executor.py": "3f82b6671043e0649c3c99104429a3594dc01213e5f4b08bfacc08a79791c3f6",
-    "evals/evaluation_v2/p3b_post_merge_rebind.py": "cd40f1f00bb1742e5f3db726a9ae9af583a504c7bc9229cc96b3e05b8f39c9e9",
+    "evals/evaluation_v2/p3b_paid_executor.py": "55ba2f218b3bebdb6e060b3c38d48b3143bc416ff3d00040a11bba34cccbd2ac",
+    "evals/evaluation_v2/p3b_post_merge_rebind.py": "8e86b458cf2c3b7c65c5950dfea0e858287cce50705e82a6d41444fa96d40d11",
     "evals/paid_gate.py": "8399579370ec7cfee1a2eb1b72638068665b100fe3b09bcc4135642731f942dc"
   },
   "schema_version": 1,

@@ -1,0 +1,16 @@
+{
+  "instance_id": "dynaconf__dynaconf-1249",
+  "metadata": {
+    "bootstrap_environment": {},
+    "disk_budget": {
+      "minimum_available_bytes": 4294967296,
+      "minimum_available_inodes": 100000
+    },
+    "editable_target": ".[test]",
+    "preflight_dependencies": [],
+    "test_target": "tests/test_env_loader.py"
+  },
+  "provider_initialization_boundary_reached": true,
+  "provider_secret_read": false,
+  "provider_transport_reached": false
+}

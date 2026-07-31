@@ -153,9 +153,12 @@ def _real_task_executor(
     frozen: Mapping[str, Any], execution_freeze: Mapping[str, Any], gate: PaidRunGate,
     run_root: Path, execution_run_id: str, task: Mapping[str, Any], identity: TaskRunBudgetIdentity,
 ) -> control_canary.PaidTaskResult:
-    metadata = full_replay._task_environment_contract(Path(gate.root))[str(task["instance_id"])]
+    environments = full_replay._task_environment_contract(Path(gate.root))
+    instance_id = str(task["instance_id"])
+    if instance_id not in environments:
+        raise ValueError(f"P3-B task environment contract missing instance: {instance_id}")
     return full_replay._full_task_executor(
-        Path(gate.root), dict(execution_freeze), metadata, gate, run_root, execution_run_id,
+        Path(gate.root), dict(execution_freeze), environments, gate, run_root, execution_run_id,
         dict(task), task_run_identity=identity,
     )
 

@@ -1,7 +1,7 @@
 {
   "charge_cny": "0",
-  "freeze_canonical_sha256": "e81a5e90b6ca96672fbf8b6fa6d2379be1157c69681fd4e477dba6ad186e4f0f",
-  "freeze_sha256": "78f2f9350c0d21302d54c2fce2e36d9db14c3376c14834dc3719489eb4c9e28b",
+  "freeze_canonical_sha256": "748839c2f01e009b7e6105ce0b6f74d79edbe2a4f9936719d935579b976bca7f",
+  "freeze_sha256": "b3b531a2d13458e899c383d6c26fecc360651d7f69babc58bb3f1b56de323f3e",
   "p3_b": "blocked_pending_separate_explicit_paid_authorization",
   "paid_job": "skipped",
   "paired_result_merge_count": 4,
@@ -21,6 +21,259 @@
     "ledger_closed": true,
     "ledger_settlement_count": 8,
     "paid_execution": false,
+    "production_adapter_preflight": {
+      "active_reservation": null,
+      "charge_cny": "0",
+      "executed": true,
+      "provider_requests": 0,
+      "provider_secret_read": false,
+      "provider_transport_hard_disabled": true,
+      "records": [
+        {
+          "adapter_path": "p3b_paid_executor._real_task_executor->full_replay._full_task_executor->control_canary._live_task_executor",
+          "environment_mapping_lookup": {
+            "instance_id": "beetbox__beets-5457",
+            "mapping_contains_instance": true,
+            "mapping_key_count": 20
+          },
+          "instance_id": "beetbox__beets-5457",
+          "ordinal": 1,
+          "provider_initialization_boundary_reached": true,
+          "provider_secret_read": false,
+          "provider_transport_reached": false,
+          "terminal_preflight_status": "passed_provider_initialization_boundary",
+          "treatment": "V2_CONTROL",
+          "workspace_bootstrap_evaluator_identity": {
+            "dependencies": [
+              "responses>=0.3.0"
+            ],
+            "editable_target": ".",
+            "official_evaluator": {
+              "commit": "ad79b850f15e33992e96f03f6e97f05ddf9aa0be",
+              "dataset": "SWE-bench-Live/SWE-bench-Live",
+              "namespace": "starryzhang",
+              "report_selection": "detailed_then_summary_fail_closed-v1",
+              "repository": "https://github.com/microsoft/SWE-bench-Live",
+              "split": "lite"
+            },
+            "test_target": "test/plugins/test_lyrics.py"
+          }
+        },
+        {
+          "adapter_path": "p3b_paid_executor._real_task_executor->full_replay._full_task_executor->control_canary._live_task_executor",
+          "environment_mapping_lookup": {
+            "instance_id": "beetbox__beets-5457",
+            "mapping_contains_instance": true,
+            "mapping_key_count": 20
+          },
+          "instance_id": "beetbox__beets-5457",
+          "ordinal": 2,
+          "provider_initialization_boundary_reached": true,
+          "provider_secret_read": false,
+          "provider_transport_reached": false,
+          "terminal_preflight_status": "passed_provider_initialization_boundary",
+          "treatment": "V3_CORE",
+          "workspace_bootstrap_evaluator_identity": {
+            "dependencies": [
+              "responses>=0.3.0"
+            ],
+            "editable_target": ".",
+            "official_evaluator": {
+              "commit": "ad79b850f15e33992e96f03f6e97f05ddf9aa0be",
+              "dataset": "SWE-bench-Live/SWE-bench-Live",
+              "namespace": "starryzhang",
+              "report_selection": "detailed_then_summary_fail_closed-v1",
+              "repository": "https://github.com/microsoft/SWE-bench-Live",
+              "split": "lite"
+            },
+            "test_target": "test/plugins/test_lyrics.py"
+          }
+        },
+        {
+          "adapter_path": "p3b_paid_executor._real_task_executor->full_replay._full_task_executor->control_canary._live_task_executor",
+          "environment_mapping_lookup": {
+            "instance_id": "deepset-ai__haystack-8489",
+            "mapping_contains_instance": true,
+            "mapping_key_count": 20
+          },
+          "instance_id": "deepset-ai__haystack-8489",
+          "ordinal": 3,
+          "provider_initialization_boundary_reached": true,
+          "provider_secret_read": false,
+          "provider_transport_reached": false,
+          "terminal_preflight_status": "passed_provider_initialization_boundary",
+          "treatment": "V3_CORE",
+          "workspace_bootstrap_evaluator_identity": {
+            "dependencies": [
+              "ddtrace==2.15.0rc2",
+              "opentelemetry-sdk"
+            ],
+            "editable_target": ".[test]",
+            "official_evaluator": {
+              "commit": "ad79b850f15e33992e96f03f6e97f05ddf9aa0be",
+              "dataset": "SWE-bench-Live/SWE-bench-Live",
+              "namespace": "starryzhang",
+              "report_selection": "detailed_then_summary_fail_closed-v1",
+              "repository": "https://github.com/microsoft/SWE-bench-Live",
+              "split": "lite"
+            },
+            "test_target": "test/tracing/test_tracer.py"
+          }
+        },
+        {
+          "adapter_path": "p3b_paid_executor._real_task_executor->full_replay._full_task_executor->control_canary._live_task_executor",
+          "environment_mapping_lookup": {
+            "instance_id": "deepset-ai__haystack-8489",
+            "mapping_contains_instance": true,
+            "mapping_key_count": 20
+          },
+          "instance_id": "deepset-ai__haystack-8489",
+          "ordinal": 4,
+          "provider_initialization_boundary_reached": true,
+          "provider_secret_read": false,
+          "provider_transport_reached": false,
+          "terminal_preflight_status": "passed_provider_initialization_boundary",
+          "treatment": "V2_CONTROL",
+          "workspace_bootstrap_evaluator_identity": {
+            "dependencies": [
+              "ddtrace==2.15.0rc2",
+              "opentelemetry-sdk"
+            ],
+            "editable_target": ".[test]",
+            "official_evaluator": {
+              "commit": "ad79b850f15e33992e96f03f6e97f05ddf9aa0be",
+              "dataset": "SWE-bench-Live/SWE-bench-Live",
+              "namespace": "starryzhang",
+              "report_selection": "detailed_then_summary_fail_closed-v1",
+              "repository": "https://github.com/microsoft/SWE-bench-Live",
+              "split": "lite"
+            },
+            "test_target": "test/tracing/test_tracer.py"
+          }
+        },
+        {
+          "adapter_path": "p3b_paid_executor._real_task_executor->full_replay._full_task_executor->control_canary._live_task_executor",
+          "environment_mapping_lookup": {
+            "instance_id": "dynaconf__dynaconf-1249",
+            "mapping_contains_instance": true,
+            "mapping_key_count": 20
+          },
+          "instance_id": "dynaconf__dynaconf-1249",
+          "ordinal": 5,
+          "provider_initialization_boundary_reached": true,
+          "provider_secret_read": false,
+          "provider_transport_reached": false,
+          "terminal_preflight_status": "passed_provider_initialization_boundary",
+          "treatment": "V2_CONTROL",
+          "workspace_bootstrap_evaluator_identity": {
+            "dependencies": [],
+            "editable_target": ".[test]",
+            "official_evaluator": {
+              "commit": "ad79b850f15e33992e96f03f6e97f05ddf9aa0be",
+              "dataset": "SWE-bench-Live/SWE-bench-Live",
+              "namespace": "starryzhang",
+              "report_selection": "detailed_then_summary_fail_closed-v1",
+              "repository": "https://github.com/microsoft/SWE-bench-Live",
+              "split": "lite"
+            },
+            "test_target": "tests/test_env_loader.py"
+          }
+        },
+        {
+          "adapter_path": "p3b_paid_executor._real_task_executor->full_replay._full_task_executor->control_canary._live_task_executor",
+          "environment_mapping_lookup": {
+            "instance_id": "dynaconf__dynaconf-1249",
+            "mapping_contains_instance": true,
+            "mapping_key_count": 20
+          },
+          "instance_id": "dynaconf__dynaconf-1249",
+          "ordinal": 6,
+          "provider_initialization_boundary_reached": true,
+          "provider_secret_read": false,
+          "provider_transport_reached": false,
+          "terminal_preflight_status": "passed_provider_initialization_boundary",
+          "treatment": "V3_CORE",
+          "workspace_bootstrap_evaluator_identity": {
+            "dependencies": [],
+            "editable_target": ".[test]",
+            "official_evaluator": {
+              "commit": "ad79b850f15e33992e96f03f6e97f05ddf9aa0be",
+              "dataset": "SWE-bench-Live/SWE-bench-Live",
+              "namespace": "starryzhang",
+              "report_selection": "detailed_then_summary_fail_closed-v1",
+              "repository": "https://github.com/microsoft/SWE-bench-Live",
+              "split": "lite"
+            },
+            "test_target": "tests/test_env_loader.py"
+          }
+        },
+        {
+          "adapter_path": "p3b_paid_executor._real_task_executor->full_replay._full_task_executor->control_canary._live_task_executor",
+          "environment_mapping_lookup": {
+            "instance_id": "delgan__loguru-1297",
+            "mapping_contains_instance": true,
+            "mapping_key_count": 20
+          },
+          "instance_id": "delgan__loguru-1297",
+          "ordinal": 7,
+          "provider_initialization_boundary_reached": true,
+          "provider_secret_read": false,
+          "provider_transport_reached": false,
+          "terminal_preflight_status": "passed_provider_initialization_boundary",
+          "treatment": "V3_CORE",
+          "workspace_bootstrap_evaluator_identity": {
+            "dependencies": [
+              "freezegun==1.5.0",
+              "pytest-mypy-plugins==3.2.0"
+            ],
+            "editable_target": ".",
+            "official_evaluator": {
+              "commit": "ad79b850f15e33992e96f03f6e97f05ddf9aa0be",
+              "dataset": "SWE-bench-Live/SWE-bench-Live",
+              "namespace": "starryzhang",
+              "report_selection": "detailed_then_summary_fail_closed-v1",
+              "repository": "https://github.com/microsoft/SWE-bench-Live",
+              "split": "lite"
+            },
+            "test_target": "tests/test_add_option_enqueue.py"
+          }
+        },
+        {
+          "adapter_path": "p3b_paid_executor._real_task_executor->full_replay._full_task_executor->control_canary._live_task_executor",
+          "environment_mapping_lookup": {
+            "instance_id": "delgan__loguru-1297",
+            "mapping_contains_instance": true,
+            "mapping_key_count": 20
+          },
+          "instance_id": "delgan__loguru-1297",
+          "ordinal": 8,
+          "provider_initialization_boundary_reached": true,
+          "provider_secret_read": false,
+          "provider_transport_reached": false,
+          "terminal_preflight_status": "passed_provider_initialization_boundary",
+          "treatment": "V2_CONTROL",
+          "workspace_bootstrap_evaluator_identity": {
+            "dependencies": [
+              "freezegun==1.5.0",
+              "pytest-mypy-plugins==3.2.0"
+            ],
+            "editable_target": ".",
+            "official_evaluator": {
+              "commit": "ad79b850f15e33992e96f03f6e97f05ddf9aa0be",
+              "dataset": "SWE-bench-Live/SWE-bench-Live",
+              "namespace": "starryzhang",
+              "report_selection": "detailed_then_summary_fail_closed-v1",
+              "repository": "https://github.com/microsoft/SWE-bench-Live",
+              "split": "lite"
+            },
+            "test_target": "tests/test_add_option_enqueue.py"
+          }
+        }
+      ],
+      "task_run_count": 8,
+      "unique_instance_count": 4,
+      "usage": 0
+    },
     "provider_requests": 0,
     "provider_secret_read": false,
     "recording_fake_transport_requests": 32,
@@ -75,12 +328,12 @@
           "artifact_path": "capability-v3",
           "errors": [],
           "event_count": 29,
-          "events_sha256": "b4c601197dba7ff1e0413cd82442f393f0d448a30aee21648443fbb9ae7b26f3",
+          "events_sha256": "6b9449ca52a1e94e0061173d606540e71f0feb90e294086d17f3706ac5619400",
           "final_patch_nonempty": true,
           "final_patch_present": true,
           "final_patch_sha256": "a0963fda9779290ec6b0c2b805a5b6ae59ff8d67a88db44e1006a4804f47e0e6",
           "required": true,
-          "summary_sha256": "fb354786c5a076744cd448e352f4c7de2a294bb1f87c49c5bf2d298c99665095",
+          "summary_sha256": "8aecf3469a9f56dfb49f34e4bbc5fb0cb7cf53ce6aaad68e094cbd6b71e19533",
           "valid": true
         },
         "usage": 0,
@@ -109,12 +362,12 @@
           "artifact_path": "capability-v3",
           "errors": [],
           "event_count": 29,
-          "events_sha256": "81e15ac0575f6f6cdcfd802ba6abcf7d105526b53aff43180f7e817ac307be65",
+          "events_sha256": "a8973f6ef4f575faed99fc233386123a26e2e1ff2f88b3ca3bd268995f24685d",
           "final_patch_nonempty": true,
           "final_patch_present": true,
           "final_patch_sha256": "a0963fda9779290ec6b0c2b805a5b6ae59ff8d67a88db44e1006a4804f47e0e6",
           "required": true,
-          "summary_sha256": "54661c01f3cacf21ffdba8b84ba86b289e5e4479f67736e1ca435d17d8adaa29",
+          "summary_sha256": "8e1b73b3f336d07fe34ecb4e8d86d04c65462941dd68535adc660d1cdf4487bd",
           "valid": true
         },
         "usage": 0,
@@ -199,12 +452,12 @@
           "artifact_path": "capability-v3",
           "errors": [],
           "event_count": 29,
-          "events_sha256": "37ef0ede62bbdbb0487395f2d83a6f19c3dff27b5f5e81484cc9ea1159862412",
+          "events_sha256": "eb60e9133a7b2317968b9d1a58f587c749db59cddeb1d82e7d3e51ad78c7e95f",
           "final_patch_nonempty": true,
           "final_patch_present": true,
           "final_patch_sha256": "a0963fda9779290ec6b0c2b805a5b6ae59ff8d67a88db44e1006a4804f47e0e6",
           "required": true,
-          "summary_sha256": "1fdac40783226c57324958882133f7ac88a03b733ff69ca6c7b10e2e4fe27407",
+          "summary_sha256": "b332dff175cb65fa31dab8fc0f52b3768d38ff15ce1b4fa5e3a429169ac3c7dc",
           "valid": true
         },
         "usage": 0,
@@ -233,12 +486,12 @@
           "artifact_path": "capability-v3",
           "errors": [],
           "event_count": 29,
-          "events_sha256": "23da2651b61f80102c8d2060eb1708cce986a8ca87b9216019311faad02d6090",
+          "events_sha256": "89fe0e9e8509cbd5fa0633d3850d48aa22a7be9fa09ebe8607b2c217d28c5617",
           "final_patch_nonempty": true,
           "final_patch_present": true,
           "final_patch_sha256": "a0963fda9779290ec6b0c2b805a5b6ae59ff8d67a88db44e1006a4804f47e0e6",
           "required": true,
-          "summary_sha256": "b19ea56355e7eba4fa37e501ff1b77feccf198e5805a5fbacfe38b18c5bdc82b",
+          "summary_sha256": "06779af0ca88805cfdc814efa6a46b36ac8bded41ddb54cf618200d5b26a0032",
           "valid": true
         },
         "usage": 0,

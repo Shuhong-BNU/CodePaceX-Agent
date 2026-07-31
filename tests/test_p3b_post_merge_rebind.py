@@ -93,6 +93,8 @@ def test_unique_workflow_is_default_zero_provider_and_paid_fail_closed() -> None
     assert "dispatch_token" in workflow and "run_id" in workflow
     assert "cancel-in-progress: false" in workflow
     assert "P3B_PROVIDER_SECRET_PRESENT: ${{ secrets.BAILIAN_API_KEY != '' }}" in workflow
+    assert "production_adapter_preflight" in workflow
+    assert "provider_transport_hard_disabled" in workflow
 
 
 def test_actual_zero_provider_rehearsal_writes_complete_closed_evidence(tmp_path: Path) -> None:
@@ -113,6 +115,15 @@ def test_actual_zero_provider_rehearsal_writes_complete_closed_evidence(tmp_path
     assert rehearsal["ledger_settlement_count"] == 8 and rehearsal["ledger_closed"] is True
     assert rehearsal["active_reservation"] is None
     assert rehearsal["dispatch_guard_rejections"] == ["duplicate dispatch rejected", "second dispatch rejected"]
+    adapter_preflight = rehearsal["production_adapter_preflight"]
+    assert adapter_preflight["provider_transport_hard_disabled"] is True
+    assert adapter_preflight["task_run_count"] == 8
+    assert adapter_preflight["unique_instance_count"] == 4
+    assert adapter_preflight["provider_requests"] == adapter_preflight["usage"] == 0
+    assert adapter_preflight["charge_cny"] == "0"
+    assert adapter_preflight["active_reservation"] is None
+    assert all(record["provider_transport_reached"] is False for record in adapter_preflight["records"])
+    assert all(record["terminal_preflight_status"] == "passed_provider_initialization_boundary" for record in adapter_preflight["records"])
     assert readiness["paired_result_merge_count"] == 4
     for record in rehearsal["run_records"]:
         task_root = output / p3b.REHEARSAL_DIRECTORY / record["artifact_path"]
