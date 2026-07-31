@@ -285,10 +285,11 @@ def run_paid_executor(
     for ordinal, run in enumerate(frozen["task_runs"], start=1):
         if run["ordinal"] != ordinal:
             raise ValueError("P3-B strict serial manifest order is invalid")
-        identity = child_by_id.get(str(run["task_run_id"]))
-        if identity is None:
+        child = child_by_id.get(str(run["task_run_id"]))
+        if child is None:
             raise ValueError("P3-B task-run has no child allocation")
-        execution_run_id = identity.execution_run_id
+        identity = TaskRunBudgetIdentity.model_validate(child.model_dump(mode="json"))
+        execution_run_id = child.execution_run_id
         run_root = artifact_root / "runs" / f"{run['ordinal']:02d}-{run['treatment']}"
         result = executor(frozen, _execution_freeze(root, frozen, str(run["treatment"])), gate, run_root, execution_run_id, tasks[str(run["instance_id"])], identity)
         records.append(_terminal_record(run, result, artifact_root))
