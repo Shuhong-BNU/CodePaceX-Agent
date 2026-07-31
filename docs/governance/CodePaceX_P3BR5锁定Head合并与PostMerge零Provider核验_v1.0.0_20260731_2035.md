@@ -1,8 +1,8 @@
 # CodePaceX P3-B-R5：锁定 Head 合并与 Post-merge 零 Provider 核验
 
-> 文档版本：v1.0.0  
-> 记录时间：2026-07-31 20:35（UTC+8）  
-> 状态：R4 已合并；仍未获得新的 paid authorization  
+> 文档版本：v1.0.0
+> 记录时间：2026-07-31 20:35（UTC+8）
+> 状态：R4 已合并；仍未获得新的 paid authorization
 > 语言：中文
 
 ## 锁定审阅与合并
