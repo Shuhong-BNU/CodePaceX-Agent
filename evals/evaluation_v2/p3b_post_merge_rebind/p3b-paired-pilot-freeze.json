@@ -11,20 +11,16 @@
   },
   "content_identities": {
     "freeze_base_commit": "2794e27220d3fada3bd0fdd3a1a14ff50e3a6034",
-    "paid_executor_content_sha256": "5eca4015570f9f9744bd4fbe4d4a6ba667baa0c29731bd47a83864396585bb46",
+    "paid_executor_content_sha256": "f0ba9762bcde05139b1ae9b0e7bc624923bd632e95b0cd4fd53858ae1db0db36",
     "paid_gate_content_sha256": "8399579370ec7cfee1a2eb1b72638068665b100fe3b09bcc4135642731f942dc",
-    "workflow_content_sha256": "0a48f655f8a6cb12347e5c794bbc6b321284c258f3b27f1672d0e0db0860eab6"
+    "workflow_content_sha256": "dfd00c1d651dd29830ede8215bff08bedb80fc0af557ff4473e941f78b5621bd"
   },
   "dispatch_contract": {
+    "bundle_contract": "one generator-produced UTF-8 canonical JSON file; validate-only and paid execution both verify raw-byte SHA-256",
     "future_inputs": [
       "paid_execution",
-      "expected_main_sha",
-      "expected_freeze_sha256",
-      "expected_allocation_hash",
-      "approved_parent_cap_cny",
-      "authorization_acknowledgement",
-      "dispatch_token",
-      "run_id"
+      "canonical_bundle_base64",
+      "expected_final_input_bundle_sha256"
     ],
     "one_paid_job_only": "p3b-paid-execution",
     "second_dispatch": "fail_closed",
@@ -311,15 +307,15 @@
     "v3_contract": "V3_CORE requires raw capability-v3 summary.json, events.jsonl, and final.patch"
   },
   "runtime_content_sha256": {
-    ".github/workflows/p3b-paired-pilot.yml": "0a48f655f8a6cb12347e5c794bbc6b321284c258f3b27f1672d0e0db0860eab6",
+    ".github/workflows/p3b-paired-pilot.yml": "dfd00c1d651dd29830ede8215bff08bedb80fc0af557ff4473e941f78b5621bd",
     "codepacex/agent.py": "064ca1054d4d0268b629a1d15b685f32042c61d3408415d0c6cc3540f697d8d4",
     "codepacex/capability_v3/controller.py": "863f0afbb3162064b7b52b88e69fe3c55019191dae0c6a6a31911224204273c9",
     "codepacex/client.py": "09bc2c696628f1431e9eadd890947b9c798798b200002f0557f224dfcf1e7a5a",
     "evals/evaluation_v2/control_canary.py": "54c3ec068e28d5a2d9dff26a329b408de04f5b43ad8c06f881cb6cf5c6b4d2c4",
     "evals/evaluation_v2/full_replay.py": "37c6479b023e8fbad70504d338135ba764912ee734f785a42a9318b0c9c75d39",
     "evals/evaluation_v2/p3a_paired_pilot.py": "554885bb02c3c42eea7725f2448246d16bfa2f471ec563c336c6dd13cfb7024e",
-    "evals/evaluation_v2/p3b_paid_executor.py": "5eca4015570f9f9744bd4fbe4d4a6ba667baa0c29731bd47a83864396585bb46",
-    "evals/evaluation_v2/p3b_post_merge_rebind.py": "f7fa77e44a61e9991b00ba0efda25eed7d7c3d2e545467db2100bd93fc0b2f67",
+    "evals/evaluation_v2/p3b_paid_executor.py": "f0ba9762bcde05139b1ae9b0e7bc624923bd632e95b0cd4fd53858ae1db0db36",
+    "evals/evaluation_v2/p3b_post_merge_rebind.py": "0654ff1f318f256ad46482f14a0e08297700dfa84322858a1b60caa03fa54e19",
     "evals/paid_gate.py": "8399579370ec7cfee1a2eb1b72638068665b100fe3b09bcc4135642731f942dc"
   },
   "schema_version": 1,
