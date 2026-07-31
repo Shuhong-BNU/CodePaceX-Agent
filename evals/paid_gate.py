@@ -637,11 +637,20 @@ def _git_is_clean(root: Path) -> bool:
 
 def validate_authorization(
     authorization: BudgetAuthorization, *, root: Path, pricing: PricingSnapshot,
+    allow_descendant_head: bool = False,
 ) -> None:
     if authorization.pricing_snapshot_hash != pricing_snapshot_hash(pricing):
         raise ValueError("budget authorization pricing snapshot hash mismatch")
-    if authorization.experiment_commit != _git_commit(root):
-        raise ValueError("budget authorization is not bound to current HEAD")
+    current = _git_commit(root)
+    if authorization.experiment_commit != current:
+        if not allow_descendant_head:
+            raise ValueError("budget authorization is not bound to current HEAD")
+        ancestor = subprocess.run(
+            ["git", "-C", str(root), "merge-base", "--is-ancestor", authorization.experiment_commit, current],
+            text=True, capture_output=True, check=False,
+        )
+        if ancestor.returncode != 0:
+            raise ValueError("budget authorization commit is not an ancestor of current HEAD")
     if not _git_is_clean(root):
         raise ValueError("paid execution requires a clean frozen Git worktree")
 
@@ -707,6 +716,7 @@ class PaidRunGate:
         pricing: PricingSnapshot, stage: BudgetStage,
         allocation_path: Path | None = None,
         pricing_path: Path | None = None,
+        allow_descendant_head: bool = False,
     ) -> None:
         self.root = root.resolve()
         self.authorization_path = authorization_path.resolve()
@@ -716,9 +726,13 @@ class PaidRunGate:
         self.lock_path = ledger_path.with_suffix(ledger_path.suffix + ".lock")
         self.pricing = pricing
         self.stage = stage
+        self.allow_descendant_head = allow_descendant_head
         self._lock_depth = 0
         self.authorization = load_authorization(authorization_path)
-        validate_authorization(self.authorization, root=self.root, pricing=pricing)
+        validate_authorization(
+            self.authorization, root=self.root, pricing=pricing,
+            allow_descendant_head=allow_descendant_head,
+        )
         self._authorization_hash = authorization_hash(self.authorization)
         self.allocation = (
             load_stage_c_allocation(self.allocation_path) if self.allocation_path is not None else None
@@ -818,6 +832,7 @@ class PaidRunGate:
     ) -> Reservation:
         validate_authorization(
             self.authorization, root=self.root, pricing=self.pricing,
+            allow_descendant_head=self.allow_descendant_head,
         )
         ledger = self._load_ledger()
         if ledger.active_reservation is not None:

@@ -5,8 +5,11 @@ on:
     paths:
       - ".github/workflows/p3b-paired-pilot.yml"
       - "evals/evaluation_v2/p3b_post_merge_rebind.py"
+      - "evals/evaluation_v2/p3b_paid_executor.py"
       - "evals/evaluation_v2/p3b_post_merge_rebind/**"
+      - "evals/paid_gate.py"
       - "tests/test_p3b_post_merge_rebind.py"
+      - "tests/test_p3b_paid_executor.py"
   workflow_dispatch:
     inputs:
       paid_execution:
@@ -94,14 +97,48 @@ jobs:
     timeout-minutes: 1440
     env:
       BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+      # Presence only is passed to the entry gate. The secret value remains
+      # unavailable to shell expansion and is consumed only by the paid Agent.
+      P3B_PROVIDER_SECRET_PRESENT: ${{ secrets.BAILIAN_API_KEY != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
-      - name: Fail closed until a separately authorized P3-B executor is invoked
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install paid executor dependencies
+        run: python -m pip install -e .
+      - name: Run the explicitly authorized P3-B executor
         run: |
           set -euo pipefail
           test '${{ inputs.paid_execution }}' = true
           test '${{ inputs.approved_parent_cap_cny }}' = '292.945921'
-          echo 'P3-B paid executor requires a separate explicit user authorization and is intentionally not run by P3-B0.'
-          exit 1
+          test '${{ env.P3B_PROVIDER_SECRET_PRESENT }}' = true
+          python -m evals.evaluation_v2.p3b_paid_executor \
+            --root . \
+            --artifact-root "${RUNNER_TEMP}/p3b-paid-artifact-${{ github.run_id }}" \
+            --expected-freeze-sha256 '${{ inputs.expected_freeze_sha256 }}' \
+            --expected-allocation-hash '${{ inputs.expected_allocation_hash }}' \
+            --approved-parent-cap-cny '${{ inputs.approved_parent_cap_cny }}' \
+            --authorization-acknowledgement '${{ inputs.authorization_acknowledgement }}' \
+            --dispatch-token '${{ inputs.dispatch_token }}' \
+            --run-id '${{ inputs.run_id }}' \
+            --provider-secret-present '${{ env.P3B_PROVIDER_SECRET_PRESENT }}' \
+            --confirm-paid-execution
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from evals.evaluation_v2.p3b_paid_executor import PAID_SUMMARY_NAME
+          artifact = Path('${{ runner.temp }}') / 'p3b-paid-artifact-${{ github.run_id }}'
+          summary = json.loads((artifact / PAID_SUMMARY_NAME).read_text(encoding='utf-8'))
+          assert summary['completed'] is True
+          assert summary['ledger_closed'] is True and summary['active_reservation'] is None
+          assert len(summary['records']) == 8 and summary['paired_result_merge_count'] == 4
+          PY
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: p3b-paid-artifact-${{ github.run_id }}
+          path: ${{ runner.temp }}/p3b-paid-artifact-${{ github.run_id }}
+          if-no-files-found: error
