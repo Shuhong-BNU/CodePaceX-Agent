@@ -312,7 +312,7 @@
     "evals/evaluation_v2/full_replay.py": "37c6479b023e8fbad70504d338135ba764912ee734f785a42a9318b0c9c75d39",
     "evals/evaluation_v2/p3a_paired_pilot.py": "554885bb02c3c42eea7725f2448246d16bfa2f471ec563c336c6dd13cfb7024e",
     "evals/evaluation_v2/p3b_post_merge_rebind.py": "dd028c1f9c9297a39efd479ea5c28dd43d37cf546c7018eea786e62293c14960",
-    "evals/paid_gate.py": "7406e79cf8e1e4827d347ca8cad4ff1d30cb83c4912c50910bf4d871a1c382b9"
+    "evals/paid_gate.py": "dbb3846396a1c237b8ef00bfbd4ba753af74fb80ae32779a08586a9cc63f3fa5"
   },
   "schema_version": 1,
   "status": "formal_paid_freeze_not_authorized",
