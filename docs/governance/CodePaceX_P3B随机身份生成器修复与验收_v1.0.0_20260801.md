@@ -18,6 +18,8 @@
 - canonical bundle 原始 bytes 与 validate-only/paid executor SHA 绑定回归保持通过；
 - Provider requests / Usage / charge 保持 `0 / 0 / CNY 0`，Secret value read=false，paid job skipped。
 
+本地验收已通过 generator/paid-executor 与 P3-B rebind 定向测试（`31 passed`）。重生成 readiness 记录 4/4 唯一实例、8/8 task-run、Provider transport hard-disabled、`0 / 0 / CNY 0`、`active_reservation=null` 和 paid job skipped。完整 CI 与锁定 Head 审阅须在集中式 PR 创建后完成。
+
 ## 后续 A3
 
 本修复不构成 paid authorization。只有用户新的明确授权、全新 generator identity 和一次性 validate-only 全部通过后，才可讨论 A3；本轮不 dispatch paid workflow，不调用 Provider，不启动 P4。
