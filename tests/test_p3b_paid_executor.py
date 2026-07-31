@@ -117,6 +117,7 @@ def test_workflow_uses_executor_and_leaves_paid_job_skipped_for_prs() -> None:
     assert "p3b-paid-artifact-${{ github.run_id }}" in workflow
     assert "github.event_name == 'workflow_dispatch'" in workflow
     assert "exit 1" not in workflow
+    assert "ref: main\n          fetch-depth: 0" in workflow
 
 
 def test_duplicate_and_second_dispatch_remain_rejected(tmp_path: Path) -> None:
