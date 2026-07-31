@@ -17,6 +17,10 @@ on:
         required: true
         type: boolean
         default: false
+      expected_main_sha:
+        required: false
+        type: string
+        default: ''
       expected_freeze_sha256:
         required: false
         type: string
@@ -98,46 +102,91 @@ jobs:
           if-no-files-found: error
 
   p3b-paid-execution:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.paid_execution == true && github.ref == 'refs/heads/main' && inputs.expected_freeze_sha256 != '' && inputs.expected_allocation_hash != '' && inputs.approved_parent_cap_cny == '292.945921' && inputs.authorization_acknowledgement != '' && inputs.dispatch_token != '' && inputs.run_id != '' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.paid_execution == true && github.ref == 'refs/heads/main' && inputs.expected_main_sha != '' && inputs.expected_freeze_sha256 != '' && inputs.expected_allocation_hash != '' && inputs.approved_parent_cap_cny == '292.945921' && inputs.authorization_acknowledgement != '' && inputs.dispatch_token != '' && inputs.run_id != '' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 1440
+    concurrency:
+      # Artifact-local DispatchGuard cannot coordinate separate GitHub Runs.
+      group: p3b-paid-execution-global-v1
+      cancel-in-progress: false
     env:
-      BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
-      # Presence only is passed to the entry gate. The secret value remains
-      # unavailable to shell expansion and is consumed only by the paid Agent.
+      # Presence only is available before the Provider step; no Secret value is.
       P3B_PROVIDER_SECRET_PRESENT: ${{ secrets.BAILIAN_API_KEY != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ inputs.expected_main_sha }}
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - name: Install paid executor dependencies
         run: python -m pip install -e .
-      - name: Run the explicitly authorized P3-B executor
+      - name: Write canonical paid input bundle
+        env:
+          P3B_INPUT_EXPECTED_MAIN_SHA: ${{ inputs.expected_main_sha }}
+          P3B_INPUT_EXPECTED_FREEZE_SHA256: ${{ inputs.expected_freeze_sha256 }}
+          P3B_INPUT_EXPECTED_ALLOCATION_HASH: ${{ inputs.expected_allocation_hash }}
+          P3B_INPUT_APPROVED_PARENT_CAP_CNY: ${{ inputs.approved_parent_cap_cny }}
+          P3B_INPUT_AUTHORIZATION_ACKNOWLEDGEMENT: ${{ inputs.authorization_acknowledgement }}
+          P3B_INPUT_DISPATCH_TOKEN: ${{ inputs.dispatch_token }}
+          P3B_INPUT_RUN_ID: ${{ inputs.run_id }}
+          P3B_INPUT_BUNDLE: ${{ runner.temp }}/p3b-paid-inputs-${{ github.run_id }}.json
         run: |
-          set -euo pipefail
-          test '${{ inputs.paid_execution }}' = true
-          test '${{ inputs.approved_parent_cap_cny }}' = '292.945921'
-          test '${{ env.P3B_PROVIDER_SECRET_PRESENT }}' = true
+          python - "$P3B_INPUT_BUNDLE" <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+          from evals.evaluation_v2.p3b_paid_executor import canonical_paid_input_bundle
+
+          bundle = canonical_paid_input_bundle(
+              expected_main_sha=os.environ["P3B_INPUT_EXPECTED_MAIN_SHA"],
+              expected_freeze_sha256=os.environ["P3B_INPUT_EXPECTED_FREEZE_SHA256"],
+              expected_allocation_hash=os.environ["P3B_INPUT_EXPECTED_ALLOCATION_HASH"],
+              approved_parent_cap_cny=os.environ["P3B_INPUT_APPROVED_PARENT_CAP_CNY"],
+              authorization_acknowledgement=os.environ["P3B_INPUT_AUTHORIZATION_ACKNOWLEDGEMENT"],
+              dispatch_token=os.environ["P3B_INPUT_DISPATCH_TOKEN"],
+              run_id=os.environ["P3B_INPUT_RUN_ID"],
+              provider_secret_present=os.environ["P3B_PROVIDER_SECRET_PRESENT"] == "true",
+          )
+          Path(sys.argv[1]).write_text(json.dumps(bundle), encoding="utf-8")
+          PY
+      - name: Validate paid inputs without Provider access
+        env:
+          P3B_INPUT_BUNDLE: ${{ runner.temp }}/p3b-paid-inputs-${{ github.run_id }}.json
+          P3B_PREFLIGHT_ARTIFACT: ${{ runner.temp }}/p3b-paid-input-preflight-${{ github.run_id }}
+        run: |
           python -m evals.evaluation_v2.p3b_paid_executor \
             --root . \
-            --artifact-root "${RUNNER_TEMP}/p3b-paid-artifact-${{ github.run_id }}" \
-            --expected-freeze-sha256 '${{ inputs.expected_freeze_sha256 }}' \
-            --expected-allocation-hash '${{ inputs.expected_allocation_hash }}' \
-            --approved-parent-cap-cny '${{ inputs.approved_parent_cap_cny }}' \
-            --authorization-acknowledgement '${{ inputs.authorization_acknowledgement }}' \
-            --dispatch-token '${{ inputs.dispatch_token }}' \
-            --run-id '${{ inputs.run_id }}' \
-            --provider-secret-present '${{ env.P3B_PROVIDER_SECRET_PRESENT }}' \
+            --artifact-root "$P3B_PREFLIGHT_ARTIFACT" \
+            --input-bundle "$P3B_INPUT_BUNDLE" \
+            --validate-inputs-only
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: p3b-paid-input-preflight-${{ github.run_id }}
+          path: ${{ runner.temp }}/p3b-paid-input-preflight-${{ github.run_id }}
+          if-no-files-found: error
+      - name: Run the explicitly authorized P3-B executor
+        env:
+          # The Secret value exists only in this Provider-capable step.
+          BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+          P3B_INPUT_BUNDLE: ${{ runner.temp }}/p3b-paid-inputs-${{ github.run_id }}.json
+          P3B_PAID_ARTIFACT: ${{ runner.temp }}/p3b-paid-artifact-${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python -m evals.evaluation_v2.p3b_paid_executor \
+            --root . \
+            --artifact-root "$P3B_PAID_ARTIFACT" \
+            --input-bundle "$P3B_INPUT_BUNDLE" \
             --confirm-paid-execution
           python - <<'PY'
           import json
+          import os
           from pathlib import Path
           from evals.evaluation_v2.p3b_paid_executor import PAID_SUMMARY_NAME
-          artifact = Path('${{ runner.temp }}') / 'p3b-paid-artifact-${{ github.run_id }}'
+          artifact = Path(os.environ['P3B_PAID_ARTIFACT'])
           summary = json.loads((artifact / PAID_SUMMARY_NAME).read_text(encoding='utf-8'))
           assert summary['completed'] is True
           assert summary['ledger_closed'] is True and summary['active_reservation'] is None

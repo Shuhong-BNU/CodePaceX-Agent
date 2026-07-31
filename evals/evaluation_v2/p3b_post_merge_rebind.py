@@ -77,6 +77,16 @@ def _runtime_hashes(root: Path) -> dict[str, str]:
     return {str(path): _sha256(root / path) for path in paths}
 
 
+def _content_identities(root: Path) -> dict[str, str]:
+    runtime = _runtime_hashes(root)
+    return {
+        "workflow_content_sha256": runtime[str(WORKFLOW_PATH)],
+        "paid_executor_content_sha256": runtime["evals/evaluation_v2/p3b_paid_executor.py"],
+        "paid_gate_content_sha256": runtime["evals/paid_gate.py"],
+        "freeze_base_commit": BOUND_MAIN_COMMIT,
+    }
+
+
 def _p3a_frozen(root: Path) -> Mapping[str, Any]:
     frozen = p3a.freeze_payload(root)
     if frozen["bound_main_commit"] != p3a.BOUND_MAIN_COMMIT:
@@ -227,13 +237,13 @@ def freeze_payload(root: Path) -> dict[str, Any]:
     p3a_frozen = _p3a_frozen(root)
     return {
         "schema_version": SCHEMA_VERSION, "experiment_name": EXPERIMENT_NAME,
-        "status": "formal_paid_freeze_not_authorized", "bound_main_commit": BOUND_MAIN_COMMIT,
-        "inherits_p3a_freeze": {"path": str(p3a.ARTIFACT_DIRECTORY / p3a.FREEZE_NAME), "sha256": _sha256(root / p3a.ARTIFACT_DIRECTORY / p3a.FREEZE_NAME), "historical_bound_main_commit": p3a_frozen["bound_main_commit"]},
+        "status": "formal_paid_freeze_not_authorized", "freeze_base_commit": BOUND_MAIN_COMMIT,
+        "inherits_p3a_freeze": {"path": str(p3a.ARTIFACT_DIRECTORY / p3a.FREEZE_NAME), "sha256": _sha256(root / p3a.ARTIFACT_DIRECTORY / p3a.FREEZE_NAME), "historical_freeze_base_commit": p3a_frozen["bound_main_commit"]},
         "task_runs": runs, "task_runs_sha256": canonical_hash(runs),
         "treatment_order": [{"pair_index": index, "instance_id": task, "order": [first, second]} for index, (task, first, second) in enumerate(p3a.P3A_TASK_ORDER, start=1)],
         "execution_contract": {"strict_serial": True, "request_ceiling_per_run": REQUEST_CEILING, "retry": 0, "fallback": False, "automatic_retry_rerun_or_continuation": False, "only_treatment_difference": "treatment", "future_paid_execution_requires_new_user_authorization": True},
-        "frozen_identities": _identities(root), "runtime_source_sha256": _runtime_hashes(root),
-        "dispatch_contract": {"unique_dispatch_identity": DISPATCH_IDENTITY, "workflow": str(WORKFLOW_PATH), "one_paid_job_only": "p3b-paid-execution", "second_dispatch": "fail_closed", "future_inputs": ["paid_execution", "expected_freeze_sha256", "expected_allocation_hash", "approved_parent_cap_cny", "authorization_acknowledgement", "dispatch_token", "run_id"]},
+        "frozen_identities": _identities(root), "content_identities": _content_identities(root), "runtime_content_sha256": _runtime_hashes(root),
+        "dispatch_contract": {"unique_dispatch_identity": DISPATCH_IDENTITY, "workflow": str(WORKFLOW_PATH), "one_paid_job_only": "p3b-paid-execution", "second_dispatch": "fail_closed", "future_inputs": ["paid_execution", "expected_main_sha", "expected_freeze_sha256", "expected_allocation_hash", "approved_parent_cap_cny", "authorization_acknowledgement", "dispatch_token", "run_id"]},
         "budget_proposal": {"currency": "CNY", "parent_cap_proposal_cny": str(PARENT_CAP), "child_cap_each_proposal_cny": str(CHILD_CAP), "child_count": 8, "spendable_total_cny": str(SPENDABLE_TOTAL), "safety_reserve_cny": str(SAFETY_RESERVE), "closure": "8 * child_cap_each + safety_reserve == parent_cap", "authorization": "proposal_only_not_paid_authorization"},
         "formal_stage_c_parent_authorization": {**authorization.model_dump(mode="json"), "status": "formal_proposal_not_authorized", "authorization_hash": authorization_hash(authorization)},
         "formal_stage_c_allocation": {**allocation.model_dump(mode="json"), "allocation_hash": allocation_hash(allocation), "status": "formal_proposal_not_authorized"},
@@ -247,7 +257,7 @@ def validate_freeze(root: Path, frozen: Mapping[str, Any]) -> None:
         raise ValueError("P3-B freeze differs from its committed formal projection")
     if len(frozen["formal_child_allocations"]) != 8:
         raise ValueError("P3-B requires eight formal child allocations")
-    if frozen["bound_main_commit"] != BOUND_MAIN_COMMIT:
+    if frozen["freeze_base_commit"] != BOUND_MAIN_COMMIT:
         raise ValueError("P3-B must bind the merged formal main")
 
 
@@ -490,7 +500,7 @@ def readiness_payload(root: Path, frozen: Mapping[str, Any], *, freeze_path: Pat
     ledger = BudgetLedger.model_validate_json((freeze_path.parent / REHEARSAL_DIRECTORY / "ledger.json").read_text(encoding="utf-8"))
     if ledger.active_reservation is not None or len(ledger.settlements) != 8 or ledger.spent_cny != 0:
         raise ValueError("P3-B zero-provider ledger is not closed at CNY zero")
-    return {"schema_version": SCHEMA_VERSION, "status": "passed_zero_provider_readiness", "freeze_sha256": _sha256(freeze_path), "freeze_canonical_sha256": canonical_hash(frozen), "paid_job": "skipped", "provider_requests": 0, "usage": 0, "charge_cny": "0", "provider_secret_read": False, "secret_presence_check": "not_performed_in_local_rehearsal", "task_run_count": 8, "unique_task_run_count": 8, "paired_result_merge_count": len(merged), "rehearsal": dict(rehearsal), "p3_b": "blocked_pending_separate_explicit_paid_authorization"}
+    return {"schema_version": SCHEMA_VERSION, "status": "passed_zero_provider_readiness", "freeze_sha256": _sha256(freeze_path), "freeze_canonical_sha256": canonical_hash(frozen), "freeze_base_commit": frozen["freeze_base_commit"], **dict(frozen["content_identities"]), "execution_main_head": None, "paid_job": "skipped", "provider_requests": 0, "usage": 0, "charge_cny": "0", "provider_secret_read": False, "secret_presence_check": "not_performed_in_local_rehearsal", "task_run_count": 8, "unique_task_run_count": 8, "paired_result_merge_count": len(merged), "rehearsal": dict(rehearsal), "p3_b": "blocked_pending_separate_explicit_paid_authorization"}
 
 
 def write_artifacts(root: Path, output: Path) -> dict[str, str]:
