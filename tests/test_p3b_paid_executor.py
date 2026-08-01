@@ -225,6 +225,19 @@ def test_production_adapter_exercises_all_runs_without_provider_transport(tmp_pa
 
     def provider_initialization_boundary(**kwargs: object) -> object:
         task = kwargs["task"]; artifact_root = Path(kwargs["artifact_root"])
+        gate = kwargs["gate"]
+        budget_environment = paid_gate.provider_request_budget_environment(
+            gate, trial_id=str(kwargs["run_id"]), maximum_input_tokens_per_request=1,
+            maximum_output_tokens_per_request=1, maximum_provider_requests_per_trial=1,
+            requested_thinking_budget=1,
+            task_run_identity=kwargs["task_run_identity"],
+        )
+        # This invokes the same child-Agent bridge that failed in A4.  The
+        # seam is immediately after construction, before any transport call.
+        with patch.dict(os.environ, budget_environment, clear=False):
+            child_budget = paid_gate.ProviderRequestBudget.from_environment()
+        assert child_budget is not None
+        assert child_budget.gate.allow_descendant_head is True
         task_root = artifact_root / "tasks" / task["instance_id"]
         task_root.mkdir(parents=True, exist_ok=True)
         patch_text = "diff --git a/tracked.py b/tracked.py\n--- a/tracked.py\n+++ b/tracked.py\n@@ -1 +1 @@\n-value = 'base'\n+value = 'adapter-preflight'\n"
@@ -234,7 +247,7 @@ def test_production_adapter_exercises_all_runs_without_provider_transport(tmp_pa
         if treatment == "V3_CORE":
             v3 = task_root / "capability-v3"; v3.mkdir()
             (v3 / "summary.json").write_text("{}\n"); (v3 / "events.jsonl").write_text("{}\n"); (v3 / "final.patch").write_text(patch_text)
-        captured.append({"instance_id": task["instance_id"]})
+        captured.append({"instance_id": task["instance_id"], "allow_descendant_head": child_budget.gate.allow_descendant_head})
         return executor.control_canary.PaidTaskResult(task["instance_id"], "not_started", "not_exported", "not_run", "not_run", "completed", "pre_transport_blocked", terminal_status="unresolved", live_executor_invoked=True)
 
     _values, path, digest = _bundle(tmp_path)
@@ -244,8 +257,84 @@ def test_production_adapter_exercises_all_runs_without_provider_transport(tmp_pa
         summary = executor.run_paid_executor(ROOT, tmp_path / "paid-artifact", input_bundle_path=path,
                                              expected_final_input_bundle_sha256=digest, require_main=False,
                                              allow_test_only_identity=True)
-    assert summary["completed"] is True and len(summary["records"]) == 8
+    assert summary["completed"] is True and len(summary["records"]) == 8, {
+        "record_count": len(summary["records"]), "stop_reason": summary["stop_reason"],
+        "records": summary["records"],
+    }
     assert len(captured) == 8 and shared_executor.call_count == 8
+    assert all(item["allow_descendant_head"] for item in captured)
+
+
+def test_child_budget_binding_preserves_global_strict_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    frozen, _freeze_sha = executor._committed_freeze(ROOT)
+    authorization, _allocation = executor._formal_bindings(frozen)
+    pricing = full_replay.load_pricing(ROOT / full_replay.PRICING_PATH)
+    monkeypatch.setattr(paid_gate, "_git_commit", lambda _root: "f" * 40)
+    with pytest.raises(ValueError, match="bound to current HEAD"):
+        paid_gate.validate_authorization(authorization, root=ROOT, pricing=pricing)
+
+
+def test_non_ancestor_child_budget_contract_fails_closed(tmp_path: Path) -> None:
+    frozen, _freeze_sha = executor._committed_freeze(ROOT)
+    authorization, allocation = executor._formal_bindings(frozen)
+    bad_commit = "f" * 40
+    authorization = authorization.model_copy(update={"experiment_commit": bad_commit})
+    allocation = allocation.model_copy(update={"experiment_commit": bad_commit})
+    authorization_path = tmp_path / "authorization.json"
+    allocation_path = tmp_path / "allocation.json"
+    ledger_path = tmp_path / "ledger.json"
+    authorization_path.write_text(authorization.model_dump_json(), encoding="utf-8")
+    allocation_path.write_text(allocation.model_dump_json(), encoding="utf-8")
+    ledger = paid_gate.BudgetLedger(
+        authorization_hash=paid_gate.authorization_hash(authorization), updated_at="test",
+    )
+    ledger_path.write_text(ledger.model_dump_json(), encoding="utf-8")
+    with pytest.raises(ValueError, match="not an ancestor"):
+        paid_gate.PaidRunGate(
+            root=ROOT, authorization_path=authorization_path, ledger_path=ledger_path,
+            allocation_path=allocation_path, pricing_path=ROOT / full_replay.PRICING_PATH,
+            pricing=full_replay.load_pricing(ROOT / full_replay.PRICING_PATH), stage="C",
+            allow_descendant_head=True,
+        )
+
+
+def test_pre_provider_failure_writes_primary_terminal_record_and_summary(tmp_path: Path) -> None:
+    def a4_failure_executor(
+        _frozen: object, _execution_freeze: object, _gate: object, run_root: Path,
+        _run_id: str, task: dict, _identity: object,
+    ) -> object:
+        task_root = run_root / "tasks" / task["instance_id"]
+        task_root.mkdir(parents=True, exist_ok=True)
+        (task_root / "candidate.patch").write_text("", encoding="utf-8")
+        (task_root / "agent.stderr.txt").write_text(
+            "ValueError: budget authorization is not bound to current HEAD\\n", encoding="utf-8",
+        )
+        executor._write_json(task_root / "task-result.json", {"provider_requests": 0})
+        return executor.control_canary.PaidTaskResult(
+            task["instance_id"], "failed", "not_exported", "not_run", "not_run", "error",
+            "not_started", terminal_status="agent_dispatch_missing",
+            failure_classification="agent_dispatch_missing", agent_dispatch_started=True,
+            provider_client_initialized=True,
+        )
+
+    _values, path, digest = _bundle(tmp_path)
+    summary = executor.run_paid_executor(
+        ROOT, tmp_path / "paid-artifact", input_bundle_path=path,
+        expected_final_input_bundle_sha256=digest, task_executor=a4_failure_executor,
+        require_main=False, allow_test_only_identity=True,
+    )
+    assert summary["completed"] is False and len(summary["records"]) == 1
+    assert summary["provider_requests"] == summary["usage"] == 0
+    assert summary["charge_cny"] == "0" and summary["active_reservation"] is None
+    assert (tmp_path / "paid-artifact" / executor.PAID_SUMMARY_NAME).is_file()
+    record = summary["records"][0]
+    assert record["primary_error"] == {
+        "classification": "budget_authorization_commit_binding_mismatch",
+        "message_summary": "budget authorization is not bound to current HEAD",
+    }
+    assert record["raw_artifacts_complete"] is False
+    assert set(record["missing_raw_artifacts"]) == {"agent-request-record.json", "official-report.json"}
+    assert record["secondary_errors"][0]["classification"] == "required_raw_artifacts_missing"
 
 
 @pytest.mark.parametrize("field,value,match", [

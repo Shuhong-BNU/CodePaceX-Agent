@@ -1377,6 +1377,7 @@ _REQUEST_BUDGET_KEYS = (
     "CODEPACEX_BUDGET_ALLOCATION",
     "CODEPACEX_BUDGET_PRICING",
     "CODEPACEX_BUDGET_STAGE",
+    "CODEPACEX_BUDGET_ALLOW_DESCENDANT_HEAD",
     "CODEPACEX_BUDGET_TRIAL_ID",
     "CODEPACEX_BUDGET_TASK_RUN_ID",
     "CODEPACEX_BUDGET_TASK_RUN_ALLOCATION_ID",
@@ -1428,6 +1429,10 @@ def provider_request_budget_environment(
         ),
         "CODEPACEX_BUDGET_PRICING": str(gate.pricing_path),
         "CODEPACEX_BUDGET_STAGE": gate.stage,
+        # This is intentionally explicit rather than changing the global
+        # authorization default.  A child may inherit the relaxed binding
+        # only when its parent gate was constructed with that contract.
+        "CODEPACEX_BUDGET_ALLOW_DESCENDANT_HEAD": "1" if getattr(gate, "allow_descendant_head", False) else "0",
         "CODEPACEX_BUDGET_TRIAL_ID": trial_id,
         "CODEPACEX_BUDGET_TASK_RUN_ID": (
             task_run_identity.task_run_id if task_run_identity is not None else ""
@@ -1542,8 +1547,13 @@ class ProviderRequestBudget:
                        "CODEPACEX_BUDGET_EXPECTED_ARTIFACT_PATH",
                    }]
         if missing:
-            raise ValueError("incomplete experimental Provider request budget contract")
+            raise ValueError(
+                "incomplete experimental Provider request budget contract: " + ",".join(missing)
+            )
         allocation = required["CODEPACEX_BUDGET_ALLOCATION"] or None
+        allow_descendant_head = required["CODEPACEX_BUDGET_ALLOW_DESCENDANT_HEAD"]
+        if allow_descendant_head not in {"0", "1"}:
+            raise ValueError("invalid experimental Provider commit-binding contract")
         gate = PaidRunGate(
             root=Path(required["CODEPACEX_BUDGET_ROOT"]),
             authorization_path=Path(required["CODEPACEX_BUDGET_AUTHORIZATION"]),
@@ -1551,6 +1561,7 @@ class ProviderRequestBudget:
             pricing=load_pricing(Path(required["CODEPACEX_BUDGET_PRICING"])),
             stage=required["CODEPACEX_BUDGET_STAGE"],  # type: ignore[arg-type]
             allocation_path=Path(allocation) if allocation else None,
+            allow_descendant_head=allow_descendant_head == "1",
         )
         task_run_keys = {
             "task_run_id": "CODEPACEX_BUDGET_TASK_RUN_ID",

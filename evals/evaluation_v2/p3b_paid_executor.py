@@ -533,20 +533,65 @@ def recording_fake_task_executor(
     )
 
 
-def _terminal_record(run: Mapping[str, Any], result: control_canary.PaidTaskResult, artifact_root: Path) -> dict[str, Any]:
+def _primary_error_from_task(
+    result: control_canary.PaidTaskResult, task_root: Path,
+) -> dict[str, str] | None:
+    """Keep a pre-transport Agent failure visible without copying raw stderr.
+
+    The raw stderr remains in the task Artifact.  The summary records a small,
+    non-secret classification and message only for known P3-B gate failures.
+    """
+    if result.failure_classification is None and result.terminal_status in {"resolved", "unresolved"}:
+        return None
+    stderr = (task_root / "agent.stderr.txt")
+    text = stderr.read_text(encoding="utf-8", errors="replace") if stderr.is_file() else ""
+    if "budget authorization is not bound to current HEAD" in text:
+        return {
+            "classification": "budget_authorization_commit_binding_mismatch",
+            "message_summary": "budget authorization is not bound to current HEAD",
+        }
+    return {
+        "classification": result.failure_classification or result.terminal_status,
+        "message_summary": "task terminated before complete Provider/evaluator evidence; inspect task Artifact",
+    }
+
+
+def _exception_primary_error(error: Exception) -> dict[str, str]:
+    if "budget authorization is not bound to current HEAD" in str(error):
+        return {
+            "classification": "budget_authorization_commit_binding_mismatch",
+            "message_summary": "budget authorization is not bound to current HEAD",
+        }
+    return {
+        "classification": type(error).__name__,
+        "message_summary": "P3-B task executor raised before complete Provider/evaluator evidence",
+    }
+
+
+def _terminal_record(
+    run: Mapping[str, Any], result: control_canary.PaidTaskResult, artifact_root: Path,
+    *, primary_error: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     task_root = artifact_root / str(run["expected_artifact_path"])
     required = p3b.paired_artifact_schema()["required_raw_artifacts"]
-    if not all((task_root / name).is_file() for name in required):
-        raise RuntimeError("P3-B paid executor lacks required raw Artifact")
+    missing = [name for name in required if not (task_root / name).is_file()]
     treatment = str(run["treatment"])
     v3 = task_root / "capability-v3"
-    if treatment == "V2_CONTROL" and v3.exists():
+    if not missing and treatment == "V2_CONTROL" and v3.exists():
         raise RuntimeError("P3-B V2_CONTROL cannot carry V3 Advice or activation Artifact")
-    if treatment == "V3_CORE" and not all((v3 / name).is_file() for name in ("summary.json", "events.jsonl", "final.patch")):
+    if not missing and treatment == "V3_CORE" and not all((v3 / name).is_file() for name in ("summary.json", "events.jsonl", "final.patch")):
         raise RuntimeError("P3-B V3_CORE requires the frozen activation Artifact")
+    primary = dict(primary_error) if primary_error is not None else _primary_error_from_task(result, task_root)
+    secondary_errors = ([] if not missing else [{
+        "classification": "required_raw_artifacts_missing",
+        "missing_artifacts": missing,
+    }])
     return {
         **dict(run), "artifact_path": str(run["expected_artifact_path"]), "terminal": asdict(result),
-        "v3_advice_present": treatment == "V3_CORE", "v3_activation_schema_present": treatment == "V3_CORE",
+        "v3_advice_present": treatment == "V3_CORE" and not missing,
+        "v3_activation_schema_present": treatment == "V3_CORE" and not missing,
+        "raw_artifacts_complete": not missing, "missing_raw_artifacts": missing,
+        "primary_error": primary, "secondary_errors": secondary_errors,
     }
 
 
@@ -554,6 +599,7 @@ def _continues(result: control_canary.PaidTaskResult, ledger: BudgetLedger) -> b
     return result.active_reservation is None and ledger.active_reservation is None and result.terminal_status not in {
         "budget_blocked", "provider_authentication_error", "provider_access_denied", "provider_usage_contract_violation",
         "provider_transport_error", "host_runtime_contaminated", "evaluator_execution_error", "evaluator_report_selection_error",
+        "pre_agent_blocked", "agent_dispatch_missing", "infrastructure_error",
     }
 
 
@@ -608,8 +654,28 @@ def run_paid_executor(
         ))
         execution_run_id = child.execution_run_id
         run_root = artifact_root / "runs" / f"{run['ordinal']:02d}-{run['treatment']}"
-        result = executor(frozen, _execution_freeze(root, frozen, str(run["treatment"])), gate, run_root, execution_run_id, tasks[str(run["instance_id"])], identity)
-        records.append(_terminal_record(run, result, artifact_root))
+        try:
+            result = executor(
+                frozen, _execution_freeze(root, frozen, str(run["treatment"])), gate, run_root,
+                execution_run_id, tasks[str(run["instance_id"])], identity,
+            )
+            record = _terminal_record(run, result, artifact_root)
+        except Exception as error:
+            task_root = artifact_root / str(run["expected_artifact_path"])
+            task_root.mkdir(parents=True, exist_ok=True)
+            primary = _exception_primary_error(error)
+            _write_json(task_root / "task-executor-error.json", {
+                "classification": primary["classification"],
+                "provider_reached": False,
+                "provider_secret_read": False,
+            })
+            result = control_canary.PaidTaskResult(
+                str(run["instance_id"]), "failed", "not_exported", "not_run", "not_run",
+                "error", "pre_transport_blocked", terminal_status="infrastructure_error",
+                failure_classification=primary["classification"], live_executor_invoked=executor is _real_task_executor,
+            )
+            record = _terminal_record(run, result, artifact_root, primary_error=primary)
+        records.append(record)
         ledger = BudgetLedger.model_validate_json(ledger_path.read_text(encoding="utf-8"))
         if not _continues(result, ledger):
             stop_reason = f"fail_closed:{result.terminal_status}"
