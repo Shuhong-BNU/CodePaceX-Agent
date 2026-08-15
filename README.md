@@ -94,7 +94,14 @@ uv run codepacex -p "分析这个项目的入口和核心调用链"
 README.md             # 中文文档
 README.en.md          # English README
 CODEPACEX.md          # 项目级 Agent 指令
-CODE_CHANGE_PROPOSALS.md
+docs/
+  governance/
+    INDEX.md
+    CURRENT_STATUS.md
+    EVIDENCE_GOVERNANCE.md
+    EXPERIMENTS.md
+    archive/
+      CODE_CHANGE_PROPOSALS.md
 codepacex/
   __main__.py          # CLI 入口与运行模式分发
   app.py               # Textual TUI 入口
@@ -185,7 +192,7 @@ infrastructure，不立即补跑。完整证据与边界见
 [`evals/CAPABILITY_V3_ACTIVATION_POSTMORTEM.md`](evals/CAPABILITY_V3_ACTIVATION_POSTMORTEM.md)
 和 [`docs/governance/INDEX.md`](docs/governance/INDEX.md)。
 
-后续 P3-B 的状态由最新 governance index 维护。A4 在 child budget gate 处终态失败，未到达 Provider transport；Provider requests / Usage / charge 为 `0 / 0 / CNY 0`，A5 尚未执行，P4 仍阻塞。
+P3-B 的当前状态以 [`docs/governance/CURRENT_STATUS.md`](docs/governance/CURRENT_STATUS.md) 为准；完整治理与证据导航见 [`docs/governance/INDEX.md`](docs/governance/INDEX.md)。A4 在 child budget gate 处终态失败，未到达 Provider transport；Provider requests / Usage / charge 为 `0 / 0 / CNY 0`，A5 尚未执行，P4 仍阻塞。
 
 Goal 4 的每个付费请求在发出前独立检查总预算、类别额度和 CNY 90 safety reserve；若无 durable Provider evidence，才可一次性按 reservation 全额作保守预算结算，Token 维持 unknown，绝不伪造 request charge、Usage 或 Provider 实际账单。
 
