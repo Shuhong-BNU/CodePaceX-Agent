@@ -5,10 +5,12 @@ summary. Historical snapshots and execution plans are not current status.
 
 ## Repository and product
 
-- The active repository is `main` at the 2026-08-15 repository-boundary refresh
-  baseline (`2be5380d9007cb227d0e722fca20cf54b80a0c9c` before this documentation
-  branch). The active worktree was clean and matched `origin/main` when this
-  branch was created.
+- The public current branch is `main`. The repository-boundary and governance
+  consolidation was merged through PR #88 on 2026-08-15. Its pre-cleanup base
+  was `2be5380d9007cb227d0e722fca20cf54b80a0c9c`.
+- Current repository state should be read from `main`; this document records
+  project and evaluation status rather than pinning every subsequent
+  documentation commit SHA.
 - CodePaceX is a terminal Coding Agent with tool registry, permission checks,
   context and memory handling, skills, sub-agents/teams, MCP, worktree support,
   and an evaluation harness. Runtime prompts under `codepacex/` are product

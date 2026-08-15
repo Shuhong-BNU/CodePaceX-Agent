@@ -94,7 +94,14 @@ See the configuration section below for providers, fallback, permissions, and MC
 README.md             # Simplified Chinese README
 README.en.md          # English README
 CODEPACEX.md          # Project-level agent instructions
-CODE_CHANGE_PROPOSALS.md
+docs/
+  governance/
+    INDEX.md
+    CURRENT_STATUS.md
+    EVIDENCE_GOVERNANCE.md
+    EXPERIMENTS.md
+    archive/
+      CODE_CHANGE_PROPOSALS.md
 codepacex/
   __main__.py          # CLI entrypoint and mode dispatch
   app.py               # Textual TUI entrypoint
@@ -173,9 +180,9 @@ tasks and newly resolved `deepset-ai__haystack-8489`; Path A retains
 formal evidence and limits are in
 [`evals/CAPABILITY_V3_GOAL4_FINAL_REPORT.md`](evals/CAPABILITY_V3_GOAL4_FINAL_REPORT.md),
 [`evals/CAPABILITY_V3_ACTIVATION_POSTMORTEM.md`](evals/CAPABILITY_V3_ACTIVATION_POSTMORTEM.md),
-and the [current governance index](docs/governance/INDEX.md).
+and the [governance index](docs/governance/INDEX.md).
 
-The subsequent P3-B state is maintained in the current governance index. A4 reached a terminal failure at the child budget gate before Provider transport; Provider requests / Usage / charge were `0 / 0 / CNY 0`, A5 has not run, and P4 remains gated.
+The current P3-B state is maintained in [`docs/governance/CURRENT_STATUS.md`](docs/governance/CURRENT_STATUS.md); see [`docs/governance/INDEX.md`](docs/governance/INDEX.md) for the full governance and evidence navigation. A4 reached a terminal failure at the child budget gate before Provider transport; Provider requests / Usage / charge were `0 / 0 / CNY 0`, A5 has not run, and P4 remains gated.
 
 Each Goal 4 paid request checked the total budget, its category allocation, and the CNY 90 safety reserve before it was sent. Only when durable Provider evidence could not be recovered could one conservative settlement debit the full reservation; Tokens remained unknown and no request charge, Usage, or Provider bill was fabricated.
 
