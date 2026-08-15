@@ -173,9 +173,11 @@ tasks and newly resolved `deepset-ai__haystack-8489`; Path A retains
 formal evidence and limits are in
 [`evals/CAPABILITY_V3_GOAL4_FINAL_REPORT.md`](evals/CAPABILITY_V3_GOAL4_FINAL_REPORT.md),
 [`evals/CAPABILITY_V3_ACTIVATION_POSTMORTEM.md`](evals/CAPABILITY_V3_ACTIVATION_POSTMORTEM.md),
-and the [governance index](docs/governance/CodePaceX_版本与文档总索引_v1.1.0_20260730_1828.md).
+and the [current governance index](docs/governance/CodePaceX_版本与文档总索引_v2.5.0_20260801.md).
 
-Each paid request checks the total budget, its category allocation, and the CNY 90 safety reserve before it is sent. Only when durable Provider evidence cannot be recovered may one conservative settlement debit the full reservation; Tokens remain unknown and no request charge, Usage, or Provider bill is fabricated. PR #16 remains Draft and must not be marked ready or merged.
+The subsequent P3-B state is maintained in the current governance index. A4 reached a terminal failure at the child budget gate before Provider transport; Provider requests / Usage / charge were `0 / 0 / CNY 0`, A5 has not run, and P4 remains gated.
+
+Each Goal 4 paid request checked the total budget, its category allocation, and the CNY 90 safety reserve before it was sent. Only when durable Provider evidence could not be recovered could one conservative settlement debit the full reservation; Tokens remained unknown and no request charge, Usage, or Provider bill was fabricated.
 
 ## 🧰 Requirements
 
