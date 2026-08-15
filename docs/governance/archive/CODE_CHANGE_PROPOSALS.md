@@ -1,5 +1,7 @@
 # CodePaceX 工程闭环状态与后续提案
 
+> Historical archive: this note records the project state when it was written; current status lives in [`../CURRENT_STATUS.md`](../CURRENT_STATUS.md).
+
 本文记录 PR #13 合并后的 correctness closure 结果，以及因范围或实验边界而延期的工作。当前工程基线为 `origin/main` 的 PR #13 merge commit `e44f3a1`；下列“已完成”项在其上的本地修复分支中实现并有回归测试。
 
 ## 1. 自动记忆提取落盘闭环 — 已完成
@@ -72,7 +74,7 @@ Goal 2 没有复用只改变 manifest 标签的 legacy feature flag，而是引�
 5. Microsoft SWE-bench-Live `python-only` 的 3 Pilot + 20 formal + 5×2 repeat 冻结与官方 evaluator adapter；
 6. clean-commit 分阶段预算授权、worst-next-request reservation、逐 Provider request Usage/CNY ledger 与即时 settlement；缺少 Usage 时保留 active reservation，类别和安全余量不可转移。Stage B 使用成对最小 Pilot scope，正式矩阵保持不变。
 
-截至 2026-07-16，正式 MCP 已完成 300/300 terminal；其 Trial-level cohort 将 299 个 Usage-complete Trial 和 149 个有效 Token pair 与一个保留的 `mcp_one_08/1` infrastructure error 明确分开。正式 Permission 已完成四策略各 50 Trial；Retention 以一个 Usage unknown、保守结算的 `summary_only` session 合法 partial 收口。Multi-Agent 的零模型 gate 为 NO-GO，故没有发送正式 Provider Trial，也不生成比较效果值。SWE formal 20 题继续为 `infrastructure-blocked`，三次 8 小时长会话继续延期。完整的已验证指标、Artifact hash、限制和不可声明范围见 [`evals/GOAL2_FINAL_REPORT.md`](evals/GOAL2_FINAL_REPORT.md)；fixture、mock、synthetic load 和 dry-run 均不得表述为真实效果。
+截至 2026-07-16，正式 MCP 已完成 300/300 terminal；其 Trial-level cohort 将 299 个 Usage-complete Trial 和 149 个有效 Token pair 与一个保留的 `mcp_one_08/1` infrastructure error 明确分开。正式 Permission 已完成四策略各 50 Trial；Retention 以一个 Usage unknown、保守结算的 `summary_only` session 合法 partial 收口。Multi-Agent 的零模型 gate 为 NO-GO，故没有发送正式 Provider Trial，也不生成比较效果值。SWE formal 20 题继续为 `infrastructure-blocked`，三次 8 小时长会话继续延期。完整的已验证指标、Artifact hash、限制和不可声明范围见 [`evals/GOAL2_FINAL_REPORT.md`](../../../evals/GOAL2_FINAL_REPORT.md)；fixture、mock、synthetic load 和 dry-run 均不得表述为真实效果。
 
 ## 8. Permission Git 集成测试 cwd 依赖 — 已完成
 

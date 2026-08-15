@@ -124,7 +124,7 @@ Stage A/B 最小 Pilot 只证明 runner、唯一变量、Usage 与 Artifact 链�
 
 `long-pilot-1` 是唯一长会话真实证据：2 小时墙钟、8/8 cycles、planned restart、recovery、4 个 hash-chained checkpoints、CNY `0.342108` 估算成本。`long-formal-1/2/3` 明确延期到 follow-up Goal；不得将该 Pilot 描述为 8 小时正式验证。
 
-## 6. Claims、报告和简历边界
+## 6. Claims 与公开报告边界
 
 对已冻结 Artifact 重新生成和复核 Claim 时使用：
 
@@ -160,9 +160,9 @@ python -m evals.goal2_claims compile \
 | Hook | 已完成 100/100，正式本地 Artifact 绑定 clean HEAD | 零模型、零网络、零拒绝副作用；最终报告引用 Artifact hash |
 | 长会话 | 2h Pilot 已完成；3×8h formal `insufficient-data` / deferred | follow-up Goal，不阻塞本轮其他指标 |
 
-简历候选 bullet 只能引用单条 `verified` Claim，并带上绝对值、样本量、commit 与限制；`insufficient-data` 不得写成负面或正面效果。不得声称未测得的 SWE 成绩、长会话稳定性、多 Agent 比较或显著性。
+公开指标只能引用单条 `verified` Claim，并带上绝对值、样本量、commit 与限制；`insufficient-data` 不得写成负面或正面效果。不得声称未测得的 SWE 成绩、长会话稳定性、多 Agent 比较或显著性。
 
-面试解释顺序：先说明唯一变量与冻结 commit，再说明失败分类和预算 reservation，然后展示原始 Run → 注册计算器 → compiled Claim 的证据链，最后主动声明 controlled corpus、Python-only lite、arm64 experimental、synthetic retention load 和样本量限制。
+技术审阅说明顺序：先说明唯一变量与冻结 commit，再说明失败分类和预算 reservation，然后展示原始 Run → 注册计算器 → compiled Claim 的证据链，最后主动声明 controlled corpus、Python-only lite、arm64 experimental、synthetic retention load 和样本量限制。
 
 ## 7. 停止条件
 

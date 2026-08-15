@@ -173,7 +173,7 @@ tasks and newly resolved `deepset-ai__haystack-8489`; Path A retains
 formal evidence and limits are in
 [`evals/CAPABILITY_V3_GOAL4_FINAL_REPORT.md`](evals/CAPABILITY_V3_GOAL4_FINAL_REPORT.md),
 [`evals/CAPABILITY_V3_ACTIVATION_POSTMORTEM.md`](evals/CAPABILITY_V3_ACTIVATION_POSTMORTEM.md),
-and the [current governance index](docs/governance/CodePaceX_版本与文档总索引_v2.5.0_20260801.md).
+and the [current governance index](docs/governance/INDEX.md).
 
 The subsequent P3-B state is maintained in the current governance index. A4 reached a terminal failure at the child budget gate before Provider transport; Provider requests / Usage / charge were `0 / 0 / CNY 0`, A5 has not run, and P4 remains gated.
 
@@ -469,4 +469,4 @@ Roadmap:
 - Goal 2 maps eager/deferred tools, compression, permission strategy, and single/multi-agent variants through `ExperimentProfile`; legacy `feature_flags` remain rejected for live Runs so a label-only toggle cannot become evidence.
 - The formal MCP and Permission Artifacts, partial Retention closure, Multi-Agent NO-GO, SWE/long-session boundaries, and Claim states are in [`evals/GOAL2_FINAL_REPORT.md`](evals/GOAL2_FINAL_REPORT.md); reproducible review commands are in [`evals/GOAL2_RUNBOOK.md`](evals/GOAL2_RUNBOOK.md).
 
-See [`CODE_CHANGE_PROPOSALS.md`](CODE_CHANGE_PROPOSALS.md) for detailed change proposals.
+See [`CODE_CHANGE_PROPOSALS.md`](docs/governance/archive/CODE_CHANGE_PROPOSALS.md) for detailed change proposals.

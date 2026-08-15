@@ -2,7 +2,7 @@
 
 > **文档版本**：v1.0.0
 > **生成时间**：2026-07-30 15:02（UTC+8）
-> **文档状态**：Current
+> **文档状态**：Historical archive（截至 2026-07-30）
 > **文档职责**：解释 CodePaceX 产品、评测工程、实验研究与能力迭代如何演进；为旧的 Goal / Stage / V2 / V3 名称建立统一映射。
 > **事实边界**：历史 Run、Artifact、commit 和原始报告保持不可变；本文只增加统一解释层，不重命名或覆盖历史证据。
 
@@ -28,7 +28,7 @@ CodePaceX 从一个可运行的终端 Coding Agent，逐步演进为一个能够
 | Run | 某一次不可变执行 | GitHub Run / Internal Run ID | `30510508446` |
 | Artifact | 某次 Run 的不可变证据 | Artifact ID + digest | `8749299095` |
 | Plan Document | 接下来怎么做 | 文档独立 SemVer + 时间戳 | `...方案_v1.1.0_20260730_1502.md` |
-| Narrative Document | 当前如何对外表达 | 文档独立 SemVer + 时间戳 | `...简历与面试叙事_v1.0.0_...md` |
+| Status document | 当前公开状态 | 稳定路径 | `docs/governance/CURRENT_STATUS.md` |
 
 ## 1.1 术语使用边界
 
@@ -427,7 +427,7 @@ CPX-Agent v3.0.0
 
 ---
 
-# 4. 当前项目快照
+# 4. 2026-07-30 项目快照
 
 ```yaml
 snapshot_time: 2026-07-30T15:02:00+08:00
