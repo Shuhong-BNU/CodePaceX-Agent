@@ -74,4 +74,4 @@ begin P1 or P2.
 - [V3 activation CSV](../docs/governance/CodePaceX_V3_机制激活审计_20260730.csv)
 - [Goal 4 to V3 audit](../docs/governance/CodePaceX_Goal4_vs_V3_结果与机制激活审计_20260730.md)
 - [V3 final report](CAPABILITY_V3_GOAL4_FINAL_REPORT.md)
-- [Current execution plan](../docs/governance/CodePaceX_后续整体工作方案_v1.1.0_20260730_1502.md)
+- [Stable governance index](../docs/governance/INDEX.md)

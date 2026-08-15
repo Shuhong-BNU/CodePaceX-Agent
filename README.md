@@ -183,7 +183,7 @@ infrastructure error。该结果保留 Goal 4 的四个 resolved，并新增解�
 infrastructure，不立即补跑。完整证据与边界见
 [`evals/CAPABILITY_V3_GOAL4_FINAL_REPORT.md`](evals/CAPABILITY_V3_GOAL4_FINAL_REPORT.md)、
 [`evals/CAPABILITY_V3_ACTIVATION_POSTMORTEM.md`](evals/CAPABILITY_V3_ACTIVATION_POSTMORTEM.md)
-和 [`docs/governance/CodePaceX_版本与文档总索引_v2.5.0_20260801.md`](docs/governance/CodePaceX_版本与文档总索引_v2.5.0_20260801.md)。
+和 [`docs/governance/INDEX.md`](docs/governance/INDEX.md)。
 
 后续 P3-B 的状态由最新 governance index 维护。A4 在 child budget gate 处终态失败，未到达 Provider transport；Provider requests / Usage / charge 为 `0 / 0 / CNY 0`，A5 尚未执行，P4 仍阻塞。
 
@@ -628,4 +628,4 @@ Roadmap：
 - Goal 2 已用 `ExperimentProfile` 实现 eager/deferred tools、compression、permission strategy 与 single/multi-agent 的真实 runtime mapping；legacy `feature_flags` 仍拒绝进入 live Run，避免只改标签的伪实验。
 - 正式 MCP 与 Permission 的 Artifact、partial Retention、Multi-Agent NO-GO、SWE/长会话边界和 Claims 状态见 [`evals/GOAL2_FINAL_REPORT.md`](evals/GOAL2_FINAL_REPORT.md)；运行和复核命令见 [`evals/GOAL2_RUNBOOK.md`](evals/GOAL2_RUNBOOK.md)。
 
-详细修改建议见 [`CODE_CHANGE_PROPOSALS.md`](CODE_CHANGE_PROPOSALS.md)。
+详细修改建议见 [`CODE_CHANGE_PROPOSALS.md`](docs/governance/archive/CODE_CHANGE_PROPOSALS.md)。

@@ -117,4 +117,4 @@ P1/P2 activation fidelity, which remains unstarted by this closeout.
 - [Goal 4 Evidence Index](GOAL4_EVIDENCE_INDEX.md)
 - [Evaluation History](EVALUATION_HISTORY.md)
 - [Evaluation Artifact Index](EVALUATION_ARTIFACT_INDEX.md)
-- [Version and document index](../docs/governance/CodePaceX_版本与文档总索引_v1.1.0_20260730_1828.md)
+- [Stable governance index](../docs/governance/INDEX.md)
