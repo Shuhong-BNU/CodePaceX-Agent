@@ -30,6 +30,7 @@ promise that the old proposed dispatch is still current:
 - [R1 acceptance](CodePaceX_P3BR1验收结果_v1.0.0_20260731_1557.md)
 - [R2 post-merge zero-provider verification](CodePaceX_P3BR2_PostMerge零Provider核验报告_v1.0.0_20260731_1557.md)
 - [R4 input-contract hardening](CodePaceX_P3BR4_Paid输入合同零Provider审计与加固_v1.0.0_20260731_1935.md)
+- [R5 post-merge zero-provider verification](archive/P3B_R5_POST_MERGE_VERIFICATION.md)
 - [canonical identity and bundle SHA root cause](CodePaceX_P3B_Canonical身份生成与Bundle字节SHA根因和合同_v1.0.0_20260731_2230.md)
 - [A4 failure and A5 condition](CodePaceX_P3B_A4失败根因修复与A5条件合同_v1.0.0_20260801.md)
 
