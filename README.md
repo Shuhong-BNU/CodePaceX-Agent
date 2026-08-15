@@ -183,9 +183,11 @@ infrastructure error。该结果保留 Goal 4 的四个 resolved，并新增解�
 infrastructure，不立即补跑。完整证据与边界见
 [`evals/CAPABILITY_V3_GOAL4_FINAL_REPORT.md`](evals/CAPABILITY_V3_GOAL4_FINAL_REPORT.md)、
 [`evals/CAPABILITY_V3_ACTIVATION_POSTMORTEM.md`](evals/CAPABILITY_V3_ACTIVATION_POSTMORTEM.md)
-和 [`docs/governance/CodePaceX_版本与文档总索引_v1.1.0_20260730_1828.md`](docs/governance/CodePaceX_版本与文档总索引_v1.1.0_20260730_1828.md)。
+和 [`docs/governance/CodePaceX_版本与文档总索引_v2.5.0_20260801.md`](docs/governance/CodePaceX_版本与文档总索引_v2.5.0_20260801.md)。
 
-每个付费请求在发出前独立检查总预算、类别额度和 CNY 90 safety reserve；若无 durable Provider evidence，才可一次性按 reservation 全额作保守预算结算，Token 维持 unknown，绝不伪造 request charge、Usage 或 Provider 实际账单。PR #16 仍保持 Draft，不能 Ready 或 merge。
+后续 P3-B 的状态由最新 governance index 维护。A4 在 child budget gate 处终态失败，未到达 Provider transport；Provider requests / Usage / charge 为 `0 / 0 / CNY 0`，A5 尚未执行，P4 仍阻塞。
+
+Goal 4 的每个付费请求在发出前独立检查总预算、类别额度和 CNY 90 safety reserve；若无 durable Provider evidence，才可一次性按 reservation 全额作保守预算结算，Token 维持 unknown，绝不伪造 request charge、Usage 或 Provider 实际账单。
 
 ## 🧰 环境要求
 

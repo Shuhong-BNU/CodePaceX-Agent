@@ -14,3 +14,5 @@ build/
 .claude/
 CLAUDE.md
 example-com-snapshot.md
+
+_local/
