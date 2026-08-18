@@ -14,6 +14,30 @@ from evals.paid_gate import ProviderRequestBudget, provider_request_budget_envir
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _assert_canonical_task_list(payload: dict) -> None:
+    task_list = payload["task_list"]
+    assert len(payload["task_runs"]) == 20 * len(payload["treatments"])
+    assert len(task_list) == 20
+    assert [item["instance_id"] for item in task_list] == list(full_replay.GOAL4_ORDER)
+    assert len({item["instance_id"] for item in task_list}) == 20
+
+
+def test_full20_task_list_uses_all_tasks_for_single_and_dual_treatments(monkeypatch) -> None:
+    monkeypatch.setattr(pilot, "PILOT_TASK_IDS", full_replay.GOAL4_ORDER)
+
+    monkeypatch.setattr(pilot, "TREATMENTS", (pilot.CapabilityV3Flag.V3_CORE,))
+    single = pilot.freeze_payload(ROOT, run_id="unit-full20-single")
+    _assert_canonical_task_list(single)
+
+    monkeypatch.setattr(
+        pilot,
+        "TREATMENTS",
+        (pilot.CapabilityV3Flag.V2_CONTROL, pilot.CapabilityV3Flag.V3_CORE),
+    )
+    dual = pilot.freeze_payload(ROOT, run_id="unit-full20-dual")
+    _assert_canonical_task_list(dual)
+
+
 def test_frozen_pilot_has_six_adjacent_pairs_and_only_flag_differs() -> None:
     payload = pilot.freeze_payload(ROOT, run_id="unit-controlled-pilot")
     assert payload["treatments"] == ["V2_CONTROL", "V3_CORE"]

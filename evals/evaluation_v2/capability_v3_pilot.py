@@ -288,9 +288,15 @@ def freeze_payload(
         raise ValueError("controlled Pilot Freeze must be generated from its bound main commit")
     runs = task_runs(root)
     common = _common_runtime(root)
-    task_list = [{key: item[key] for key in (
-        "instance_id", "repo", "base_commit", "agent_visible_payload_sha256",
-    )} for item in runs[::2]]
+    task_list = []
+    seen_task_ids: set[str] = set()
+    for item in runs:
+        if item["instance_id"] in seen_task_ids:
+            continue
+        seen_task_ids.add(item["instance_id"])
+        task_list.append({key: item[key] for key in (
+            "instance_id", "repo", "base_commit", "agent_visible_payload_sha256",
+        )})
     payload = {
         "schema_version": SCHEMA_VERSION,
         "experiment_name": EXPERIMENT_NAME,
