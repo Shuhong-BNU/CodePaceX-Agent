@@ -30,7 +30,7 @@ FROZEN_PROTOCOL = "openai-compat"
 FROZEN_BASE_URL = "https://llm-ipge9fy38w648m28.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
 # Formal Phase A is separately frozen to the new account workspace.  Both
 # endpoints are explicit immutable contracts, never environment overrides.
-FORMAL_PHASE_A_BASE_URL = "https://ws-qes65f0ct128vtvl.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+FORMAL_PHASE_A_BASE_URL = "https://ws-e0dfiat7lu57en5y.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
 FROZEN_BASE_URLS = frozenset({FROZEN_BASE_URL, FORMAL_PHASE_A_BASE_URL})
 FROZEN_MODEL = "qwen3.7-max-2026-06-08"
 FROZEN_KEY_ENV = "BAILIAN_API_KEY"

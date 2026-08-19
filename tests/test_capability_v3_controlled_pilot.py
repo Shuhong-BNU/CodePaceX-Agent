@@ -51,7 +51,7 @@ def test_frozen_pilot_has_six_adjacent_pairs_and_only_flag_differs() -> None:
     assert payload["provider_contract"]["base_url"] == pilot.FORMAL_PHASE_A_BASE_URL
     assert payload["provider_account_audit"] == {
         "current_region": "cn-beijing",
-        "current_workspace_id": "ws-qes65f0ct128vtvl",
+        "current_workspace_id": "ws-e0dfiat7lu57en5y",
         "paired_treatments_share_account_and_endpoint": True,
         "goal4_comparison": "historical longitudinal reference across the prior account and endpoint only",
     }
