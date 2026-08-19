@@ -170,14 +170,14 @@
       "evals/evaluation_v2/control_canary.py": "54c3ec068e28d5a2d9dff26a329b408de04f5b43ad8c06f881cb6cf5c6b4d2c4",
       "evals/evaluation_v2/full_replay.py": "37c6479b023e8fbad70504d338135ba764912ee734f785a42a9318b0c9c75d39",
       "evals/paid_gate.py": "7c02b2124c3b52c02a3b415cd34b823bc3c9c4e2998024be01426db075f45646",
-      "evals/pilot.py": "855c4cba3a2bf379e9b5d325115e90c743a6e88f466605171ecf579f2620ecec"
+      "evals/pilot.py": "c0bda78012abe92c3f6d13cb4536157769c1ed2e6bb3a19866a21d6900e0eaf7"
     },
     "schema_version": 1,
     "system_instruction_sha256": "f43af3f8b81f58b2970571afb86f69641caf0da49c191cffe4026cf732abd36c",
     "task_python_isolation_contract": "fresh-no-system-site-packages-venv-path-bound-python-python3-pip-pip3-v1",
     "tool_schemas_sha256": "72ae1262c5acd1a8b21c3f0964cdcb210508f1b780590b79b0ec2cc2eba07aea"
   },
-  "runtime_contract_sha256": "eca6b060d6eb9c8f9506bdafa0e699b32329487c679f7a57f48dd56973b0368b",
+  "runtime_contract_sha256": "27e4da040a4c990d111a2a3eea804177615b3cdfa1c54246f5b7c82f2bc11943",
   "schema_version": 1,
   "selection_manifest_sha256": "3efa2694627f699324c78b3c8dd09f208330eebb77fecd9d807bfd509529935e",
   "status": "frozen_pending_single_full_20_authorization"

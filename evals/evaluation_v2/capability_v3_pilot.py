@@ -55,7 +55,7 @@ COMMIT = re.compile(r"^[0-9a-f]{40}$")
 RUN_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{2,80}$")
 ALLOCATION_SAFETY_RESERVE_CNY = Decimal("0.000001")
 FORMAL_PHASE_A_REGION = "cn-beijing"
-FORMAL_PHASE_A_WORKSPACE_ID = "ws-qes65f0ct128vtvl"
+FORMAL_PHASE_A_WORKSPACE_ID = "ws-e0dfiat7lu57en5y"
 
 
 class _SequentialRehearsalClient(LLMClient):
